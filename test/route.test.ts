@@ -1,20 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { cumulativeDistances, type LngLat } from '../src/geo';
-import { insertVia, makePoint, normalizePoints, placeOnRoute, routeSpan, type ActiveRoute } from '../src/nav/plan';
-import { clipLine } from '../src/route/roadTiles';
-import { TrailGraph } from '../src/route/trailRouter';
+import { detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, routeSpan, trailShare, type ActiveRoute } from '../src/nav/plan';
+import { clipLine, gsiKind, osmKind } from '../src/route/roadTiles';
+import { PROFILES, TrailGraph, overlapRatio, type RouteLine } from '../src/route/trailRouter';
 
 // 1度 ≒ 経度 89km / 緯度 111km（北緯37度付近）。0.0001度 ≒ 9-11m
 const P = (x: number, y: number): LngLat => [139 + x * 0.0001, 37 + y * 0.0001];
 const len = (c: LngLat[]) => cumulativeDistances(c).at(-1)!;
+const T = (coords: LngLat[], kind: RouteLine['kind'] = 'trail'): RouteLine => ({ coords, kind });
 
 describe('TrailGraph', () => {
   it('交差点を経由した最短経路を返す', () => {
     // 「工」の字：上の道(y=10)、下の道(y=0)、真ん中に縦の道(x=50)
     const g = new TrailGraph([
-      { coords: [P(0, 10), P(50, 10), P(100, 10)] },
-      { coords: [P(0, 0), P(50, 0), P(100, 0)] },
-      { coords: [P(50, 0), P(50, 10)] },
+      T([P(0, 10), P(50, 10), P(100, 10)]),
+      T([P(0, 0), P(50, 0), P(100, 0)]),
+      T([P(50, 0), P(50, 10)]),
     ]);
     const r = g.route(P(0, 0), P(100, 10))!;
     expect(r).not.toBeNull();
@@ -24,16 +25,16 @@ describe('TrailGraph', () => {
 
   it('タイル境界で切れた線（端点がわずかにずれる）もつながる', () => {
     const g = new TrailGraph([
-      { coords: [P(0, 0), P(50, 0)] },
-      { coords: [[139 + 50 * 0.0001 + 0.000005, 37], P(100, 0)] }, // 約0.5mずれ
+      T([P(0, 0), P(50, 0)]),
+      T([[139 + 50 * 0.0001 + 0.000005, 37], P(100, 0)]), // 約0.5mずれ
     ]);
     expect(g.route(P(0, 0), P(100, 0))).not.toBeNull();
   });
 
   it('線の途中に接する行き止まり（T字で頂点がない）もつながる', () => {
     const g = new TrailGraph([
-      { coords: [P(0, 0), P(100, 0)] }, // 横の道（x=50 に頂点なし）
-      { coords: [P(50, 0.2), P(50, 30)] }, // 縦の道の端が横の道の約2m手前
+      T([P(0, 0), P(100, 0)]), // 横の道（x=50 に頂点なし）
+      T([P(50, 0.2), P(50, 30)]), // 縦の道の端が横の道の約2m手前
     ]);
     const r = g.route(P(0, 0), P(50, 30));
     expect(r).not.toBeNull();
@@ -41,25 +42,62 @@ describe('TrailGraph', () => {
   });
 
   it('つながっていなければ null、遠すぎる点も null', () => {
-    const g = new TrailGraph([{ coords: [P(0, 0), P(10, 0)] }, { coords: [P(0, 50), P(10, 50)] }]);
+    const g = new TrailGraph([T([P(0, 0), P(10, 0)]), T([P(0, 50), P(10, 50)])]);
     expect(g.route(P(0, 0), P(10, 50))).toBeNull();
-    expect(g.route(P(0, 0), P(0, 5000), 300)).toBeNull();
+    expect(g.route(P(0, 0), P(0, 5000), { maxSnap: 300 })).toBeNull();
   });
 
-  it('徒歩道を少しだけ優先する', () => {
-    const g = new TrailGraph(
-      [
-        { coords: [P(-20, 0), P(0, 0)], trail: true },
-        { coords: [P(100, 0), P(120, 0)], trail: true },
-        { coords: [P(0, 0), P(100, 0)], trail: false },
-        { coords: [P(0, 0), P(50, 3), P(100, 0)], trail: true },
-      ],
-      1.5,
-      4,
-      1.1,
-    );
-    const r = g.route(P(-20, 0), P(120, 0))!;
-    expect(r.coords.some((c) => Math.abs(c[1] - (37 + 3 * 0.0001)) < 1e-9)).toBe(true);
+  // 林道（まっすぐ）と登山道（少し遠回り）の2本。登山道優先なら登山道、最短距離なら林道
+  const fork = () =>
+    new TrailGraph([
+      T([P(-20, 0), P(0, 0)]),
+      T([P(100, 0), P(120, 0)]),
+      T([P(0, 0), P(100, 0)], 'track'),
+      T([P(0, 0), P(50, 15), P(100, 0)], 'trail'),
+    ]);
+  const viaTrail = (c: LngLat[]) => c.some((p) => Math.abs(p[1] - (37 + 15 * 0.0001)) < 1e-9);
+
+  it('登山道優先では林道より登山道を選び、距離の内訳を返す', () => {
+    const r = fork().route(P(-20, 0), P(120, 0), { profile: PROFILES.walk })!;
+    expect(viaTrail(r.coords)).toBe(true);
+    expect(r.byKind.track).toBe(0);
+    expect(r.byKind.trail).toBeCloseTo(r.length, 3);
+  });
+
+  it('最短距離では林道を選ぶ', () => {
+    const r = fork().route(P(-20, 0), P(120, 0), { profile: PROFILES.short })!;
+    expect(viaTrail(r.coords)).toBe(false);
+    expect(r.byKind.track).toBeGreaterThan(800);
+  });
+
+  it('通った道にペナルティをかけると別ルートになる', () => {
+    const g = fork();
+    const a = g.route(P(-20, 0), P(120, 0), { profile: PROFILES.short })!;
+    const penalty = new Map(a.edges.map((e) => [e, 4]));
+    const b = g.route(P(-20, 0), P(120, 0), { profile: PROFILES.short, penalty })!;
+    expect(viaTrail(b.coords)).toBe(true);
+    expect(overlapRatio(a.coords, b.coords)).toBeLessThan(0.5);
+    expect(overlapRatio(a.coords, a.coords)).toBeCloseTo(1, 5);
+  });
+});
+
+describe('道の種類', () => {
+  it('地理院：徒歩道・石段は登山道、幅3m未満は林道扱い、高速道路は除外', () => {
+    expect(gsiKind({ vt_code: 2721, vt_rdctg: '市区町村道等', vt_rnkwidth: '3m未満' })).toBe('trail');
+    expect(gsiKind({ vt_code: 2733 })).toBe('trail');
+    expect(gsiKind({ vt_code: 2701, vt_rdctg: '市区町村道等', vt_rnkwidth: '3m未満' })).toBe('track');
+    expect(gsiKind({ vt_code: 2701, vt_rdctg: '市区町村道等', vt_rnkwidth: '3m-5.5m未満' })).toBe('road');
+    expect(gsiKind({ vt_code: 2701, vt_rdctg: '国道' })).toBe('major');
+    expect(gsiKind({ vt_code: 2701, vt_rdctg: '高速自動車国道等', vt_motorway: 1 })).toBeNull();
+  });
+  it('OpenStreetMap：path は登山道、track は林道、高速道路は除外', () => {
+    expect(osmKind({ class: 'path', subclass: 'path' })).toBe('trail');
+    expect(osmKind({ class: 'path', subclass: 'steps' })).toBe('trail');
+    expect(osmKind({ class: 'track' })).toBe('track');
+    expect(osmKind({ class: 'minor' })).toBe('road');
+    expect(osmKind({ class: 'tertiary' })).toBe('major');
+    expect(osmKind({ class: 'motorway' })).toBeNull();
+    expect(osmKind({ class: 'rail' })).toBeNull();
   });
 });
 
@@ -107,7 +145,10 @@ describe('plan', () => {
     const dists = cumulativeDistances(coords);
     const route: ActiveRoute = {
       name: 't',
+      label: 'GPX',
+      kind: 'gpx',
       source: 'gpx',
+      byKind: { trail: 0, track: 0, road: 0, major: 0 },
       coords,
       eles: [0, 0, 0],
       dists,
@@ -123,5 +164,30 @@ describe('plan', () => {
     const r3 = placeOnRoute(r2, makePoint('via', P(50, 2)))!;
     expect(r3.marks.map((m) => m.kind)).toEqual(['start', 'via', 'dest']);
     expect(placeOnRoute(route, makePoint('via', P(50, 500)))).toBeNull();
+  });
+});
+
+describe('通過点・登山道の割合', () => {
+  const coords = [P(0, 0), P(100, 0), P(200, 0)];
+  const dists = cumulativeDistances(coords);
+  it('ルート沿いの温泉・小屋などを通過点にし、川の名前や離れた地名・重複は除く', () => {
+    const labels = [
+      { text: '八丁の湯', lngLat: P(60, 2) },
+      { text: '八丁の湯', lngLat: P(60, 2) },
+      { text: 'カッタテ沢', lngLat: P(120, 1) },
+      { text: '手白山', lngLat: P(150, 300) },
+      { text: '加仁湯', lngLat: P(140, -3) },
+      { text: '出発地の宿', lngLat: P(1, 0) },
+    ];
+    const marks = detectPassPoints(coords, dists, labels, [
+      { along: 0, name: '女夫渕' },
+      { along: dists[2], name: '手白澤温泉' },
+    ]);
+    expect(marks.map((m) => m.name).sort()).toEqual(['八丁の湯', '加仁湯']);
+    expect(marks.every((m) => m.kind === 'pass')).toBe(true);
+  });
+  it('trailShare', () => {
+    expect(trailShare({ byKind: { trail: 750, track: 250, road: 0, major: 0 } } as never)).toBeCloseTo(0.75);
+    expect(trailShare({ byKind: { trail: 0, track: 0, road: 0, major: 0 } } as never)).toBeNull();
   });
 });

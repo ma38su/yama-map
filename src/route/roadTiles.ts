@@ -1,20 +1,54 @@
 /**
- * 国土地理院ベクトルタイル（最適化ベクトルタイル）から道路中心線・徒歩道を取り出す。
- * 取得したタイルは Service Worker が地図タイルと同じくキャッシュするので、
- * 一度読み込んだ範囲・オフライン保存した範囲は圏外でもルート検索できる。
+ * ルート検索に使う道のデータを読み込む。
+ *  - 国土地理院ベクトルタイル（最適化ベクトルタイル）の道路中心線。徒歩道の区別あり
+ *  - OpenStreetMap（OpenFreeMap が配信する OpenMapTiles 形式）の道。path=登山道/小道、track=林道など
+ * 取得したタイルは Service Worker がキャッシュするので、一度読み込んだ範囲・
+ * オフライン保存した範囲は圏外でもルート検索できる。
  */
 import { VectorTile } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
 import { tileRange, type LngLat } from '../geo';
-import type { RouteLine } from './trailRouter';
+import type { RouteLine, WayKind } from './trailRouter';
 
 export const ROAD_TILE_ZOOM = 16;
 export const ROAD_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/{z}/{x}/{y}.pbf';
 /** これ以上のタイル数になる範囲はルート検索しない（約10km四方） */
 export const MAX_ROAD_TILES = 500;
 
-/** 徒歩道の分類コード（道路中心線のうち幅3m未満の徒歩道） */
-const TRAIL_CODES = new Set([2721, 2722, 2723, 2724]);
+/**
+ * 地理院の道路中心線の種類。vt_code の十の位が 2 は徒歩道、3 は石段（一の位は 1:通常部 2:雪覆い 3:橋 4:トンネル）。
+ * 高速道路など歩けない道は null。
+ */
+export function gsiKind(props: Record<string, unknown>): WayKind | null {
+  const code = Number(props.vt_code);
+  if (props.vt_motorway === 1 || props.vt_rdctg === '高速自動車国道等') return null;
+  if ((code >= 2721 && code <= 2724) || (code >= 2731 && code <= 2734)) return 'trail';
+  if (props.vt_rdctg === '国道' || props.vt_rdctg === '都道府県道' || props.vt_rdctg === '主要道路') return 'major';
+  if (props.vt_rnkwidth === '3m未満') return 'track';
+  return 'road';
+}
+
+/** OpenMapTiles の transportation レイヤーの道の種類。歩けない道（高速道路・線路など）は null */
+export function osmKind(props: Record<string, unknown>): WayKind | null {
+  const cls = String(props.class ?? '');
+  switch (cls) {
+    case 'path':
+      return props.subclass === 'cycleway' ? 'road' : 'trail';
+    case 'track':
+      return 'track';
+    case 'minor':
+    case 'service':
+    case 'raceway':
+      return 'road';
+    case 'primary':
+    case 'secondary':
+    case 'tertiary':
+    case 'trunk':
+      return 'major';
+    default:
+      return null; // motorway, rail, ferry, busway など
+  }
+}
 
 type Pt = { x: number; y: number };
 
@@ -90,47 +124,57 @@ function toLngLat(p: Pt, x: number, y: number, z: number, extent: number): LngLa
   return [lng, lat];
 }
 
-export function decodeRoadTile(buf: ArrayBuffer | Uint8Array, x: number, y: number, z: number): RouteLine[] {
+function decodeLines(
+  buf: ArrayBuffer | Uint8Array,
+  x: number,
+  y: number,
+  z: number,
+  layerName: string,
+  kindOf: (props: Record<string, unknown>) => WayKind | null,
+): RouteLine[] {
   const tile = new VectorTile(new PbfReader(buf instanceof Uint8Array ? buf : new Uint8Array(buf)));
-  const layer = tile.layers.RdCL;
+  const layer = tile.layers[layerName];
   if (!layer) return [];
   const lines: RouteLine[] = [];
   for (let i = 0; i < layer.length; i++) {
     const f = layer.feature(i);
     if (f.type !== 2) continue;
-    const trail = TRAIL_CODES.has(Number(f.properties.vt_code));
+    const kind = kindOf(f.properties);
+    if (!kind) continue;
     for (const geom of f.loadGeometry()) {
       for (const part of clipLine(geom, f.extent)) {
-        lines.push({ coords: part.map((p) => toLngLat(p, x, y, z, f.extent)), trail });
+        lines.push({ coords: part.map((p) => toLngLat(p, x, y, z, f.extent)), kind });
       }
     }
   }
   return lines;
 }
 
-export function roadTileUrls(bounds: [number, number, number, number]): { url: string; x: number; y: number }[] {
-  const r = tileRange(bounds, ROAD_TILE_ZOOM);
+export const decodeRoadTile = (buf: ArrayBuffer | Uint8Array, x: number, y: number, z: number) =>
+  decodeLines(buf, x, y, z, 'RdCL', gsiKind);
+export const decodeOsmTile = (buf: ArrayBuffer | Uint8Array, x: number, y: number, z: number) =>
+  decodeLines(buf, x, y, z, 'transportation', osmKind);
+
+function tileUrls(template: string, z: number, bounds: [number, number, number, number]) {
+  const r = tileRange(bounds, z);
   const out: { url: string; x: number; y: number }[] = [];
   for (let x = r.minX; x <= r.maxX; x++) {
     for (let y = r.minY; y <= r.maxY; y++) {
-      out.push({
-        url: ROAD_TILE_URL.replace('{z}', String(ROAD_TILE_ZOOM)).replace('{x}', String(x)).replace('{y}', String(y)),
-        x,
-        y,
-      });
+      out.push({ url: template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), x, y });
     }
   }
   return out;
 }
 
-/** 範囲内の道・徒歩道をすべて取得（同時4接続） */
-export async function loadRoadLines(
-  bounds: [number, number, number, number],
+export function roadTileUrls(bounds: [number, number, number, number]) {
+  return tileUrls(ROAD_TILE_URL, ROAD_TILE_ZOOM, bounds);
+}
+
+async function fetchTiles(
+  tiles: { url: string; x: number; y: number }[],
+  handle: (buf: ArrayBuffer, x: number, y: number) => void,
   onProgress?: (done: number, total: number) => void,
-): Promise<{ lines: RouteLine[]; failed: number }> {
-  const tiles = roadTileUrls(bounds);
-  if (tiles.length > MAX_ROAD_TILES) throw new Error('範囲が広すぎます（目的地が遠すぎます）');
-  const lines: RouteLine[] = [];
+): Promise<number> {
   let next = 0;
   let done = 0;
   let failed = 0;
@@ -139,7 +183,7 @@ export async function loadRoadLines(
       const t = tiles[next++];
       try {
         const res = await fetch(t.url, { signal: AbortSignal.timeout(15_000) });
-        if (res.ok) lines.push(...decodeRoadTile(await res.arrayBuffer(), t.x, t.y, ROAD_TILE_ZOOM));
+        if (res.ok) handle(await res.arrayBuffer(), t.x, t.y);
         else if (res.status !== 404) failed++;
       } catch {
         failed++;
@@ -148,15 +192,91 @@ export async function loadRoadLines(
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
-  return { lines, failed };
+  return failed;
+}
+
+export interface PlaceLabel {
+  text: string;
+  lngLat: LngLat;
+}
+
+/** 範囲内の地理院の道・徒歩道と地名をすべて取得（同時4接続） */
+export async function loadRoadLines(
+  bounds: [number, number, number, number],
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ lines: RouteLine[]; labels: PlaceLabel[]; failed: number }> {
+  const tiles = roadTileUrls(bounds);
+  if (tiles.length > MAX_ROAD_TILES) throw new Error('範囲が広すぎます（目的地が遠すぎます）');
+  const lines: RouteLine[] = [];
+  const labels: PlaceLabel[] = [];
+  const failed = await fetchTiles(
+    tiles,
+    (buf, x, y) => {
+      lines.push(...decodeRoadTile(buf, x, y, ROAD_TILE_ZOOM));
+      labels.push(...decodeLabels(buf, x, y, ROAD_TILE_ZOOM));
+    },
+    onProgress,
+  );
+  return { lines, labels, failed };
+}
+
+// ---------- OpenStreetMap（OpenFreeMap） ----------
+export const OSM_TILEJSON = 'https://tiles.openfreemap.org/planet';
+export const OSM_ZOOM = 14;
+export const OSM_ATTRIBUTION =
+  '<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">&copy; OpenStreetMap contributors</a>';
+const OSM_TEMPLATE_KEY = 'yama-map:osm-tiles';
+let osmTemplate: Promise<string | null> | null = null;
+
+/** OpenFreeMap のタイルURL（版ごとに変わるので TileJSON から取得。圏外では前回の値） */
+export function osmTileTemplate(): Promise<string | null> {
+  osmTemplate ??= (async () => {
+    try {
+      const res = await fetch(OSM_TILEJSON, { signal: AbortSignal.timeout(6000) });
+      const url = (await res.json()).tiles?.[0];
+      if (typeof url === 'string') {
+        try {
+          localStorage.setItem(OSM_TEMPLATE_KEY, url);
+        } catch {
+          /* noop */
+        }
+        return url;
+      }
+    } catch {
+      /* 圏外など */
+    }
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(OSM_TEMPLATE_KEY);
+    } catch {
+      /* noop */
+    }
+    if (!saved) osmTemplate = null; // 次回また取りに行く
+    return saved;
+  })();
+  return osmTemplate;
+}
+
+export async function osmTileUrls(bounds: [number, number, number, number]) {
+  const template = await osmTileTemplate();
+  return template ? tileUrls(template, OSM_ZOOM, bounds) : [];
+}
+
+/** 範囲内の OpenStreetMap の道をすべて取得。使えなければ空 */
+export async function loadOsmLines(bounds: [number, number, number, number]): Promise<RouteLine[]> {
+  const tiles = await osmTileUrls(bounds);
+  if (!tiles.length || tiles.length > 100) return [];
+  const lines: RouteLine[] = [];
+  await fetchTiles(tiles, (buf, x, y) => lines.push(...decodeOsmTile(buf, x, y, OSM_ZOOM)));
+  return lines;
 }
 
 /** 注記（山名・温泉・小屋などの地名）を取り出す */
-export function decodeLabels(buf: ArrayBuffer | Uint8Array, x: number, y: number, z: number): { text: string; lngLat: LngLat }[] {
+export function decodeLabels(buf: ArrayBuffer | Uint8Array, x: number, y: number, z: number): PlaceLabel[] {
   const tile = new VectorTile(new PbfReader(buf instanceof Uint8Array ? buf : new Uint8Array(buf)));
   const layer = tile.layers.Anno;
   if (!layer) return [];
-  const out: { text: string; lngLat: LngLat }[] = [];
+  const out: PlaceLabel[] = [];
   for (let i = 0; i < layer.length; i++) {
     const f = layer.feature(i);
     const text = String(f.properties.vt_text ?? '').trim();

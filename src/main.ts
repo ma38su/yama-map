@@ -36,8 +36,9 @@ import {
   type RoutePosition,
 } from './nav/eta';
 import {
-  buildAutoRoute,
   buildGpxRoute,
+  buildRouteOptions,
+  chooseOption,
   insertVia,
   loadSavedRoute,
   makePoint,
@@ -47,8 +48,10 @@ import {
   saveRoute,
   type ActiveRoute,
   type Mark,
-  type MarkKind,
   type PlanPoint,
+  type PointKind,
+  type RouteOption,
+  trailShare,
 } from './nav/plan';
 import { sunTimes } from './nav/sun';
 import {
@@ -60,7 +63,7 @@ import {
   planTiles,
   storageUsage,
 } from './offline/download';
-import { nearestPlaceName } from './route/roadTiles';
+import { OSM_ATTRIBUTION, nearestPlaceName, osmTileUrls } from './route/roadTiles';
 import { deleteTrack, getPoints, listTracks, putTrack, type Track, type TrackPoint } from './track/db';
 import { parseGpx, toGpx } from './track/gpx';
 import { TrackRecorder } from './track/recorder';
@@ -181,9 +184,27 @@ const pointFC = (c: LngLat | null): FeatureCollection =>
 const src = (id: string) => map.getSource(id) as GeoJSONSource | undefined;
 
 map.on('load', () => {
-  for (const id of ['route', 'route-done', 'track', 'cursor']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  for (const id of ['route-alt', 'route', 'route-done', 'track', 'cursor']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  // OpenStreetMap 由来のルートを表示しているときだけ出典を出すためのソース
+  map.addSource('osm-credit', { type: 'geojson', data: emptyFC, attribution: OSM_ATTRIBUTION });
   const casing = { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 };
   const round = { 'line-join': 'round' as const, 'line-cap': 'round' as const };
+  // ほかのルート候補（灰色の破線）。タップで切り替え
+  map.addLayer({
+    id: 'route-alt-casing',
+    type: 'line',
+    source: 'route-alt',
+    layout: round,
+    paint: { 'line-color': '#ffffff', 'line-width': 7, 'line-opacity': 0.8 },
+  });
+  map.addLayer({
+    id: 'route-alt',
+    type: 'line',
+    source: 'route-alt',
+    layout: round,
+    paint: { 'line-color': '#64748b', 'line-width': 4, 'line-dasharray': [1.5, 1] },
+  });
+  map.addLayer({ id: 'osm-credit', type: 'circle', source: 'osm-credit', layout: { visibility: 'none' } });
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: round, paint: casing });
   map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: round, paint: { 'line-color': '#2563eb', 'line-width': 5 } });
   map.addLayer({ id: 'route-done', type: 'line', source: 'route-done', layout: round, paint: { 'line-color': '#93a3b8', 'line-width': 5 } });
@@ -231,6 +252,21 @@ function fitTo(coords: LngLat[]) {
 const popup = new Popup({ closeButton: false, maxWidth: '300px', offset: 8 });
 let popupSeq = 0;
 map.on('click', async (e) => {
+  // ほかのルート候補の線をタップしたら、その候補に切り替える（指で押しやすいよう周囲12pxも判定）
+  const r12 = 12;
+  const hit = map.getLayer('route-alt')
+    ? map.queryRenderedFeatures(
+        [
+          [e.point.x - r12, e.point.y - r12],
+          [e.point.x + r12, e.point.y + r12],
+        ],
+        { layers: ['route-alt'] },
+      )[0]
+    : undefined;
+  if (hit && route?.options) {
+    selectOption(Number(hit.properties?.i));
+    return;
+  }
   const lngLat: LngLat = [e.lngLat.lng, e.lngLat.lat];
   const seq = ++popupSeq;
   const box = h('div', 'pp');
@@ -244,7 +280,7 @@ map.on('click', async (e) => {
     ['start', '出発地'],
     ['via', '経由地'],
     ['dest', '目的地'],
-  ] as [MarkKind, string][]) {
+  ] as [PointKind, string][]) {
     const b = h('button', kind, label);
     b.type = 'button';
     b.addEventListener('click', () => void choosePoint(kind, lngLat, placeName ?? undefined));
@@ -404,28 +440,46 @@ function setRoute(r: ActiveRoute | null, fit = false) {
   updateNav();
 }
 
+function selectOption(i: number) {
+  if (!route?.options?.[i] || route.chosen === i) return;
+  setRoute(chooseOption(route, i));
+  const o = route.options![i];
+  const span = routeSpan(o);
+  status(`「${o.label}」に切り替えました：${formatDistance(span.to - span.from)}`);
+}
+
 function renderRoute() {
   src('route')?.setData(lineFC(route?.coords ?? []));
+  const alts: FeatureCollection = {
+    type: 'FeatureCollection',
+    features: (route?.options ?? [])
+      .map((o, i) => ({ o, i }))
+      .filter(({ i }) => i !== route?.chosen)
+      .map(({ o, i }) => ({ type: 'Feature' as const, properties: { i }, geometry: { type: 'LineString' as const, coordinates: o.coords } })),
+  };
+  src('route-alt')?.setData(alts);
+  if (map.getLayer('osm-credit')) map.setLayoutProperty('osm-credit', 'visibility', route?.options?.some((o) => o.source === 'osm') ? 'visible' : 'none');
   for (const m of markers) m.remove();
   const list: (PlanPoint | Mark)[] = route ? route.marks : pending;
   let viaNo = 0;
   markers = list.map((m) => {
     const el = h('div', `mk ${m.kind}`);
-    el.append(h('div', 'pin', m.kind === 'start' ? 'S' : m.kind === 'dest' ? 'G' : String(++viaNo)), h('div', 'tag', m.name));
+    const pin = m.kind === 'start' ? 'S' : m.kind === 'dest' ? 'G' : m.kind === 'pass' ? '' : String(++viaNo);
+    el.append(h('div', 'pin', pin), h('div', 'tag', m.name));
     el.addEventListener('click', (ev) => {
       ev.stopPropagation();
       openSheet();
     });
-    return new Marker({ element: el, anchor: 'top', offset: [0, -14] }).setLngLat(m.lngLat).addTo(map);
+    return new Marker({ element: el, anchor: 'top', offset: [0, m.kind === 'pass' ? -7 : -14] }).setLngLat(m.lngLat).addTo(map);
   });
   $<HTMLButtonElement>('btn-fit').disabled = !route;
 }
 
-async function choosePoint(kind: MarkKind, lngLat: LngLat, name?: string) {
+async function choosePoint(kind: PointKind, lngLat: LngLat, name?: string) {
   popup.remove();
   if (building) return;
   const pt = makePoint(kind, lngLat, name);
-  if (route?.source === 'gpx') {
+  if (route?.kind === 'gpx') {
     const placed = placeOnRoute(route, pt);
     if (placed) {
       setRoute(placed);
@@ -434,7 +488,7 @@ async function choosePoint(kind: MarkKind, lngLat: LngLat, name?: string) {
     }
     if (!confirm('読み込んだルートから離れています。\n道に沿った新しいルートを作りますか？')) return;
     const start = route.marks.find((m) => m.kind === 'start');
-    pending = start ? [{ id: start.id, kind: start.kind, name: start.name, lngLat: start.lngLat }] : [];
+    pending = start ? [{ id: start.id, kind: 'start', name: start.name, lngLat: start.lngLat }] : [];
     route = null;
   }
   let pts = route?.points ? [...route.points] : [...pending];
@@ -464,15 +518,16 @@ async function choosePoint(kind: MarkKind, lngLat: LngLat, name?: string) {
 async function rebuild(pts: PlanPoint[]) {
   building = true;
   try {
-    const r = await buildAutoRoute(pts, elevation, (msg) => {
+    const r = await buildRouteOptions(pts, elevation, (msg) => {
       progressMsg = msg;
       renderStatus();
     });
     progressMsg = '';
     setRoute(r, true);
     const span = routeSpan(r);
+    const n = r.options?.length ?? 1;
     if (r.straightLegs) status('道が見つからない区間は直線で結んでいます（到着予想は不正確です）', true);
-    else status(`ルートを作成しました：${formatDistance(span.to - span.from)}`);
+    else status(n > 1 ? `ルート候補が${n}つ見つかりました。カードで比べて選べます` : `ルートを作成しました：${formatDistance(span.to - span.from)}`);
     openSheet();
   } catch (err) {
     pending = pts;
@@ -487,7 +542,7 @@ async function rebuild(pts: PlanPoint[]) {
 
 async function removeMark(id: string) {
   if (!route) return;
-  if (route.source === 'auto' && route.points) await rebuild(route.points.filter((p) => p.id !== id));
+  if (route.kind === 'auto' && route.points) await rebuild(route.points.filter((p) => p.id !== id));
   else setRoute({ ...route, marks: route.marks.filter((m) => m.id !== id) });
 }
 
@@ -505,6 +560,15 @@ function exportRoute() {
     r.marks.map((m) => ({ lng: m.lngLat[0], lat: m.lngLat[1], name: m.name })),
   );
   download(`${r.name.replace(/[\\/:*?"<>|\s→]+/g, '_')}.gpx`, gpx);
+}
+
+/** 読み込んだGPXの出発地・目的地の間で、道沿いのルート候補を探す */
+async function searchAlternativesForGpx() {
+  if (!route) return;
+  const start = route.marks.find((m) => m.kind === 'start');
+  const dest = route.marks.find((m) => m.kind === 'dest');
+  if (!start || !dest) return;
+  await rebuild([makePoint('start', start.lngLat, start.name), makePoint('dest', dest.lngLat, dest.name)]);
 }
 
 async function loadGpxText(text: string) {
@@ -638,10 +702,52 @@ function navRow(label: string, row: Row, primary: boolean, sunset: number | null
   return el;
 }
 
+/** 候補ごとの標準時間・標高（候補は変わらないのでキャッシュ）と、現在のペースでの所要時間 */
+const optionCache = new WeakMap<RouteOption, { tl: RouteTimeline; from: number; to: number; gain: { ascent: number; descent: number } }>();
+function optionInfo(o: RouteOption, factors: Nav['factors']) {
+  let c = optionCache.get(o);
+  if (!c) {
+    const tl = new RouteTimeline(o.dists, o.eles);
+    const span = routeSpan(o);
+    c = { tl, from: span.from, to: span.to, gain: tl.gain(span.from, span.to) };
+    optionCache.set(o, c);
+  }
+  return { est: estimate(c.tl, c.from, c.to, factors), gain: c.gain, dist: c.to - c.from };
+}
+
+function routeChips(nav: Nav): HTMLElement | null {
+  const opts = route?.options;
+  if (!opts || opts.length < 2) return null;
+  const wrap = h('div', 'chips');
+  wrap.setAttribute('role', 'radiogroup');
+  wrap.setAttribute('aria-label', 'ルート候補');
+  opts.forEach((o, i) => {
+    const info = optionInfo(o, nav.factors);
+    const share = trailShare(o);
+    const b = h('button', 'chip-opt');
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(i === route!.chosen));
+    b.append(
+      h('span', 'chip-label', o.label),
+      h('span', 'chip-time', fmtHM(info.est.totalMin)),
+      h('span', 'chip-meta', `${formatDistance(info.dist)}${share != null ? ` · 登山道${Math.round(share * 100)}%` : ''}`),
+    );
+    b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      selectOption(i);
+    });
+    wrap.append(b);
+  });
+  return wrap;
+}
+
 function renderCard(nav: Nav | null) {
   const card = $('card');
   card.replaceChildren();
   if (nav && route) {
+    const chips = routeChips(nav);
+    if (chips) card.append(chips);
     const { next, dest } = nav;
     if (next && dest && next !== dest) card.append(navRow('次', next, false, nav.sunset));
     if (dest) card.append(navRow('目的地', dest, true, nav.sunset));
@@ -740,9 +846,11 @@ function renderBody(nav: Nav | null) {
       b.addEventListener('click', fn);
       actions.append(b);
     };
+    if (route.kind === 'gpx') btn('道沿いのルート候補を探す', () => void searchAlternativesForGpx(), 'primary');
     btn('GPXで保存', exportRoute);
     btn('ルートを消す', clearRoute, 'danger');
   }
+  renderOptions(nav);
 
   updateProfile(nav);
 
@@ -776,6 +884,49 @@ function renderBody(nav: Nav | null) {
     ? `「標準比」は地形（距離と勾配）から求めた標準タイムに対して何倍かかっているか。1より小さいほど速いペースです。登り・平坦・下りそれぞれの実績を使い、休憩は歩行1時間あたり約${Math.round(p.factors.rest * 60)}分の見込みで到着予想に含めています。`
     : '記録を開始すると、歩いた実績（登り・平坦・下りの速さ、休憩の取り方）から到着予想を自動で調整します。';
   for (const b of $('pace-preset').querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.pace));
+}
+
+function renderOptions(nav: Nav | null) {
+  const sec = $('sec-options');
+  const list = $('options');
+  list.replaceChildren();
+  const opts = route?.options;
+  sec.hidden = !opts || opts.length < 2 || !nav;
+  if (!opts || !nav) return;
+  opts.forEach((o, i) => {
+    const info = optionInfo(o, nav.factors);
+    const share = trailShare(o);
+    const li = h('li', `opt${i === route!.chosen ? ' chosen' : ''}`);
+    const head = h('div', 'opt-head');
+    head.append(h('span', 'opt-label', o.label), h('span', 'opt-time', `${fmtHM(info.est.totalMin)}（休憩込み）`));
+    const kinds = o.byKind;
+    const total = kinds.trail + kinds.track + kinds.road + kinds.major || 1;
+    const bar = h('div', 'kind-bar');
+    for (const k of ['trail', 'track', 'road', 'major'] as const) {
+      if (kinds[k] <= 0) continue;
+      const seg = h('span', `k-${k}`);
+      seg.style.width = `${(kinds[k] / total) * 100}%`;
+      bar.append(seg);
+    }
+    const detail = h(
+      'div',
+      'opt-detail',
+      `${formatDistance(info.dist)} · ↑${Math.round(info.gain.ascent)}m ↓${Math.round(info.gain.descent)}m · 標準 ${fmtHM(info.est.stdMin)}`,
+    );
+    const kindText = h(
+      'div',
+      'opt-kinds',
+      share == null
+        ? ''
+        : `登山道 ${formatDistance(kinds.trail)} / 林道・細道 ${formatDistance(kinds.track)} / 車道 ${formatDistance(kinds.road + kinds.major)}`,
+    );
+    const src = o.source === 'osm' ? 'データ: OpenStreetMap' : o.source === 'gsi' ? 'データ: 国土地理院' : '';
+    const same = (o.sameAs ?? []).map((x) => (x === 'OpenStreetMap' ? 'OpenStreetMapでも同じ経路' : `「${x}」と同じ経路`));
+    const srcText = h('div', 'opt-src', [src, ...same].filter(Boolean).join('・'));
+    li.append(head, detail, bar, kindText, srcText);
+    li.addEventListener('click', () => selectOption(i));
+    list.append(li);
+  });
 }
 
 // ---------- 標高グラフ ----------
@@ -855,7 +1006,17 @@ for (const p of PRESETS) {
       renderStatus();
       const res = await fetch(p.file);
       if (!res.ok) throw new Error('ルートを読み込めませんでした');
-      await loadGpxText(await res.text());
+      const text = await res.text();
+      // まずは道データからルート候補を作る（登山道優先・別ルートなどを比べられる）。
+      // 圏外などで作れなければ、保存してあるGPXのルートを使う
+      const gpx = parseGpx(text);
+      const pts = gpx.lines.flatMap((l) => l.points);
+      const named = (i: number) => gpx.waypoints.find((w) => distance([w.lng, w.lat], [pts[i].lng, pts[i].lat]) < 100)?.name;
+      const a = pts[0];
+      const b = pts[pts.length - 1];
+      setRoute(null);
+      await rebuild([makePoint('start', [a.lng, a.lat], named(0)), makePoint('dest', [b.lng, b.lat], named(pts.length - 1))]);
+      if (!route) await loadGpxText(text);
       openSheet();
     } catch (err) {
       status(err instanceof Error ? err.message : String(err), true);
@@ -1033,7 +1194,8 @@ offlineBtn.addEventListener('click', async () => {
     bounds = viewBounds([c.lng, c.lat], map.getZoom(), canvas.clientWidth, canvas.clientHeight);
   }
   const layers = downloadLayers(BASE_LAYERS[settings.base].url, 16);
-  const n = estimateTiles(bounds, layers);
+  const osmUrls = (await osmTileUrls(bounds).catch(() => [])).map((t) => t.url);
+  const n = estimateTiles(bounds, layers) + osmUrls.length;
   if (n > MAX_TILES) {
     alert(`範囲が広すぎます（${n.toLocaleString()}枚）。地図を拡大してから保存してください。`);
     return;
@@ -1046,7 +1208,7 @@ offlineBtn.addEventListener('click', async () => {
   offlineProgress.max = n;
   offlineProgress.value = 0;
   const result = await downloadTiles(
-    planTiles(bounds, layers),
+    [...planTiles(bounds, layers), ...osmUrls],
     (p) => {
       offlineProgress.value = p.done;
       offlineInfo.textContent = `保存中… ${p.done.toLocaleString()} / ${p.total.toLocaleString()}`;

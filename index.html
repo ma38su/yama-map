@@ -23,6 +23,11 @@
       <button id="sheet-handle" type="button" aria-label="詳細を開く" aria-expanded="false"><span></span></button>
       <div id="card"></div>
       <div id="sheet-body" hidden>
+        <section id="sec-options" hidden>
+          <h3>ルート候補（タップで切り替え）</h3>
+          <ol id="options" class="options"></ol>
+          <p class="note">地図上の灰色の破線もほかの候補です。線をタップしても切り替えられます。</p>
+        </section>
         <section id="sec-plan">
           <h3>行程</h3>
           <ol id="timeline" class="timeline"></ol>
@@ -98,6 +103,9 @@
         <section class="about">
           <p>
             地図・標高・道データ: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（地理院タイル）</a>
+          </p>
+          <p>
+            道データ（ルート候補）: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>（<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> / OpenMapTiles）
           </p>
           <p class="note">到着予想は目安です。道の状況・天候・体調で大きく変わります。紙の地図とコンパス、登山届の提出もお忘れなく。</p>
         </section>

@@ -707,3 +707,141 @@ dialog#menu::backdrop {
   white-space: nowrap;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
+
+/* ---------- ルート候補 ---------- */
+.chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin: 2px -14px 4px;
+  padding: 2px 14px 6px;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+.chips::-webkit-scrollbar {
+  display: none;
+}
+.chip-opt {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 0 8px;
+  min-height: 52px;
+  padding: 6px 12px;
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  text-align: left;
+}
+.chip-opt[aria-checked='true'] {
+  border-color: #2563eb;
+  background: #eef4ff;
+  box-shadow: inset 0 0 0 1px #2563eb;
+}
+.chip-label {
+  font-size: 13px;
+  font-weight: 700;
+}
+.chip-time {
+  font-size: 17px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  justify-self: end;
+}
+.chip-meta {
+  grid-column: 1 / -1;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.opt {
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.opt.chosen {
+  border-color: #2563eb;
+  background: #f5f8ff;
+}
+.opt-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.opt-label {
+  font-weight: 800;
+  font-size: 15px;
+}
+.opt-time {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.opt-detail,
+.opt-kinds,
+.opt-src {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.opt-src:empty,
+.opt-kinds:empty {
+  display: none;
+}
+.kind-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 6px;
+  background: var(--line);
+}
+.kind-bar span {
+  display: block;
+  height: 100%;
+}
+.k-trail {
+  background: #16805c;
+}
+.k-track {
+  background: #d4a017;
+}
+.k-road {
+  background: #94a3b8;
+}
+.k-major {
+  background: #64748b;
+}
+
+/* 通過点（ルート沿いの温泉・小屋・山頂など） */
+.mk.pass .pin {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 2px #2563eb, 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.mk.pass .tag {
+  font-weight: 600;
+  font-size: 11px;
+}
+.timeline li.pass .dot {
+  width: 16px;
+  height: 16px;
+  margin: 4px 3px 0;
+  background: #fff;
+  border-width: 2px;
+}
+.timeline li.pass .name {
+  font-weight: 600;
+}

@@ -1,46 +1,67 @@
 /**
  * 行程（ルートと 出発地・経由地・目的地）の管理。
- *  - auto: 地図で選んだ地点の間を、国土地理院の道・徒歩道データでルート検索してつなぐ
+ *  - auto: 地図で選んだ地点の間を、道・登山道データでルート検索してつなぐ。候補を複数作って選べる
  *  - gpx : 読み込んだGPXの経路をそのまま使い、地点は経路上に投影する
  */
 import { cumulativeDistances, densify, distance, type LngLat } from '../geo';
-import { loadRoadLines } from '../route/roadTiles';
-import { TrailGraph } from '../route/trailRouter';
+import { loadOsmLines, loadRoadLines, type PlaceLabel } from '../route/roadTiles';
+import { PROFILES, TrailGraph, WAY_KINDS, overlapRatio, type CostProfile, type RouteLine, type WayKind } from '../route/trailRouter';
 import type { GpxData } from '../track/gpx';
 import { projectOnRoute } from './eta';
 
-export type MarkKind = 'start' | 'via' | 'dest';
+/** start/via/dest は自分で選んだ地点、pass はルート沿いの地名（温泉・小屋・山頂など）から自動で付けた通過点 */
+export type MarkKind = 'start' | 'via' | 'dest' | 'pass';
+export type PointKind = Exclude<MarkKind, 'pass'>;
 
 export interface PlanPoint {
   id: string;
-  kind: MarkKind;
+  kind: PointKind;
   name: string;
   lngLat: LngLat;
 }
 
-export interface Mark extends PlanPoint {
+export interface Mark {
+  id: string;
+  kind: MarkKind;
+  name: string;
+  lngLat: LngLat;
   /** 経路の始点からの距離 (m) */
   along: number;
 }
 
-export interface ActiveRoute {
-  name: string;
-  source: 'auto' | 'gpx';
+export type DataSource = 'gsi' | 'osm' | 'gpx';
+
+/** ルート候補 */
+export interface RouteOption {
+  label: string;
+  source: DataSource;
   coords: LngLat[];
   eles: (number | null)[];
   dists: number[];
   /** along の昇順 */
   marks: Mark[];
-  /** auto: ルート検索に使った地点（出発地, 経由地..., 目的地） */
-  points?: PlanPoint[];
+  /** 道の種類ごとの距離 (m) */
+  byKind: Record<WayKind, number>;
   /** 道が見つからず直線で結んだ区間の数 */
   straightLegs: number;
+  /** ほぼ同じ経路になったほかの探し方（「最短距離」「OpenStreetMap」など）。経路の確からしさの目安 */
+  sameAs?: string[];
+}
+
+export interface ActiveRoute extends RouteOption {
+  name: string;
+  kind: 'auto' | 'gpx';
+  /** auto: ルート検索に使った地点（出発地, 経由地..., 目的地） */
+  points?: PlanPoint[];
+  /** auto: ルート候補。選んでいるのは options[chosen] */
+  options?: RouteOption[];
+  chosen?: number;
 }
 
 export type ElevationFn = (lng: number, lat: number) => Promise<number | null>;
 
 const newId = () => Math.random().toString(36).slice(2, 10);
-export const makePoint = (kind: MarkKind, lngLat: LngLat, name?: string): PlanPoint => ({
+export const makePoint = (kind: PointKind, lngLat: LngLat, name?: string): PlanPoint => ({
   id: newId(),
   kind,
   lngLat,
@@ -92,52 +113,174 @@ async function withElevations(coords: LngLat[], elevation: ElevationFn): Promise
   return Promise.all(coords.map((c) => elevation(c[0], c[1])));
 }
 
-/** 地点の間を道・徒歩道沿いにつないだルートを作る */
-export async function buildAutoRoute(
+/** 地名のうち、通過点にする価値があるもの（川・沢の名前などは除く） */
+const PLACE_RE = /(温泉|の湯|湯|小屋|山荘|ヒュッテ|避難小屋|峠|岳|山|峰|ノ頭|の頭|滝|沼|池|湖|乗越|分岐|キャンプ場|登山口|神社|駐車場)$/;
+
+/**
+ * ルート沿い（offset m 以内）にある地名を通過点にする。
+ * 出発地・経由地・目的地の近く（100m以内）や、同じ名前の重複は除く。
+ */
+export function detectPassPoints(
+  coords: LngLat[],
+  dists: number[],
+  labels: PlaceLabel[],
+  existing: { along: number; name: string }[],
+  offset = 80,
+): Mark[] {
+  const out: Mark[] = [];
+  const seen = new Set(existing.map((m) => m.name));
+  const cands = labels
+    .filter((l) => PLACE_RE.test(l.text))
+    .map((l) => ({ l, pos: projectOnRoute(coords, dists, l.lngLat) }))
+    .filter((c) => c.pos && c.pos.offset <= offset)
+    .sort((a, b) => a.pos!.offset - b.pos!.offset);
+  for (const { l, pos } of cands) {
+    const along = pos!.along;
+    if (seen.has(l.text)) continue;
+    if (existing.some((m) => Math.abs(m.along - along) < 100)) continue;
+    if (out.some((m) => Math.abs(m.along - along) < 80)) continue;
+    seen.add(l.text);
+    out.push({ id: newId(), kind: 'pass', name: l.text, lngLat: l.lngLat, along });
+  }
+  return out;
+}
+
+const zeroKinds = (): Record<WayKind, number> => ({ trail: 0, track: 0, road: 0, major: 0 });
+
+interface RawCandidate {
+  label: string;
+  source: DataSource;
+  legs: LngLat[][];
+  edges: Set<number>;
+  byKind: Record<WayKind, number>;
+  straightLegs: number;
+  length: number;
+}
+
+function routeAllLegs(
+  graph: TrailGraph | null,
+  pts: PlanPoint[],
+  profile: CostProfile,
+  penalty?: Map<number, number>,
+): Omit<RawCandidate, 'label' | 'source'> {
+  const legs: LngLat[][] = [];
+  const edges = new Set<number>();
+  const byKind = zeroKinds();
+  let straightLegs = 0;
+  let length = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1].lngLat;
+    const b = pts[i].lngLat;
+    const r = graph?.route(a, b, { profile, maxSnap: 300, penalty });
+    if (r && r.snapFrom < 300 && r.snapTo < 300) {
+      legs.push(r.coords);
+      r.edges.forEach((e) => edges.add(e));
+      for (const k of WAY_KINDS) byKind[k] += r.byKind[k];
+      length += r.length + r.snapFrom + r.snapTo;
+    } else {
+      legs.push([a, b]);
+      straightLegs++;
+      length += distance(a, b);
+    }
+  }
+  return { legs, edges, byKind, straightLegs, length };
+}
+
+/**
+ * 地点の間を道・登山道沿いにつないだルート候補を作る。
+ *  1. 登山道優先（国土地理院の道データ）
+ *  2. 別ルート（1 で通った道を避けて再検索）
+ *  3. 最短距離（車道・林道も同じ扱い）
+ *  4. 登山道優先（OpenStreetMap のデータ）
+ * ほとんど同じ経路になった候補はまとめる。
+ */
+export async function buildRouteOptions(
   points: PlanPoint[],
   elevation: ElevationFn,
   onProgress?: (msg: string) => void,
 ): Promise<ActiveRoute> {
   const pts = normalizePoints(points);
   if (pts.length < 2) throw new Error('出発地と目的地が必要です');
+  const bounds = boundsAround(pts.map((p) => p.lngLat));
   onProgress?.('道のデータを読み込み中…');
-  const { lines } = await loadRoadLines(boundsAround(pts.map((p) => p.lngLat)), (d, t) =>
-    onProgress?.(`道のデータを読み込み中… ${d}/${t}`),
-  );
+  const [gsi, osmLines] = await Promise.all([
+    loadRoadLines(bounds, (d, t) => onProgress?.(`道のデータを読み込み中… ${d}/${t}`)),
+    loadOsmLines(bounds).catch(() => [] as RouteLine[]),
+  ]);
   onProgress?.('ルートを計算中…');
-  const graph = lines.length ? new TrailGraph(lines) : null;
-  const coords: LngLat[] = [];
-  const legEnds: number[] = [];
-  let straightLegs = 0;
-  for (let i = 1; i < pts.length; i++) {
-    const a = pts[i - 1].lngLat;
-    const b = pts[i].lngLat;
-    const r = graph?.route(a, b, 300);
-    let leg: LngLat[];
-    if (r && r.snapFrom < 300 && r.snapTo < 300) leg = r.coords;
-    else {
-      leg = [a, b];
-      straightLegs++;
-    }
-    leg = densify(leg, 50);
-    coords.push(...(coords.length ? leg.slice(1) : leg));
-    legEnds.push(coords.length - 1);
+  const gsiGraph = gsi.lines.length ? new TrailGraph(gsi.lines) : null;
+  const osmGraph = osmLines.length ? new TrailGraph(osmLines) : null;
+
+  const raw: RawCandidate[] = [];
+  const walk = routeAllLegs(gsiGraph, pts, PROFILES.walk);
+  raw.push({ label: '登山道優先', source: 'gsi', ...walk });
+  if (gsiGraph && walk.straightLegs === 0) {
+    const penalty = new Map<number, number>();
+    for (const e of walk.edges) penalty.set(e, 4);
+    raw.push({ label: '別ルート', source: 'gsi', ...routeAllLegs(gsiGraph, pts, PROFILES.walk, penalty) });
+    raw.push({ label: '最短距離', source: 'gsi', ...routeAllLegs(gsiGraph, pts, PROFILES.short) });
   }
-  const dists = cumulativeDistances(coords);
+  if (osmGraph) {
+    const osm = routeAllLegs(osmGraph, pts, PROFILES.walk);
+    if (osm.straightLegs < walk.straightLegs || osm.straightLegs === 0) {
+      raw.push({ label: '登山道優先（OSM）', source: 'osm', ...osm });
+    }
+  }
+
+  // 直線で結ぶ区間が少ない候補を先に。似た候補・遠回りすぎる候補は除く
+  raw.sort((a, b) => a.straightLegs - b.straightLegs);
+  const kept: (RawCandidate & { flat: LngLat[]; sameAs: string[] })[] = [];
+  const base = raw[0];
+  for (const c of raw) {
+    const flat = c.legs.flatMap((leg, i) => (i === 0 ? leg : leg.slice(1)));
+    if (kept.length && c.straightLegs > base.straightLegs) continue;
+    if (kept.length && c.length > base.length * 1.8 + 500) continue;
+    const same = kept.find((k) => overlapRatio(flat, k.flat) > 0.85 && overlapRatio(k.flat, flat) > 0.85);
+    if (same) {
+      same.sameAs.push(c.source === 'osm' && same.source !== 'osm' ? 'OpenStreetMap' : c.label);
+      continue;
+    }
+    // 「別ルート」は中身に合わせて名前を付ける
+    let label = c.label;
+    if (label === '別ルート') {
+      const total = WAY_KINDS.reduce((sum, k) => sum + c.byKind[k], 0) || 1;
+      label = c.byKind.trail / total < 0.3 ? '林道・車道経由' : '別の登山道';
+    }
+    kept.push({ ...c, label, flat, sameAs: [] });
+  }
   onProgress?.('標高を計算中…');
-  const eles = await withElevations(coords, elevation);
-  const marks: Mark[] = pts.map((p, i) => ({ ...p, along: i === 0 ? 0 : dists[legEnds[i - 1]] }));
-  const dest = pts[pts.length - 1];
-  return {
-    name: `${pts[0].name} → ${dest.name}`,
-    source: 'auto',
-    coords,
-    eles,
-    dists,
-    marks,
-    points: pts,
-    straightLegs,
-  };
+  const options: RouteOption[] = [];
+  for (const c of kept) {
+    const coords: LngLat[] = [];
+    const legEnds: number[] = [];
+    for (const leg of c.legs) {
+      const d = densify(leg, 50);
+      coords.push(...(coords.length ? d.slice(1) : d));
+      legEnds.push(coords.length - 1);
+    }
+    const dists = cumulativeDistances(coords);
+    const eles = await withElevations(coords, elevation);
+    const userMarks: Mark[] = pts.map((p, i) => ({ ...p, along: i === 0 ? 0 : dists[legEnds[i - 1]] }));
+    const pass = detectPassPoints(coords, dists, gsi.labels, userMarks);
+    options.push({
+      label: c.label,
+      source: c.source,
+      coords,
+      eles,
+      dists,
+      marks: [...userMarks, ...pass].sort((a, b) => a.along - b.along),
+      byKind: c.byKind,
+      straightLegs: c.straightLegs,
+      sameAs: c.sameAs,
+    });
+  }
+  return chooseOption({ name: `${pts[0].name} → ${pts[pts.length - 1].name}`, kind: 'auto', points: pts, options }, 0);
+}
+
+/** 候補 i を選ぶ */
+export function chooseOption(r: Pick<ActiveRoute, 'name' | 'kind' | 'points' | 'options'>, i: number): ActiveRoute {
+  const opt = r.options![i];
+  return { ...r, ...opt, name: r.name, kind: r.kind, chosen: i };
 }
 
 /** GPX からルートを作る。地点（wpt）は経路に近いものだけ経由地として使う */
@@ -159,10 +302,20 @@ export async function buildGpxRoute(gpx: GpxData, elevation: ElevationFn): Promi
     marks.push({ id: newId(), kind, name: w.name ?? '地点', lngLat: [w.lng, w.lat], along: pos.along });
   }
   if (!marks.some((m) => m.kind === 'start')) marks.push({ ...makePoint('start', coords[0], 'スタート'), along: 0 });
-  if (!marks.some((m) => m.kind === 'dest'))
-    marks.push({ ...makePoint('dest', coords[coords.length - 1], 'ゴール'), along: total });
+  if (!marks.some((m) => m.kind === 'dest')) marks.push({ ...makePoint('dest', coords[coords.length - 1], 'ゴール'), along: total });
   marks.sort((a, b) => a.along - b.along);
-  return { name: gpx.name ?? 'ルート', source: 'gpx', coords, eles, dists, marks, straightLegs: 0 };
+  return {
+    name: gpx.name ?? 'ルート',
+    label: 'GPX',
+    kind: 'gpx',
+    source: 'gpx',
+    coords,
+    eles,
+    dists,
+    marks,
+    byKind: zeroKinds(),
+    straightLegs: 0,
+  };
 }
 
 /** GPXルート上に地点を置く（経路に投影）。経路から maxOffset m 以上離れていたら null */
@@ -176,10 +329,16 @@ export function placeOnRoute(route: ActiveRoute, point: PlanPoint, maxOffset = 2
 }
 
 /** 行程に使う区間：出発地〜目的地 */
-export function routeSpan(route: ActiveRoute): { from: number; to: number } {
+export function routeSpan(route: RouteOption): { from: number; to: number } {
   const start = route.marks.find((m) => m.kind === 'start');
   const dest = route.marks.find((m) => m.kind === 'dest');
   return { from: start?.along ?? 0, to: dest?.along ?? route.dists[route.dists.length - 1] };
+}
+
+/** 登山道（徒歩道）を通る割合 0〜1。GPX など不明なら null */
+export function trailShare(o: RouteOption): number | null {
+  const total = WAY_KINDS.reduce((s, k) => s + o.byKind[k], 0);
+  return total > 0 ? o.byKind.trail / total : null;
 }
 
 // ---------- 保存 ----------
@@ -190,14 +349,20 @@ export function saveRoute(route: ActiveRoute | null): void {
     if (route) localStorage.setItem(KEY, JSON.stringify(route));
     else localStorage.removeItem(KEY);
   } catch {
-    /* 容量不足などは無視（再読み込みで消えるだけ） */
+    // 容量不足なら候補を省いて保存を試みる
+    try {
+      if (route) localStorage.setItem(KEY, JSON.stringify({ ...route, options: undefined, chosen: undefined }));
+    } catch {
+      /* あきらめる（再読み込みで消えるだけ） */
+    }
   }
 }
 
 export function loadSavedRoute(): ActiveRoute | null {
   try {
     const r = JSON.parse(localStorage.getItem(KEY) ?? 'null') as ActiveRoute | null;
-    return r && Array.isArray(r.coords) && r.coords.length > 1 ? r : null;
+    // 旧形式（kind/byKind なし）は読み込まない
+    return r && Array.isArray(r.coords) && r.coords.length > 1 && r.byKind ? r : null;
   } catch {
     return null;
   }
