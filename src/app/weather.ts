@@ -182,7 +182,7 @@ function drawClouds(center: [number, number], t: number): { url: string; coords:
       img.data[o] = grey;
       img.data[o + 1] = grey;
       img.data[o + 2] = grey + 4;
-      img.data[o + 3] = density * 200 * Math.min(1, c * 2);
+      img.data[o + 3] = density * 160 * Math.min(1, c * 2);
     }
   }
   ctx.putImageData(img, 0, 0);
@@ -224,10 +224,10 @@ export function addWeatherLayers(before?: string) {
  * 雲の画像は時刻が10分動くか、表示範囲のマス目が変わったときだけ描き直す
  */
 export function updateWeatherLayers(force = false) {
-  const show = settings.weather && settings.terrain;
+  const show = settings.weather && settings.weatherFx && settings.terrain;
   const layerOn = !!map.getLayer('weather-cloud');
   if (layerOn) map.setLayoutProperty('weather-cloud', 'visibility', show ? 'visible' : 'none');
-  updateRain(show ? centerWeather() : null);
+  updateRain(show);
   if (!show || !layerOn) return;
   const c = map.getCenter();
   const center: [number, number] = [Math.round(c.lng / WEATHER_CELL_DEG), Math.round(c.lat / WEATHER_CELL_DEG)];
@@ -241,7 +241,7 @@ export function updateWeatherLayers(force = false) {
 }
 map.on('moveend', () => updateWeatherLayers());
 hookDaylight({
-  cloud: () => (settings.weather ? (centerWeather()?.cloud ?? 0) / 100 : 0),
+  cloud: () => (settings.weather && settings.weatherFx ? (centerWeather()?.cloud ?? 0) / 100 : 0),
   after: () => updateWeatherLayers(),
 });
 
@@ -249,32 +249,66 @@ hookDaylight({
 const rainCanvas = document.createElement('canvas');
 rainCanvas.className = 'rain';
 map.getContainer().append(rainCanvas);
+/** 画面を区切るマスの数。マスごとに、その場所の予報で降るかどうかを決める */
+const FIELD_X = 6;
+const FIELD_Y = 10;
+/** 画面のマスごとの降水量 (mm/h) と雪かどうか */
+let field: { precip: number; snow: boolean }[] = [];
 let rainRaf = 0;
-let drops: { x: number; y: number; v: number; len: number }[] = [];
-let rainKind: { snow: boolean; slant: number } = { snow: false, slant: 0 };
+let drops: { x: number; y: number; v: number; len: number; r: number }[] = [];
+let slant = 0;
+let maxCount = 0;
 
-/** 降水量（mm/h）に合わせて雨粒（雪なら雪片）を降らせる。降っていなければ止める */
-function updateRain(w: WeatherAt | null) {
-  const precip = w?.precip ?? 0;
-  const count = precip < 0.1 ? 0 : Math.round(Math.min(500, 40 + precip * 120));
-  const snow = !!w?.code && ((w.code >= 71 && w.code <= 77) || w.code === 85 || w.code === 86);
-  // 風で斜めに降る（画面の向きに合わせる）
-  const windDir = (((w?.dir ?? 0) + 180 - map.getBearing()) * Math.PI) / 180;
-  rainKind = { snow, slant: Math.sin(windDir) * Math.min(1, (w?.wind ?? 0) / 8) * 0.5 };
-  if (count === 0) {
+const isSnow = (w: WeatherAt) => !!w.code && ((w.code >= 71 && w.code <= 77) || w.code === 85 || w.code === 86);
+const dropsFor = (precip: number) => (precip < 0.1 ? 0 : Math.min(500, 40 + precip * 120));
+
+/**
+ * 予報で降っている場所にだけ雨粒（雪なら雪片）を降らせる。画面をマスに区切り、
+ * マスの真ん中が地図のどこに当たるかを求めて、その場所の降水量で降らせる量を決める
+ */
+function updateRain(show: boolean) {
+  const w0 = rainCanvas.clientWidth || window.innerWidth;
+  const h0 = rainCanvas.clientHeight || window.innerHeight;
+  const t = weatherTime();
+  field = [];
+  let max = 0;
+  if (show) {
+    for (let gy = 0; gy < FIELD_Y; gy++) {
+      for (let gx = 0; gx < FIELD_X; gx++) {
+        const p = map.unproject([((gx + 0.5) / FIELD_X) * w0, ((gy + 0.5) / FIELD_Y) * h0]);
+        const w = weatherFor([p.lng, p.lat], t);
+        const cell = { precip: w?.precip ?? 0, snow: !!w && isSnow(w) };
+        field.push(cell);
+        max = Math.max(max, cell.precip);
+      }
+    }
+  }
+  maxCount = Math.round(dropsFor(max));
+  if (maxCount === 0) {
     drops = [];
     cancelAnimationFrame(rainRaf);
     rainRaf = 0;
     rainCanvas.hidden = true;
     return;
   }
+  // 風で斜めに降る（画面の向きに合わせる）
+  const w = centerWeather();
+  const windDir = (((w?.dir ?? 0) + 180 - map.getBearing()) * Math.PI) / 180;
+  slant = Math.sin(windDir) * Math.min(1, (w?.wind ?? 0) / 8) * 0.5;
   rainCanvas.hidden = false;
-  const w0 = rainCanvas.clientWidth || window.innerWidth;
-  const h0 = rainCanvas.clientHeight || window.innerHeight;
-  while (drops.length < count) drops.push({ x: Math.random() * w0, y: Math.random() * h0, v: 0.6 + Math.random() * 0.6, len: 8 + Math.random() * 10 });
-  drops.length = count;
+  while (drops.length < maxCount) {
+    drops.push({ x: Math.random() * w0, y: Math.random() * h0, v: 0.6 + Math.random() * 0.6, len: 8 + Math.random() * 10, r: Math.random() });
+  }
+  drops.length = maxCount;
   if (!rainRaf) rainRaf = requestAnimationFrame(rainFrame);
 }
+// 地図を動かしたら、画面のどこで降っているかを数えなおす（動かしている間は間引く）
+let rainMoveAt = 0;
+map.on('move', () => {
+  if (!settings.weatherFx || !settings.terrain || performance.now() - rainMoveAt < 300) return;
+  rainMoveAt = performance.now();
+  updateRain(true);
+});
 
 function rainFrame() {
   const dpr = window.devicePixelRatio || 1;
@@ -285,31 +319,34 @@ function rainFrame() {
   const ctx = rainCanvas.getContext('2d')!;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  const { snow, slant } = rainKind;
   ctx.strokeStyle = 'rgba(215, 228, 245, 0.75)';
   ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
   ctx.lineWidth = 1.5;
-  ctx.beginPath();
+  const rain = new Path2D();
+  const snow = new Path2D();
   for (const d of drops) {
-    const speed = snow ? d.v * 2 : d.v * 18;
+    const cell = field[Math.min(FIELD_Y - 1, Math.max(0, Math.floor((d.y / h) * FIELD_Y))) * FIELD_X + Math.min(FIELD_X - 1, Math.max(0, Math.floor((d.x / w) * FIELD_X)))];
+    const speed = cell?.snow ? d.v * 2 : d.v * 18;
     d.y += speed;
-    d.x += slant * speed + (snow ? Math.sin(d.y / 30) * 0.6 : 0);
+    d.x += slant * speed + (cell?.snow ? Math.sin(d.y / 30) * 0.6 : 0);
     if (d.y > h) {
       d.y = -20;
       d.x = Math.random() * w;
     }
     if (d.x > w) d.x -= w;
     if (d.x < 0) d.x += w;
-    if (snow) {
-      ctx.moveTo(d.x + 2, d.y);
-      ctx.arc(d.x, d.y, 2, 0, Math.PI * 2);
+    // そのマスの降水量に見合う割合の粒だけ描く（降っていないマスでは描かない）
+    if (!cell || d.r >= dropsFor(cell.precip) / maxCount) continue;
+    if (cell.snow) {
+      snow.moveTo(d.x + 2, d.y);
+      snow.arc(d.x, d.y, 2, 0, Math.PI * 2);
     } else {
-      ctx.moveTo(d.x, d.y);
-      ctx.lineTo(d.x - slant * d.len, d.y - d.len);
+      rain.moveTo(d.x, d.y);
+      rain.lineTo(d.x - slant * d.len, d.y - d.len);
     }
   }
-  if (snow) ctx.fill();
-  else ctx.stroke();
+  ctx.stroke(rain);
+  ctx.fill(snow);
   rainRaf = drops.length && document.visibilityState === 'visible' ? requestAnimationFrame(rainFrame) : 0;
 }
 document.addEventListener('visibilitychange', () => {

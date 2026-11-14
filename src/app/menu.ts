@@ -140,8 +140,15 @@ const weatherOpt = $<HTMLInputElement>('opt-weather');
 weatherOpt.addEventListener('change', () => {
   settings.weather = weatherOpt.checked;
   saveSettings();
+  syncMenu();
   updateDaylight();
   updateNav();
+});
+const weatherFxOpt = $<HTMLInputElement>('opt-weatherfx');
+weatherFxOpt.addEventListener('change', () => {
+  settings.weatherFx = weatherFxOpt.checked;
+  saveSettings();
+  updateDaylight();
 });
 const dayToneOpt = $<HTMLInputElement>('opt-daytone');
 dayToneOpt.addEventListener('change', () => {
@@ -166,6 +173,9 @@ function syncMenu() {
   hillshadeOpt.checked = settings.hillshade;
   dayToneOpt.checked = settings.dayTone;
   weatherOpt.checked = settings.weather;
+  weatherFxOpt.checked = settings.weatherFx;
+  // 演出は予報を出しているときだけ使える
+  weatherFxOpt.disabled = !settings.weather;
   wakeOpt.checked = settings.wakeLock;
 }
 syncMenu();

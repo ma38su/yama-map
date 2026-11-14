@@ -116,11 +116,12 @@ export function hookDaylight(hooks: Partial<typeof daylightHooks>) {
 
 /** 今の時刻（リプレイ中は再生中の時刻）・地図の中心での太陽と雲に、空・地図の色と陰影を合わせる */
 export function updateDaylight() {
-  // 地図の読み込み前は空を変えられない（読み込んだら main.ts の load で合わせる）
-  if (!styleReady) return;
-  const c = map.getCenter();
-  const when = state.daylightAt != null ? new Date(state.daylightAt) : daylightTime();
-  applyDaylight(map, sunPosition(when, c.lat, c.lng), { terrain: settings.terrain, tone: settings.dayTone, cloud: daylightHooks.cloud() });
+  // 地図の読み込み前は空を変えられない（読み込んだら main.ts の load で合わせる）。雨などはそのまま合わせる
+  if (styleReady) {
+    const c = map.getCenter();
+    const when = state.daylightAt != null ? new Date(state.daylightAt) : daylightTime();
+    applyDaylight(map, sunPosition(when, c.lat, c.lng), { terrain: settings.terrain, tone: settings.dayTone, cloud: daylightHooks.cloud() });
+  }
   daylightHooks.after();
 }
 
