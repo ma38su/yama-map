@@ -22,7 +22,7 @@ public/
   sw.js               Service Worker（アプリ本体と地図タイルのキャッシュ）
   routes/             おすすめルートの GPX
 test/                 vitest のユニットテスト（nav・track・map の計算が中心）
-android/              Capacitor の Android プロジェクト
+android/              Capacitor の Android プロジェクト（docs/android.md）
 ```
 
 `nav/`・`route/`・`track/`・`map/` の計算部分は DOM に依存しないので、テストから直接呼べます。画面に関わるものは `app/` に置いています。

@@ -63,7 +63,7 @@ npm run build    # 型チェックして dist/ に出力
 - URL に `?time=18:30` を付けると、その時刻の空と地図の色を確かめられます
 - 動作確認用に `window.yamaMap`（地図・記録・到着予想・ルート）をコンソールから触れます
 
-コードの構成と仕組みは [docs/architecture.md](docs/architecture.md)、PWA かネイティブか・電池持ち・地図データの検討は [docs/design-notes.md](docs/design-notes.md) にまとめています。
+コードの構成と仕組みは [docs/architecture.md](docs/architecture.md)、PWA かネイティブか・電池持ち・地図データの検討は [docs/design-notes.md](docs/design-notes.md)、Android アプリ版の作り方は [docs/android.md](docs/android.md) にまとめています。
 
 ### 公開（GitHub Pages）
 
@@ -89,6 +89,8 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 家族などに配るときは APK ファイルを送り、受け取った端末で「提供元不明のアプリ」のインストールを許可してもらいます。
 初回の記録開始時に「位置情報」と「通知」の許可を求めます。電池の最適化でアプリが止められる端末では、
 設定でやまマップを「制限なし」にすると記録が途切れにくくなります。
+
+Web版との違い、ビルド環境の準備、エミュレータ、デバッグ、署名とアップデートの注意は [docs/android.md](docs/android.md) にまとめています。
 
 ## 今後の候補
 
