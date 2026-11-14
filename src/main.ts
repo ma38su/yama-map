@@ -15,7 +15,7 @@ import { $ } from './ui/dom';
 import { addOverlayLayers, map, updateDaylight } from './app/mapView';
 import './app/install';
 import './app/mapTap';
-import { PRESETS } from './app/menu';
+import { PRESETS, ensureBuiltinPlan } from './app/menu';
 import { updateNav, type Nav } from './app/nav';
 import './app/offline';
 import { checkUnfinished, recorder, renderTrack, updateRecButton } from './app/recording';
@@ -44,6 +44,7 @@ new ResizeObserver(updatePanelHeight).observe($('sheet'));
 renderRoute();
 updateNav();
 updateRecButton();
+void ensureBuiltinPlan();
 
 // ---------- Service Worker（オフライン対応） ----------
 if ('serviceWorker' in navigator && import.meta.env.PROD) {

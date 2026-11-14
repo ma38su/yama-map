@@ -162,36 +162,40 @@ function syncMenu() {
 }
 syncMenu();
 
+/** 最初から入れておく「予定」の記録：おすすめルートを今日の11:30から、ゆっくりのペースで歩き、歩行30分ごとに5分休む */
+const BUILTIN_PLAN = { id: 'plan-okukinu-teshirosawa', start: [11, 30], pace: 'slow', restEveryMin: 30, restMin: 5 } as const;
+
 /**
- * 記録のサンプルを作って保存する。おすすめルート（女夫渕 → 手白澤温泉）を、前日の8:30から
- * 標準タイムどおりに歩き、歩行30分ごとに5〜10分休んだ想定
+ * 初めて起動したときに「予定」の記録を作って保存する（ルートの標高を地理院の標高タイルから取るので、
+ * 圏外で作れなければ次に起動したときにもう一度試す）。以前の版の「サンプル」の記録はこれに置き換える
  */
-async function addSampleTrack() {
+export async function ensureBuiltinPlan() {
+  if (settings.builtinPlan) return;
   const preset = PRESETS[0];
   try {
-    setProgress('サンプルの記録を作成中…');
     const res = await fetch(preset.file);
-    if (!res.ok) throw new Error('サンプルのルートを読み込めませんでした');
+    if (!res.ok) return;
     const r = await buildGpxRoute(parseGpx(await res.text()), elevation);
     const start = new Date();
-    start.setDate(start.getDate() - 1);
-    start.setHours(8, 30, 0, 0);
-    const label = `${start.getMonth() + 1}/${start.getDate()}`;
+    start.setHours(BUILTIN_PLAN.start[0], BUILTIN_PLAN.start[1], 0, 0);
+    const pace = PACE_PRESETS[BUILTIN_PLAN.pace];
     const { track, points } = generateSampleTrack(r.coords, r.eles, {
       startMs: start.getTime(),
-      name: `サンプル：${preset.title}（${label}）`,
-      seed: start.getTime(),
+      name: `予定：${preset.title}（${pace.label}・${BUILTIN_PLAN.restEveryMin}分ごとに${BUILTIN_PLAN.restMin}分休憩）`,
+      seed: 1130,
+      pace: pace.factor,
+      restEveryMin: BUILTIN_PLAN.restEveryMin,
+      restMin: [BUILTIN_PLAN.restMin, BUILTIN_PLAN.restMin],
     });
-    await putTrackWithPoints(track, points);
+    await putTrackWithPoints({ ...track, id: BUILTIN_PLAN.id }, points.map((p) => ({ ...p, trackId: BUILTIN_PLAN.id })));
+    for (const t of await listTracks()) if (t.id.startsWith('sample-')) await deleteTrack(t.id);
+    settings.builtinPlan = true;
+    saveSettings();
     await refreshTrackList();
-    status('サンプルの記録を追加しました。「地図に表示」で確認できます');
   } catch (err) {
-    status(err instanceof Error ? err.message : String(err), true);
-  } finally {
-    setProgress('');
+    console.warn('予定の記録を作れませんでした', err);
   }
 }
-$('btn-sample-track').addEventListener('click', () => void addSampleTrack());
 
 export async function refreshTrackList() {
   const list = $('track-list');

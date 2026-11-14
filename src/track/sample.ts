@@ -1,7 +1,7 @@
 /**
- * 記録のサンプル。ルートを標準タイム（eta.ts の標準の歩行時間）どおりに歩き、
- * 歩行30分ごとに5〜10分（ランダム）休んだ想定の軌跡を作る。
- * 実際の記録が手元になくても、記録の見え方（軌跡・標高グラフ・ペースの分析）を確かめられる。
+ * 想定の記録。ルートを標準タイム（eta.ts の標準の歩行時間）の決まった倍率で歩き、
+ * 歩行30分ごとに休んだ想定の軌跡を作る（最初から入っている「予定」の記録に使う）。
+ * 実際の記録が手元になくても、記録の見え方（軌跡・標高グラフ・ペースの分析・リプレイ）を確かめられる。
  */
 import { GainCounter, cumulativeDistances, distance, type LngLat } from '../geo';
 import { RouteTimeline, fillElevations, interp } from '../nav/eta';
@@ -17,6 +17,8 @@ export interface SampleOptions {
   restEveryMin?: number;
   /** 1回の休憩の長さ（分）の範囲 */
   restMin?: [number, number];
+  /** 標準タイムの何倍で歩くか（1 で標準どおり、ゆっくりなら 1.25） */
+  pace?: number;
 }
 
 /** 記録する間隔 (m)。実際の記録も8m以上動いたときだけ点を足す */
@@ -69,11 +71,12 @@ export function generateSampleTrack(
   const gain = new GainCounter();
   let t = opts.startMs;
   let walked = 0; // 前の休憩からの歩行時間（分）
-  let pace = 1;
+  const basePace = opts.pace ?? 1;
+  let pace = basePace;
   let distanceSum = 0;
   for (let s = 0, lastS = 0; ; lastS = s, s = Math.min(total, s + STEP_M)) {
     if (s > 0) {
-      if (Math.floor(s / PACE_SPAN_M) !== Math.floor(lastS / PACE_SPAN_M)) pace = 1 + (rand() * 2 - 1) * PACE_JITTER;
+      if (Math.floor(s / PACE_SPAN_M) !== Math.floor(lastS / PACE_SPAN_M)) pace = basePace * (1 + (rand() * 2 - 1) * PACE_JITTER);
       const min = timeline.between(lastS, s).total * pace;
       t += min * 60_000;
       walked += min;

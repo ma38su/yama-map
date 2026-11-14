@@ -19,6 +19,8 @@ export interface Settings {
   /** 出発時刻 "HH:MM"。null なら現在時刻に出発する想定 */
   departAt: string | null;
   view?: { center: LngLat; zoom: number; pitch: number; bearing: number };
+  /** 最初から入れている「予定」の記録を入れ終えたか（消したあとに戻さないため） */
+  builtinPlan?: boolean;
 }
 const SETTINGS_KEY = 'yama-map:settings';
 export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, wakeLock: !backgroundCapable, pace: 'normal', routePref: 'trail', departAt: null };

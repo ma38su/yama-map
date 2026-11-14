@@ -57,7 +57,7 @@ function renderActualCard(card: HTMLElement) {
   const first = rows[0];
   const last = rows.at(-1);
   const title = h('div', 'nav-title');
-  title.append(h('b', '', track.name), h('span', '', ` · ${new Date(track.startedAt).toLocaleDateString('ja-JP')}の記録`));
+  title.append(h('b', '', track.name), h('span', '', ` · ${new Date(track.startedAt).toLocaleDateString('ja-JP')}の${track.id.startsWith('plan-') ? '予定' : '記録'}`));
   card.append(title);
   if (first && last) {
     card.append(actualRow('出発', first, '', false));

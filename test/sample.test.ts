@@ -72,3 +72,16 @@ describe('paceColor', () => {
     expect(paceColor(2)).toBe('rgba(214, 51, 74, 1)');
   });
 });
+
+describe('generateSampleTrack のペース', () => {
+  it('pace の倍率で歩き、休憩は決まった長さ', () => {
+    const slow = generateSampleTrack(coords, eles, { startMs: start, name: '予定', seed: 7, pace: 1.25, restMin: [5, 5] });
+    const g = slow.points.slice(1).map((p, i) => (p.t - slow.points[i].t) / 60_000);
+    const dists = cumulativeDistances(coords);
+    const std = new RouteTimeline(dists, eles).between(0, dists[dists.length - 1]).total;
+    const walking = g.filter((m) => m <= 2).reduce((a, b) => a + b, 0);
+    expect(walking / std).toBeGreaterThan(1.18);
+    expect(walking / std).toBeLessThan(1.32);
+    for (const m of g.filter((m) => m > 2)) expect(m).toBeCloseTo(5, 0);
+  });
+});
