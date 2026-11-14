@@ -136,7 +136,8 @@ export function renderCard(nav: Nav | null) {
     if (next && dest && next !== dest) card.append(navRow('次', next, false, nav.sunset));
     if (dest) card.append(navRow('目的地', dest, true, nav.sunset));
     const sub = h('div', 'nav-sub');
-    if (!nav.onRoute && dest && !dest.passed) sub.append(h('span', '', settings.departAt && !recorder.recording ? `${settings.departAt}出発の場合` : '今出発した場合'));
+    if (nav.rejoin && dest && !dest.passed) sub.append(h('span', '', `ルートに戻るまで約${fmtMin(nav.rejoin.totalMin)}を含む`));
+    else if (!nav.onRoute && dest && !dest.passed) sub.append(h('span', '', settings.departAt && !recorder.recording ? `${settings.departAt}出発の場合` : '今出発した場合'));
     if (nav.pace && nav.pace.evidenceMin > 10) sub.append(h('span', '', `実績ペース 標準の${nav.pace.overall.toFixed(2)}倍`));
     else sub.append(h('span', '', `ペース「${PACE_PRESETS[settings.pace].label}」`));
     sub.append(h('span', '', `休憩込み`));

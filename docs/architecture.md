@@ -88,6 +88,7 @@ android/              Capacitor の Android プロジェクト（docs/android.md
 - `analyzePace`：記録から登り・平坦・下りそれぞれの「標準の何倍か」と休憩の割合を求める。記録が少ないうちは設定のペースに寄せる
 - `splitMoving`：90秒以上空いていて秒速0.15m未満しか進んでいない区間を休憩とみなす
 - `estimate`：ルート上の2点間の歩行時間＋休憩の見込み
+- `estimateFlat`：道のない区間を平坦な直線とみなした見積もり。記録中にルートから離れたとき、いちばん近いルート上の地点に戻るまでの時間に使う（`app/nav.ts` の `computeNav`）
 - `paceSegments`：記録を100〜500mの区間に分けた、区間ごとのペース（標高グラフの色分け）
 
 ### ルート（`nav/plan.ts`・`route/`）

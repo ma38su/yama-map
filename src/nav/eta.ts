@@ -374,6 +374,19 @@ export function estimate(timeline: RouteTimeline, fromM: number, toM: number, f:
   return { stdMin: m.total, movingMin, restMin, totalMin: movingMin + restMin };
 }
 
+/** 道のない区間を平坦な直線とみなした見積もり（ルートから離れた場所からルートに戻るまで） */
+export function estimateFlat(distanceM: number, f: PaceFactors): LegEstimate {
+  const stdMin = segmentStdMinutes(distanceM, 0);
+  const movingMin = stdMin * f.flat;
+  const restMin = movingMin * f.rest;
+  return { stdMin, movingMin, restMin, totalMin: movingMin + restMin };
+}
+
+/** 2つの見積もりを足す */
+export function addEstimates(a: LegEstimate, b: LegEstimate): LegEstimate {
+  return { stdMin: a.stdMin + b.stdMin, movingMin: a.movingMin + b.movingMin, restMin: a.restMin + b.restMin, totalMin: a.totalMin + b.totalMin };
+}
+
 /** 経路上の位置（経路の始点からの距離）と、経路からの離れ具合 */
 export interface RoutePosition {
   along: number;

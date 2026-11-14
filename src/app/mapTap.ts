@@ -1,7 +1,7 @@
 /** 地図をタップしたとき：標高・地名と「出発地・経由地・目的地」のボタン、ルート上ならそこまでの到着予想 */
 import { Popup } from 'maplibre-gl';
 import { formatDistance, type LngLat } from '../geo';
-import { estimate, projectOnRoute } from '../nav/eta';
+import { addEstimates, estimate, projectOnRoute } from '../nav/eta';
 import type { PointKind } from '../nav/plan';
 import { nearestPlaceName } from '../route/roadTiles';
 import { fmtClock, fmtM, fmtMin, h } from '../ui/dom';
@@ -39,8 +39,9 @@ map.on('click', async (e) => {
     const pos = projectOnRoute(state.route.coords, state.route.dists, lngLat);
     if (pos && pos.offset < 150) {
       if (pos.along > nav.fromAlong) {
-        const est = estimate(state.timeline, nav.fromAlong, pos.along, nav.factors);
-        eta.textContent = `ここまで ${formatDistance(pos.along - nav.fromAlong)}・${fmtClock(Date.now() + est.totalMin * 60_000)}着（${fmtMin(est.totalMin)}）`;
+        const ahead = estimate(state.timeline, nav.fromAlong, pos.along, nav.factors);
+        const est = nav.rejoin ? addEstimates(nav.rejoin, ahead) : ahead;
+        eta.textContent = `ここまで ${formatDistance(pos.along - nav.fromAlong + (nav.rejoin?.distM ?? 0))}・${fmtClock(Date.now() + est.totalMin * 60_000)}着（${fmtMin(est.totalMin)}）`;
       } else eta.textContent = '通過済み';
     }
   }

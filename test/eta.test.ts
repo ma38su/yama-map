@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { cumulativeDistances, type LngLat } from '../src/geo';
 import {
   RouteTimeline,
+  addEstimates,
   analyzePace,
   estimate,
+  estimateFlat,
   fillElevations,
   interp,
   projectOnRoute,
   segmentStdMinutes,
   stdSpeedKmh,
+  type PaceFactors,
   type TrackSample,
 } from '../src/nav/eta';
 import { sunTimes } from '../src/nav/sun';
@@ -147,5 +150,24 @@ describe('立ち止まりの判定', () => {
     expect(p.restMs / 60_000).toBeGreaterThan(9);
     expect(p.restMs / 60_000).toBeLessThan(11);
     expect(p.factors.up).toBeGreaterThan(1.1);
+  });
+});
+
+describe('estimateFlat / addEstimates', () => {
+  it('ルートに戻るまでを平坦な直線として見積もる（平地 約3.9km/h）', () => {
+    const f: PaceFactors = { up: 1, flat: 1, down: 1, rest: 0 };
+    const e = estimateFlat(1000, f);
+    expect(e.stdMin).toBeCloseTo(segmentStdMinutes(1000, 0));
+    expect(e.totalMin).toBeGreaterThan(14);
+    expect(e.totalMin).toBeLessThan(17);
+  });
+  it('ペース係数と休憩を反映し、足し合わせられる', () => {
+    const f: PaceFactors = { up: 1, flat: 1.5, down: 1, rest: 0.2 };
+    const e = estimateFlat(500, f);
+    expect(e.movingMin).toBeCloseTo(segmentStdMinutes(500, 0) * 1.5);
+    expect(e.totalMin).toBeCloseTo(e.movingMin * 1.2);
+    const sum = addEstimates(e, e);
+    expect(sum.totalMin).toBeCloseTo(e.totalMin * 2);
+    expect(sum.restMin).toBeCloseTo(e.restMin * 2);
   });
 });

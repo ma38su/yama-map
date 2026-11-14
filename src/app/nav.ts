@@ -2,9 +2,11 @@
 import { distance, type LngLat } from '../geo';
 import {
   RouteTimeline,
+  addEstimates,
   analyzePace,
   defaultFactors,
   estimate,
+  estimateFlat,
   projectOnRoute,
   type LegEstimate,
   type PaceStats,
@@ -36,6 +38,8 @@ export interface Nav {
   pos: RoutePosition | null;
   onRoute: boolean;
   offRoute: boolean;
+  /** 記録中にルートから離れているとき、いちばん近いルート上の地点（fromAlong）に戻るまでの見積もり */
+  rejoin: (LegEstimate & { distM: number }) | null;
   fromAlong: number;
   factors: ReturnType<typeof defaultFactors>;
   pace: PaceStats | null;
@@ -93,19 +97,26 @@ function computeNav(): Nav | null {
   const onRoute = !planning && !!pos && pos.offset < 300 && pos.along >= span.from - 100 && pos.along <= span.to + 100;
   const pace = recorder.recording ? paceOf(recorder.state.points) : null;
   const factors = pace?.factors ?? defaultFactors(settings.pace);
-  const fromAlong = onRoute && pos ? Math.min(span.to, Math.max(span.from, pos.along)) : span.from;
-  const now = onRoute ? Date.now() : departureTime();
+  // 記録中にルートから離れたら、いちばん近いルート上の地点に戻ってから先を歩くとみなす
+  // （戻るまでは平坦な直線として見積もる）。遠すぎるときは出発地から数える
+  const rejoining = !onRoute && recorder.recording && !!pos && pos.offset < 5000;
+  const fromAlong = (onRoute || rejoining) && pos ? Math.min(span.to, Math.max(span.from, pos.along)) : span.from;
+  const rejoinM = rejoining && pos ? pos.offset + Math.abs(pos.along - fromAlong) : 0;
+  const rejoin = rejoining ? { ...estimateFlat(rejoinM, factors), distM: rejoinM } : null;
+  const now = onRoute || rejoining ? Date.now() : departureTime();
   const marks = r.marks.filter((m) => m.along >= span.from - 1 && m.along <= span.to + 1);
   const rows: Row[] = marks.map((m, i) => {
     const prev = i > 0 ? marks[i - 1].along : m.along;
     const g = gainBetween(tl, prev, m.along);
-    const passed = onRoute && m.along <= fromAlong + 30;
-    const remain = passed ? null : estimate(tl, fromAlong, m.along, factors);
+    // ルートから離れているあいだは、戻る地点より手前の地点だけを通過済みにする（目的地に着いたことにはしない）
+    const passed = onRoute ? m.along <= fromAlong + 30 : rejoining && m.kind !== 'dest' && m.along < fromAlong - 30;
+    const ahead = passed ? null : estimate(tl, fromAlong, m.along, factors);
+    const remain = ahead && rejoin ? addEstimates(rejoin, ahead) : ahead;
     return {
       mark: m,
       passed,
       time: remain ? now + remain.totalMin * 60_000 : arrivalTime(m),
-      remainM: Math.max(0, m.along - fromAlong),
+      remainM: passed ? 0 : Math.max(0, m.along - fromAlong) + rejoinM,
       remain,
       leg: i > 0 ? { dist: m.along - prev, up: g.ascent, down: g.descent, est: estimate(tl, prev, m.along, factors) } : null,
     };
@@ -115,6 +126,7 @@ function computeNav(): Nav | null {
     pos,
     onRoute,
     offRoute: !!pos && pos.offset >= 150 && pos.offset < 5000 && recorder.recording,
+    rejoin,
     fromAlong,
     factors,
     pace,
