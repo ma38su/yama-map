@@ -7,7 +7,7 @@
  */
 import { VectorTile } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
-import { tileRange, type LngLat } from '../geo';
+import { lngLatToTile, tileRange, tileUrl, type LngLat } from '../geo';
 import type { RouteLine, WayKind } from './trailRouter';
 
 export const ROAD_TILE_ZOOM = 16;
@@ -160,7 +160,7 @@ function tileUrls(template: string, z: number, bounds: [number, number, number, 
   const out: { url: string; x: number; y: number }[] = [];
   for (let x = r.minX; x <= r.maxX; x++) {
     for (let y = r.minY; y <= r.maxY; y++) {
-      out.push({ url: template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)), x, y });
+      out.push({ url: tileUrl(template, z, x, y), x, y });
     }
   }
   return out;
@@ -291,20 +291,16 @@ export function decodeLabels(buf: ArrayBuffer | Uint8Array, x: number, y: number
 
 /** 地点の近く（maxM 以内）にある地名。見つからなければ null（圏外などでも null） */
 export async function nearestPlaceName(p: LngLat, maxM = 250): Promise<string | null> {
-  const n = 2 ** ROAD_TILE_ZOOM;
-  const x = Math.floor(((p[0] + 180) / 360) * n);
-  const latRad = (p[1] * Math.PI) / 180;
-  const y = Math.floor(((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n);
+  const t = lngLatToTile(p[0], p[1], ROAD_TILE_ZOOM);
+  const x = Math.floor(t.x);
+  const y = Math.floor(t.y);
   let best: { text: string; d: number } | null = null;
-  const kx = 111_320 * Math.cos(latRad);
+  const kx = 111_320 * Math.cos((p[1] * Math.PI) / 180);
   await Promise.all(
     [-1, 0, 1].flatMap((dx) =>
       [-1, 0, 1].map(async (dy) => {
         try {
-          const url = ROAD_TILE_URL.replace('{z}', String(ROAD_TILE_ZOOM))
-            .replace('{x}', String(x + dx))
-            .replace('{y}', String(y + dy));
-          const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+          const res = await fetch(tileUrl(ROAD_TILE_URL, ROAD_TILE_ZOOM, x + dx, y + dy), { signal: AbortSignal.timeout(6000) });
           if (!res.ok) return;
           for (const l of decodeLabels(await res.arrayBuffer(), x + dx, y + dy, ROAD_TILE_ZOOM)) {
             const d = Math.hypot((l.lngLat[0] - p[0]) * kx, (l.lngLat[1] - p[1]) * 110_574);

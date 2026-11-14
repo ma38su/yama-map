@@ -31,4 +31,6 @@ export const state = {
   daylightAt: null as number | null,
   /** 読み込み中などの進み具合の表示（あれば状態表示に優先して出す） */
   progressMsg: '',
+  /** 記録の点を書き換えた回数（あとから標高を埋めたときなど）。点の数で覚えている計算を作り直す目印 */
+  revision: 0,
 };

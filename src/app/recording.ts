@@ -2,7 +2,7 @@
 import { distance, formatDistance, type LngLat } from '../geo';
 import { getPoints, listTracks, putTrack, type Track } from '../track/db';
 import { backgroundCapable, type Fix } from '../track/location';
-import { TrackRecorder } from '../track/recorder';
+import { TrackRecorder, fillMissingElevations } from '../track/recorder';
 import { saveSettings, settings } from '../settings';
 import { $, fmtM } from '../ui/dom';
 import { dem, geolocate, lineFC, src } from './mapView';
@@ -11,6 +11,8 @@ import { setProfileSource } from './profileView';
 import { replayActive, startReplay, stopReplay } from './replay';
 import { sheet } from './sheetView';
 import { markTrackStale, refreshNow, updateNav } from './nav';
+import { checkOffRoute } from './offRouteAlert';
+import { renderPhotos } from './photos';
 import { state } from './state';
 import { status } from './status';
 
@@ -25,6 +27,12 @@ geolocate.on('geolocate', (pos) => {
 });
 /** 現在地の標高。20m 以上動いたか5分経ったときだけ求め直す（標高タイルを読むので） */
 export async function updateCurrentEle() {
+  // 記録中で気圧計があれば、気圧で補った標高（30秒ごとに求め直す）
+  const baro = await recorder.currentAltitude();
+  if (baro != null) {
+    state.currentEle = baro;
+    return;
+  }
   const fix = state.lastFix;
   if (!fix || (lastEleAt && distance(lastEleAt.coords, fix.coords) <= 20 && Date.now() - lastEleAt.t < 5 * 60_000)) return;
   lastEleAt = { coords: fix.coords, t: Date.now() };
@@ -53,7 +61,7 @@ export function hereLngLat(): LngLat | null {
 }
 
 /** 現在地の追従をオンにする（trigger() はオン/オフの切り替えなので、オフのときだけ押す） */
-function startGeolocate() {
+export function startGeolocate() {
   if (geolocate._watchState === 'OFF') geolocate.trigger();
 }
 
@@ -89,19 +97,23 @@ document.addEventListener('visibilitychange', () => feedNativeFix(recorder.state
 // ---------- 記録 ----------
 let lastRecState = '';
 let lastPointCount = 0;
+let lastChecked = '';
 export const recorder = new TrackRecorder(dem, (s) => {
   feedNativeFix(s.lastFix);
   if (s.track) state.shown = { track: s.track, points: s.points };
   else if (state.shown && !recorder.recording) state.shown = null;
   // 開始・終了・エラーなどはすぐ画面に出す。点が増えただけなら、次にまとめて描き直す
   // （記録中は測位のたびに呼ばれ、アプリ版では画面を消していても届くため）
-  const recState = `${s.track?.id}:${s.track?.status}:${s.error}:${s.wakeLock}`;
+  const recState = `${s.track?.id}:${s.track?.status}:${s.error}:${s.saveFailed}:${s.wakeLock}`;
   if (recState !== lastRecState) {
     lastRecState = recState;
     renderTrack();
     updateRecButton();
     updateNav();
   } else if (s.points.length !== lastPointCount) markTrackStale();
+  // 道迷いの判定は点が届いたらすぐ（画面を消していても知らせるため）
+  if (s.points.length !== lastPointCount || recState !== lastChecked) checkOffRoute(s.points, recorder.recording);
+  lastChecked = recState;
   lastPointCount = s.points.length;
 });
 recorder.keepScreenOn = settings.wakeLock;
@@ -113,7 +125,10 @@ recBtn.addEventListener('click', async () => {
       alert('この端末・ブラウザでは位置情報が使えません');
       return;
     }
-    await recorder.start();
+    if (!(await recorder.start())) {
+      status('位置情報が許可されていないため、記録を始められません。端末の設定で許可してください', true);
+      return;
+    }
     // 記録を始めたら、出発時刻は現在時刻に
     if (settings.departAt) {
       settings.departAt = null;
@@ -128,6 +143,7 @@ recBtn.addEventListener('click', async () => {
       // 歩き終えた記録をそのまま開いて、実績を見られるように
       stopGeolocate();
       status(`記録を保存しました：${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}`);
+      void fillShownElevations();
     }
   }
   void refreshTrackList();
@@ -141,6 +157,9 @@ export function updateRecButton() {
   const viewing = viewingTrack();
   recBtn.hidden = viewing;
   $('view-actions').hidden = !viewing;
+  // 記録中・記録を開いているときは写真、それ以外（計画）は地名の検索を同じ場所に出す
+  $('btn-photo').hidden = !rec && !viewing;
+  $('btn-search').hidden = rec || viewing;
   const replay = $('btn-replay');
   replay.querySelector('span:first-child')!.textContent = replayActive() ? '■' : '▶';
   replay.querySelector('span:last-child')!.textContent = replayActive() ? '終了' : 'リプレイ';
@@ -170,8 +189,24 @@ $('btn-replay').addEventListener('click', () => {
   updateRecButton();
 });
 
+/** 開いている記録のうち、標高が取れていない点（圏外だったときなど）を標高タイルから埋める */
+export async function fillShownElevations() {
+  const shown = state.shown;
+  if (!shown || recorder.recording) return;
+  const updated = await fillMissingElevations(shown.track, shown.points, (lng, lat) => dem.elevation(lng, lat)).catch((e) => {
+    console.warn('標高を埋められませんでした', e);
+    return null;
+  });
+  if (!updated || state.shown?.track.id !== updated.id) return;
+  state.shown = { track: updated, points: state.shown.points };
+  state.revision++;
+  updateNav();
+  void refreshTrackList();
+}
+
 export function renderTrack() {
   src('track')?.setData(lineFC((state.shown?.points ?? []).map((p): LngLat => [p.lng, p.lat])));
+  void renderPhotos();
 }
 
 

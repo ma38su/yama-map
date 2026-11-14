@@ -1,6 +1,6 @@
 /** 右下のメニュー：ルートの読み込み、設定（ルートの探し方・ペース・地図）、記録の一覧 */
 import { distance, formatDistance, formatDuration } from '../geo';
-import { BASE_LAYERS, setBaseLayer, setHillshade, type BaseLayerId } from '../map/style';
+import { BASE_LAYERS, TERRAIN_EXAGGERATION_RANGE, setBaseLayer, setHillshade, type BaseLayerId } from '../map/style';
 import { PACE_PRESETS, type PacePreset } from '../nav/eta';
 import { ROUTE_PREFS, buildGpxRoute, makePoint, type RoutePref } from '../nav/plan';
 import { deleteTrack, getPoints, listTracks, putTrackWithPoints, type Track } from '../track/db';
@@ -8,12 +8,12 @@ import { parseGpx, toGpx } from '../track/gpx';
 import { backgroundCapable } from '../track/location';
 import { generateSampleTrack } from '../track/sample';
 import { saveSettings, settings } from '../settings';
-import { $, download, fmtM, h } from '../ui/dom';
-import { elevation, fitTo, map, updateDaylight } from './mapView';
+import { $, checkSeg, download, fileStamp, fmtM, h, segButtons } from '../ui/dom';
+import { elevation, fitTo, map, setTerrainExaggeration, updateDaylight } from './mapView';
 import { updateNav } from './nav';
 import { refreshStorage } from './offline';
 import { setProfileSource } from './profileView';
-import { closeTrack, recorder, renderTrack, stopGeolocate, updateRecButton } from './recording';
+import { closeTrack, fillShownElevations, recorder, renderTrack, stopGeolocate, updateRecButton } from './recording';
 import { stopReplay } from './replay';
 import { applyRoutePref, loadGpxText, rebuild, setRoute } from './route';
 import { openSheet, setTab } from './sheetView';
@@ -21,20 +21,12 @@ import { state } from './state';
 import { setProgress, status } from './status';
 
 const paceSeg = $('pace-preset');
-for (const [id, def] of Object.entries(PACE_PRESETS) as [PacePreset, (typeof PACE_PRESETS)[PacePreset]][]) {
-  const b = h('button', '', def.label);
-  b.type = 'button';
-  b.setAttribute('role', 'radio');
-  b.dataset.id = id;
-  b.addEventListener('click', () => {
-    settings.pace = id;
-    saveSettings();
-    syncMenu();
-    updateNav();
-  });
-  paceSeg.append(b);
-}
-
+segButtons(paceSeg, Object.entries(PACE_PRESETS).map(([id, def]) => [id, def.label] as const), (id) => {
+  settings.pace = id as PacePreset;
+  saveSettings();
+  syncMenu();
+  updateNav();
+});
 
 export const menu = $<HTMLDialogElement>('menu');
 $('btn-menu').addEventListener('click', () => {
@@ -108,33 +100,19 @@ $<HTMLInputElement>('gpx-file').addEventListener('change', async (e) => {
 });
 
 const routePrefWrap = $('route-pref');
-for (const [id, def] of Object.entries(ROUTE_PREFS) as [RoutePref, (typeof ROUTE_PREFS)[RoutePref]][]) {
-  const b = h('button', '', def.label);
-  b.type = 'button';
-  b.setAttribute('role', 'radio');
-  b.dataset.id = id;
-  b.addEventListener('click', () => {
-    settings.routePref = id;
-    saveSettings();
-    syncMenu();
-    applyRoutePref();
-  });
-  routePrefWrap.append(b);
-}
+segButtons(routePrefWrap, Object.entries(ROUTE_PREFS).map(([id, def]) => [id, def.label] as const), (id) => {
+  settings.routePref = id as RoutePref;
+  saveSettings();
+  syncMenu();
+  applyRoutePref();
+});
 const baseWrap = $('base-layers');
-for (const [id, def] of Object.entries(BASE_LAYERS) as [BaseLayerId, (typeof BASE_LAYERS)[BaseLayerId]][]) {
-  const b = h('button', '', def.label);
-  b.type = 'button';
-  b.setAttribute('role', 'radio');
-  b.dataset.id = id;
-  b.addEventListener('click', () => {
-    settings.base = id;
-    saveSettings();
-    setBaseLayer(map, id);
-    syncMenu();
-  });
-  baseWrap.append(b);
-}
+segButtons(baseWrap, Object.entries(BASE_LAYERS).map(([id, def]) => [id, def.label] as const), (id) => {
+  settings.base = id as BaseLayerId;
+  saveSettings();
+  setBaseLayer(map, settings.base);
+  syncMenu();
+});
 const hillshadeOpt = $<HTMLInputElement>('opt-hillshade');
 hillshadeOpt.addEventListener('change', () => {
   settings.hillshade = hillshadeOpt.checked;
@@ -161,6 +139,20 @@ dayToneOpt.addEventListener('change', () => {
   saveSettings();
   updateDaylight();
 });
+const terrainEx = $<HTMLInputElement>('opt-terrain-ex');
+terrainEx.min = String(TERRAIN_EXAGGERATION_RANGE.min);
+terrainEx.max = String(TERRAIN_EXAGGERATION_RANGE.max);
+terrainEx.step = String(TERRAIN_EXAGGERATION_RANGE.step);
+const showTerrainEx = () => ($('terrain-ex-value').textContent = `×${settings.terrainExaggeration.toFixed(1)}`);
+terrainEx.addEventListener('input', () => {
+  setTerrainExaggeration(Number(terrainEx.value));
+  showTerrainEx();
+});
+const offRouteOpt = $<HTMLInputElement>('opt-offroute');
+offRouteOpt.addEventListener('change', () => {
+  settings.offRouteAlert = offRouteOpt.checked;
+  saveSettings();
+});
 const wakeOpt = $<HTMLInputElement>('opt-wakelock');
 if (backgroundCapable) {
   $('wakelock-note').textContent = 'アプリ版は画面を消しても記録が続きます。点けたままにすると電池の減りが早くなります。';
@@ -171,9 +163,9 @@ wakeOpt.addEventListener('change', () => {
   void recorder.setKeepScreenOn(settings.wakeLock);
 });
 function syncMenu() {
-  for (const b of baseWrap.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.base));
-  for (const b of paceSeg.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.pace));
-  for (const b of routePrefWrap.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.routePref));
+  checkSeg(baseWrap, settings.base);
+  checkSeg(paceSeg, settings.pace);
+  checkSeg(routePrefWrap, settings.routePref);
   $('route-pref-note').textContent = ROUTE_PREFS[settings.routePref].desc;
   hillshadeOpt.checked = settings.hillshade;
   dayToneOpt.checked = settings.dayTone;
@@ -182,6 +174,9 @@ function syncMenu() {
   // 演出は予報を出しているときだけ使える
   weatherFxOpt.disabled = !settings.weather;
   wakeOpt.checked = settings.wakeLock;
+  offRouteOpt.checked = settings.offRouteAlert;
+  terrainEx.value = String(settings.terrainExaggeration);
+  showTerrainEx();
 }
 syncMenu();
 
@@ -272,6 +267,7 @@ async function showSavedTrack(t: Track) {
   setTab('profile');
   fitTo(points.map((p) => [p.lng, p.lat]));
   updateNav();
+  void fillShownElevations();
 }
 
 async function exportTrack(t: Track) {
@@ -280,7 +276,5 @@ async function exportTrack(t: Track) {
     t.name,
     points.map((p) => ({ lng: p.lng, lat: p.lat, ele: p.ele ?? p.alt ?? undefined, time: p.t })),
   );
-  const d = new Date(t.startedAt);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  download(`yama-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.gpx`, gpx);
+  download(`yama-${fileStamp(t.startedAt)}.gpx`, gpx);
 }

@@ -72,6 +72,25 @@ export function tileCount(r: TileRange): number {
   return (r.maxX - r.minX + 1) * (r.maxY - r.minY + 1);
 }
 
+/** タイルURLの {z}/{x}/{y} を埋める */
+export const tileUrl = (template: string, z: number, x: number, y: number) =>
+  template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y));
+
+/**
+ * 座標を囲む範囲 (west, south, east, north)。
+ * Math.min(...配列) は点が多いと引数の数の上限を超えるので、1つずつ比べる
+ */
+export function bbox(coords: readonly LngLat[]): [number, number, number, number] {
+  let [w, s, e, n] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [lng, lat] of coords) {
+    if (lng < w) w = lng;
+    if (lng > e) e = lng;
+    if (lat < s) s = lat;
+    if (lat > n) n = lat;
+  }
+  return [w, s, e, n];
+}
+
 /** 経路の累積距離 (m) の配列。先頭は 0 */
 export function cumulativeDistances(coords: LngLat[]): number[] {
   const out = new Array<number>(coords.length);

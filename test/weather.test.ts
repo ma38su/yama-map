@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cellCenter, cellKey, forecastUrl, parseForecast, weatherAt, weatherLabel } from '../src/nav/weather';
+import { cellCenter, cellKey, forecastUrl, packWeather, parseForecast, unpackWeather, weatherAt, weatherLabel } from '../src/nav/weather';
 
 // Open-Meteo の返答の形（timeformat=unixtime、複数地点は配列）
 const t0 = Date.UTC(2026, 10, 15, 2) / 1000; // 11:00 JST
@@ -64,5 +64,28 @@ describe('マス目とURL', () => {
   it('天気コードの名前', () => {
     expect(weatherLabel(61).label).toBe('雨');
     expect(weatherLabel(95).icon).toBe('⛈️');
+  });
+});
+
+describe('packWeather / unpackWeather', () => {
+  const h = parseForecast(one([10, 60, 40], [80, 100, 90]))[0];
+
+  it('1時間おきの時刻は先頭と本数だけにして、元に戻せる', () => {
+    const packed = packWeather(h);
+    expect(packed.t).toBeUndefined();
+    expect(packed.t0).toBe(t0 * 1000);
+    expect(packed.n).toBe(3);
+    expect(unpackWeather(JSON.parse(JSON.stringify(packed)))).toEqual(h);
+  });
+
+  it('間隔がそろっていなければ時刻の配列のまま保存する', () => {
+    const odd = { ...h, t: [h.t[0], h.t[0] + 1800_000, h.t[2]] };
+    expect(packWeather(odd).t).toEqual(odd.t);
+    expect(unpackWeather(packWeather(odd))).toEqual(odd);
+  });
+
+  it('以前の形（時刻の配列）も読み、風向のない古い形は捨てる', () => {
+    expect(unpackWeather(h)).toEqual(h);
+    expect(unpackWeather({ ...h, dir: undefined as unknown as (number | null)[] })).toBeNull();
   });
 });

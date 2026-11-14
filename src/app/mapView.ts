@@ -5,12 +5,13 @@ import {
   NavigationControl,
   ScaleControl,
   setWorkerUrl,
+  type ExpressionSpecification,
   type GeoJSONSource,
   type IControl,
 } from 'maplibre-gl';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import type { FeatureCollection } from 'geojson';
-import type { LngLat } from '../geo';
+import { bbox, type LngLat } from '../geo';
 import { applyDaylight, toneStyle } from '../map/daylight';
 import { swapTouchGestures } from '../map/gestures';
 import { DemSampler, registerGsiDemProtocol } from '../map/gsiDem';
@@ -25,7 +26,8 @@ import { state } from './state';
 setWorkerUrl(workerUrl);
 registerGsiDemProtocol();
 
-export const dem = new DemSampler(96);
+// 標高タイルは1枚 256KB（Float32 の 256×256）。48枚で約12MB。10km ほどのルートの標高を求めるのに足りる数
+export const dem = new DemSampler(48);
 export const elevation = (lng: number, lat: number) => dem.elevation(lng, lat);
 const initialCenter: LngLat = settings.view?.center ?? [139.4165, 36.8705]; // 初期表示：奥鬼怒
 const initialSun = sunPosition(daylightTime(), initialCenter[1], initialCenter[0]);
@@ -86,10 +88,16 @@ export function setTerrain(on: boolean) {
   // 読み込み前は地図の load で反映する（読み込み前に地形を切り替えるとエラーになる）。
   // isStyleLoaded() はタイルの読み込み中も false になり、切り替えが反映されないことがあるので使わない
   if (styleReady) {
-    set3D(map, on);
+    set3D(map, on, settings.terrainExaggeration);
     updateDaylight();
   }
   terrainControl.update();
+}
+/** 3D の起伏の強調を変える（3D のときはすぐ反映） */
+export function setTerrainExaggeration(v: number) {
+  settings.terrainExaggeration = v;
+  saveSettings();
+  if (styleReady && settings.terrain) map.setTerrain({ source: 'dem-terrain', exaggeration: v });
 }
 map.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-left');
 
@@ -139,22 +147,32 @@ map.on('moveend', () => {
 
 export function fitTo(coords: LngLat[]) {
   if (!coords.length) return;
-  const lngs = coords.map((c) => c[0]);
-  const lats = coords.map((c) => c[1]);
+  const [w, s, e, n] = bbox(coords);
   const panel = $('sheet').getBoundingClientRect().height;
   map.fitBounds(
     [
-      [Math.min(...lngs), Math.min(...lats)],
-      [Math.max(...lngs), Math.max(...lats)],
+      [w, s],
+      [e, n],
     ],
     { padding: { top: 70, bottom: Math.min(panel + 30, window.innerHeight * 0.6), left: 40, right: 70 }, maxZoom: 15.5, duration: 600 },
   );
 }
 
 
+/** リプレイの歩き終えた線：線の長さの割合 progress（0〜1）までを塗る */
+export const replayDoneGradient = (progress: number): ExpressionSpecification => [
+  'step',
+  ['line-progress'],
+  '#7a1424',
+  Math.max(0, Math.min(1, progress)),
+  'rgba(122, 20, 36, 0)',
+];
+
 /** ルート・記録・グラフのカーソルを描く層（地図の読み込み後に一度だけ） */
 export function addOverlayLayers() {
-  for (const id of ['route', 'route-done', 'track', 'replay-done', 'cursor', 'replay']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  for (const id of ['route', 'route-done', 'track', 'cursor', 'replay']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  // リプレイの歩き終えた線は、記録の線全体を置いておき、line-progress で途中まで塗る（進むたびに線を作り直さない）
+  map.addSource('replay-done', { type: 'geojson', data: emptyFC, lineMetrics: true });
   // OpenStreetMap 由来のルートを表示しているときだけ出典を出すためのソース
   map.addSource('osm-credit', { type: 'geojson', data: emptyFC, attribution: OSM_ATTRIBUTION });
   const casing = { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 };
@@ -165,7 +183,7 @@ export function addOverlayLayers() {
   map.addLayer({ id: 'route-done', type: 'line', source: 'route-done', layout: round, paint: { 'line-color': '#93a3b8', 'line-width': 5 } });
   map.addLayer({ id: 'track-casing', type: 'line', source: 'track', layout: round, paint: { ...casing, 'line-width': 6 } });
   map.addLayer({ id: 'track-line', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#d6334a', 'line-width': 3.5 } });
-  map.addLayer({ id: 'replay-done', type: 'line', source: 'replay-done', layout: round, paint: { 'line-color': '#7a1424', 'line-width': 4.5 } });
+  map.addLayer({ id: 'replay-done', type: 'line', source: 'replay-done', layout: round, paint: { 'line-gradient': replayDoneGradient(0), 'line-width': 4.5 } });
   map.addLayer({
     id: 'replay',
     type: 'circle',

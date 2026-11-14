@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bbox,
   cumulativeDistances,
   densify,
   distance,
@@ -9,6 +10,7 @@ import {
   lngLatToTile,
   tileCount,
   tileRange,
+  tileUrl,
   viewBounds,
 } from '../src/geo';
 
@@ -100,5 +102,26 @@ describe('densify', () => {
     // 全長はほぼ変わらない
     const total = (c: [number, number][]) => cumulativeDistances(c).at(-1)!;
     expect(total(out)).toBeCloseTo(total(src), 3);
+  });
+});
+
+describe('bbox', () => {
+  it('座標を囲む範囲 (west, south, east, north)', () => {
+    expect(bbox([[139.5, 36.9], [139.4, 37.1], [139.45, 36.8]])).toEqual([139.4, 36.8, 139.5, 37.1]);
+  });
+
+  it('引数の数の上限を超える点の数でも求められる', () => {
+    const many = Array.from({ length: 300_000 }, (_, i): [number, number] => [139 + i * 1e-6, 36 + i * 1e-6]);
+    const [w, s, e, n] = bbox(many);
+    expect(w).toBe(139);
+    expect(s).toBe(36);
+    expect(e).toBeCloseTo(139.299999, 6);
+    expect(n).toBeCloseTo(36.299999, 6);
+  });
+});
+
+describe('tileUrl', () => {
+  it('{z}/{x}/{y} を埋める', () => {
+    expect(tileUrl('https://example.com/{z}/{x}/{y}.png', 14, 14567, 6400)).toBe('https://example.com/14/14567/6400.png');
   });
 });

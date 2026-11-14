@@ -45,15 +45,25 @@ const BackgroundGeolocation = registerPlugin<
  * 記録を始める前に、通知と位置情報の許可を1つずつ順番に求める（watchLocation の前に呼ぶ）。
  * 地図の現在地表示（WebViewの位置情報）と同時に許可を求めると、許可ダイアログが2枚重なり、
  * Androidのタップ乗っ取り対策で下のダイアログが押せなくなるため、先にここで済ませておく。
+ * 位置情報が使えないと分かっているときだけ false（分からないときは true にして、測位のエラーに任せる）
  */
-export async function requestTrackingPermissions(): Promise<void> {
-  if (!backgroundCapable) return;
+export async function requestTrackingPermissions(): Promise<boolean> {
+  if (!backgroundCapable) {
+    // Web はブラウザが聞くので、拒否済みかどうかだけ確かめる
+    try {
+      return (await navigator.permissions.query({ name: 'geolocation' })).state !== 'denied';
+    } catch {
+      return true;
+    }
+  }
   await requestNotificationPermission();
   try {
-    const { location } = await BackgroundGeolocation.checkPermissions();
-    if (location !== 'granted') await BackgroundGeolocation.requestPermissions();
+    let { location } = await BackgroundGeolocation.checkPermissions();
+    if (location !== 'granted') ({ location } = await BackgroundGeolocation.requestPermissions());
+    return location === 'granted';
   } catch (e) {
     console.error(e);
+    return true;
   }
 }
 
@@ -92,7 +102,9 @@ function watchNative(onFix: (f: Fix) => void, onError: (e: FixError) => void): L
         // 許可は requestTrackingPermissions で求め済み。拒否されていれば NOT_AUTHORIZED が返る
         requestPermissions: false,
         stale: false,
-        distanceFilter: 0,
+        // 5m 動くまでは届けない。記録は8m以上動いたときだけ点を足すので、止まっている間（休憩・小屋泊）は
+        // JS を起こさずに済む（プラグインの測位は1秒間隔で固定のため、これがないと毎秒届く）
+        distanceFilter: 5,
       },
       (loc, err) => {
         if (err) {

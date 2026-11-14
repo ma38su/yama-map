@@ -8,7 +8,7 @@ import { BottomSheet } from '../ui/sheet';
 import { actualRows, type ActualRow } from '../track/actual';
 import { weatherLabel } from '../nav/weather';
 import { emptyFC, fitTo, src } from './mapView';
-import { isLate, paceOf, updateNav, type Nav, type Row } from './nav';
+import { departureTime, isLate, paceOf, updateNav, type Nav, type Row } from './nav';
 import { profile, updateProfile } from './profileView';
 import { recorder, viewingTrack } from './recording';
 import { clearRoute, exportRoute, removeMark, searchAlternativesForGpx } from './route';
@@ -31,6 +31,10 @@ function navRow(label: string, row: Row, primary: boolean, sunset: number | null
   el.append(lab, remain, clock);
   return el;
 }
+
+/** 出発時刻の表示：「5:00」、翌日なら「明日 5:00」 */
+const isTomorrow = (ms: number) => new Date(ms).toDateString() !== new Date().toDateString();
+const departLabel = (ms: number) => `${isTomorrow(ms) ? '明日 ' : ''}${fmtClock(ms)}`;
 
 /** 地点・時刻の天気の一行（予報がまだなければ null） */
 function wxLine(lngLat: LngLat, time: number): HTMLElement | null {
@@ -70,7 +74,7 @@ function actualRow(label: string, row: ActualRow, remain: string, primary: boole
 let actualCache: { key: string; rows: ActualRow[] } | null = null;
 function shownActual(): ActualRow[] {
   const shown = state.shown!;
-  const key = `${shown.track.id}:${shown.points.length}:${state.route?.name ?? ''}:${state.route?.marks.length ?? 0}`;
+  const key = `${shown.track.id}:${shown.points.length}:${state.revision}:${state.route?.name ?? ''}:${state.route?.marks.length ?? 0}`;
   if (actualCache?.key !== key) actualCache = { key, rows: actualRows(shown.points, state.route?.marks) };
   return actualCache.rows;
 }
@@ -137,7 +141,7 @@ export function renderCard(nav: Nav | null) {
     if (dest) card.append(navRow('目的地', dest, true, nav.sunset));
     const sub = h('div', 'nav-sub');
     if (nav.rejoin && dest && !dest.passed) sub.append(h('span', '', `ルートに戻るまで約${fmtMin(nav.rejoin.totalMin)}を含む`));
-    else if (!nav.onRoute && dest && !dest.passed) sub.append(h('span', '', settings.departAt && !recorder.recording ? `${settings.departAt}出発の場合` : '今出発した場合'));
+    else if (!nav.onRoute && dest && !dest.passed) sub.append(h('span', '', settings.departAt && !recorder.recording ? `${departLabel(nav.startAt)}出発の場合` : '今出発した場合'));
     if (nav.pace && nav.pace.evidenceMin > 10) sub.append(h('span', '', `実績ペース 標準の${nav.pace.overall.toFixed(2)}倍`));
     else sub.append(h('span', '', `ペース「${PACE_PRESETS[settings.pace].label}」`));
     sub.append(h('span', '', `休憩込み`));
@@ -297,7 +301,11 @@ function renderDeparture() {
   const input = $<HTMLInputElement>('depart-time');
   input.disabled = recorder.recording;
   if (document.activeElement !== input) input.value = now ? hhmm(new Date()) : settings.departAt!;
-  $('depart-note').textContent = recorder.recording ? '記録中は現在時刻から到着予想を出します' : '';
+  $('depart-note').textContent = recorder.recording
+    ? '記録中は現在時刻から到着予想を出します'
+    : !now && isTomorrow(departureTime())
+      ? '今より前の時刻なので、明日の出発として予想しています'
+      : '';
 }
 
 // ---------- 詳細のタブ ----------

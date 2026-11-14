@@ -11,16 +11,18 @@ import { state } from './state';
 
 export const popup = new Popup({ closeButton: false, maxWidth: '300px', offset: 8 });
 let popupSeq = 0;
-map.on('click', async (e) => {
-  const lngLat: LngLat = [e.lngLat.lng, e.lngLat.lat];
+map.on('click', (e) => void openPointPopup([e.lngLat.lng, e.lngLat.lat]));
+
+/** 地点の吹き出しを出す。knownName は地名の検索で選んだときの名前（なければ近くの地名を探す） */
+export async function openPointPopup(lngLat: LngLat, knownName?: string) {
   const seq = ++popupSeq;
   const box = h('div', 'pp');
-  const name = h('div', 'pp-name', ' ');
+  const name = h('div', 'pp-name', knownName ?? ' ');
   const ele = h('div', 'pp-ele', '標高 …');
   const coord = h('div', 'pp-coord', `${lngLat[1].toFixed(5)}, ${lngLat[0].toFixed(5)}`);
   const eta = h('div', 'pp-eta');
   const actions = h('div', 'pp-actions');
-  let placeName: string | null = null;
+  let placeName: string | null = knownName ?? null;
   for (const [kind, label] of [
     ['start', '出発地'],
     ['via', '経由地'],
@@ -32,7 +34,7 @@ map.on('click', async (e) => {
     actions.append(b);
   }
   box.append(name, ele, coord, eta, actions);
-  popup.setLngLat(e.lngLat).setDOMContent(box).addTo(map);
+  popup.setLngLat(lngLat).setDOMContent(box).addTo(map);
   // ルート上ならここまでの到着予想も出す
   const nav = state.lastNav;
   if (state.route && state.timeline && nav) {
@@ -41,13 +43,15 @@ map.on('click', async (e) => {
       if (pos.along > nav.fromAlong) {
         const ahead = estimate(state.timeline, nav.fromAlong, pos.along, nav.factors);
         const est = nav.rejoin ? addEstimates(nav.rejoin, ahead) : ahead;
-        eta.textContent = `ここまで ${formatDistance(pos.along - nav.fromAlong + (nav.rejoin?.distM ?? 0))}・${fmtClock(Date.now() + est.totalMin * 60_000)}着（${fmtMin(est.totalMin)}）`;
+        // 時刻は行程と同じ基準（出発時刻を指定していればその時刻）から数える
+        eta.textContent = `ここまで ${formatDistance(pos.along - nav.fromAlong + (nav.rejoin?.distM ?? 0))}・${fmtClock(nav.startAt + est.totalMin * 60_000)}着（${fmtMin(est.totalMin)}）`;
       } else eta.textContent = '通過済み';
     }
   }
-  const [el, nm] = await Promise.all([dem.elevation(lngLat[0], lngLat[1]), nearestPlaceName(lngLat, 200)]);
+  const [el, nm] = await Promise.all([dem.elevation(lngLat[0], lngLat[1]), knownName ? null : nearestPlaceName(lngLat, 200)]);
   if (seq !== popupSeq) return;
   ele.textContent = `標高 ${fmtM(el)}`;
+  if (knownName) return;
   placeName = nm;
   name.textContent = nm ? `${nm} 付近` : '';
-});
+}

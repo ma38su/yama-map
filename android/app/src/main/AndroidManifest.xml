@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 自動バックアップから保存した地図（WebView の Cache Storage）を除く。上限の25MBを超えると、記録も含めてバックアップされなくなるため -->
     <application
         android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -24,6 +28,13 @@
 
         </activity>
 
+        <!-- 記録用の測位サービス（@capacitor-community/background-geolocation）はほかのアプリから使えないようにする。
+             プラグインの設定では exported="true" になっている -->
+        <service
+            android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
+            android:exported="false"
+            tools:replace="android:exported" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -38,4 +49,8 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 道迷いアラートで振動させる -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 気圧計で標高を補う（ない端末でもインストールできるように required="false"） -->
+    <uses-feature android:name="android.hardware.sensor.barometer" android:required="false" />
 </manifest>

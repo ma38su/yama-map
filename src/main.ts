@@ -5,37 +5,46 @@
  */
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
-import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import type { Map as MlMap } from 'maplibre-gl';
-import { TERRAIN_EXAGGERATION } from './map/style';
 import type { ActiveRoute } from './nav/plan';
+import { backgroundCapable } from './track/location';
 import type { TrackRecorder } from './track/recorder';
 import { settings } from './settings';
 import { $ } from './ui/dom';
 import { addOverlayLayers, map, updateDaylight } from './app/mapView';
+import './app/backButton';
 import './app/install';
 import './app/mapTap';
-import { PRESETS, ensureBuiltinPlan } from './app/menu';
+import './app/compass';
+import './app/photos';
+import './app/search';
+import { ensureBuiltinPlan } from './app/menu';
 import { updateNav, type Nav } from './app/nav';
 import './app/offline';
 import { checkUnfinished, recorder, renderTrack, updateRecButton } from './app/recording';
 import { renderRoute } from './app/route';
 import './app/sheetView';
+import { whileVisible } from './app/scheduler';
 import { state } from './app/state';
 import { addWeatherLayers } from './app/weather';
 
 map.on('load', () => {
   addOverlayLayers();
   addWeatherLayers('route-casing');
-  if (settings.terrain) map.setTerrain({ source: 'dem-terrain', exaggeration: TERRAIN_EXAGGERATION });
+  if (settings.terrain) map.setTerrain({ source: 'dem-terrain', exaggeration: settings.terrainExaggeration });
   updateDaylight();
   // 空の色は1分ごと。裏に回っている間は止め、戻ったらすぐ合わせる
-  setInterval(() => document.visibilityState === 'visible' && updateDaylight(), 60_000);
-  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && updateDaylight());
+  whileVisible(60_000, updateDaylight);
   renderRoute();
   renderTrack();
   updateNav();
   void checkUnfinished();
+});
+
+// data-close の付いたボタンで、そのダイアログを閉じる
+document.addEventListener('click', (e) => {
+  const b = (e.target as Element | null)?.closest?.('[data-close]');
+  if (b) b.closest('dialog')?.close();
 });
 
 // ---------- レイアウト ----------
@@ -51,26 +60,13 @@ updateRecButton();
 void ensureBuiltinPlan();
 
 // ---------- Service Worker（オフライン対応） ----------
+// アプリ本体のキャッシュは sw.js がインストール時に行う（ビルドのファイル一覧が埋め込んである）。
+// アプリ版はアプリ本体が APK に入っているので、地図タイルだけを任せる
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
-  window.addEventListener('load', async () => {
-    try {
-      await navigator.serviceWorker.register('./sw.js');
-      await navigator.serviceWorker.ready;
-      // 初回表示で読み込んだアプリ本体（JS/CSS/ワーカー）とおすすめルートをすぐキャッシュし、次回から圏外でも起動できるようにする
-      const own = performance
-        .getEntriesByType('resource')
-        .map((e) => e.name)
-        .filter((u) => u.startsWith(location.origin));
-      const extra = [new URL(workerUrl, location.href).href, ...PRESETS.map((p) => new URL(p.file, location.href).href)];
-      const cache = await caches.open('yama-map-shell-v1');
-      await Promise.all(
-        [...new Set([...own, ...extra])].map((u) =>
-          cache.match(u, { ignoreVary: true }).then((hit) => (hit ? undefined : cache.add(u))).catch(() => undefined),
-        ),
-      );
-    } catch (e) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register(backgroundCapable ? './sw.js?native=1' : './sw.js').catch((e) => {
       console.warn('Service Worker の登録に失敗しました', e);
-    }
+    });
   });
 }
 

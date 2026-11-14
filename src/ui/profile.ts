@@ -4,7 +4,8 @@
  * タップ/なぞった位置を地図に連動させる。
  */
 import { formatDistance } from '../geo';
-import type { PaceSegment, RestSpan } from '../nav/eta';
+import { interp, type PaceSegment, type RestSpan } from '../nav/eta';
+import { fmtClock } from './dom';
 
 export type ProfileAxis = 'dist' | 'time';
 
@@ -47,11 +48,6 @@ export function paceColor(ratio: number, alpha = 1): string {
   const [r, g, b] = mid.map((m, i) => Math.round(m + (end[i] - m) * k));
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
-
-const clock = (ms: number) => {
-  const d = new Date(ms);
-  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
-};
 
 export class ElevationProfile {
   private s: ProfileSeries = { dists: [], eles: [] };
@@ -250,16 +246,28 @@ export class ElevationProfile {
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
     if (w === 0 || h === 0) return;
-    canvas.width = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
+    // 大きさが変わったときだけ設定し直す（設定するたびに描画用のメモリが取り直される）
+    const cw = Math.round(w * dpr);
+    const ch = Math.round(h * dpr);
+    if (canvas.width !== cw) canvas.width = cw;
+    if (canvas.height !== ch) canvas.height = ch;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
     const { dists, eles } = this.s;
-    const valid = eles.filter((e): e is number => e != null);
+    // 標高の最小・最大（Math.min(...配列) は点が多いと引数の上限を超えるので1つずつ）
+    let valid = 0;
+    let min = Infinity;
+    let max = -Infinity;
+    for (const e of eles) {
+      if (e == null) continue;
+      valid++;
+      if (e < min) min = e;
+      if (e > max) max = e;
+    }
     ctx.font = '11px system-ui, sans-serif';
     ctx.fillStyle = COLORS.text;
-    if (dists.length < 2 || valid.length < 2) {
+    if (dists.length < 2 || valid < 2) {
       ctx.textAlign = 'center';
       ctx.fillText('標高データがまだありません', w / 2, h / 2);
       return;
@@ -269,8 +277,6 @@ export class ElevationProfile {
     const xs = this.xs();
     const isTime = xs !== dists;
     const [v0, v1] = this.range();
-    let min = Math.min(...valid);
-    let max = Math.max(...valid);
     const span = Math.max(50, max - min);
     min = Math.floor((min - span * 0.08) / 10) * 10;
     max = Math.ceil((max + span * 0.08) / 10) * 10;
@@ -279,7 +285,7 @@ export class ElevationProfile {
     const sx = (v: number) => pad.left + ((v - v0) / (v1 - v0)) * pw;
     const sy = (e: number) => pad.top + (1 - (e - min) / (max - min)) * ph;
     /** 距離 d (m) の横軸の値 */
-    const xOfDist = (d: number) => (isTime ? interpolate(dists, xs, d) : d);
+    const xOfDist = (d: number) => (isTime ? interp(dists, xs, d) : d);
 
     // 標高の目盛り
     ctx.strokeStyle = COLORS.grid;
@@ -318,7 +324,7 @@ export class ElevationProfile {
       ctx.fillStyle = COLORS.text;
       // 端の目盛りの文字は、はみ出さないよう内側に寄せる
       ctx.textAlign = x < pad.left + 24 ? 'left' : x > w - pad.right - 24 ? 'right' : 'center';
-      ctx.fillText(isTime ? clock(v) : formatDistance(v), x, axisY);
+      ctx.fillText(isTime ? fmtClock(v) : formatDistance(v), x, axisY);
     }
 
     // 休憩（時刻の軸では幅のある帯）
@@ -483,7 +489,7 @@ export class ElevationProfile {
           ctx.arc(x, sy(e), 4, 0, Math.PI * 2);
           ctx.fill();
           const parts = [formatDistance(dists[i]), `${Math.round(e).toLocaleString()}m`];
-          if (this.hasTime) parts.push(clock(this.s.times![i]));
+          if (this.hasTime) parts.push(fmtClock(this.s.times![i]));
           const seg = pace?.segments.find((sg) => dists[i] >= sg.d0 && dists[i] <= sg.d1);
           if (seg) parts.push(`標準の${seg.ratio.toFixed(1)}倍`);
           ctx.font = 'bold 12px system-ui, sans-serif';
@@ -512,22 +518,6 @@ function timeStep(raw: number): number {
   const min = 60_000;
   for (const m of [5, 10, 15, 30, 60, 120, 180, 360]) if (m * min >= raw) return m * min;
   return 720 * min;
-}
-
-/** 単調増加の xs 上で ys を線形補間 */
-function interpolate(xs: number[], ys: number[], x: number): number {
-  const n = xs.length;
-  if (x <= xs[0]) return ys[0];
-  if (x >= xs[n - 1]) return ys[n - 1];
-  let lo = 0;
-  let hi = n - 1;
-  while (hi - lo > 1) {
-    const mid = (lo + hi) >> 1;
-    if (xs[mid] <= x) lo = mid;
-    else hi = mid;
-  }
-  const span = xs[hi] - xs[lo];
-  return span > 0 ? ys[lo] + ((ys[hi] - ys[lo]) * (x - xs[lo])) / span : ys[lo];
 }
 
 function nearestValid(eles: (number | null)[], i: number): number | null {

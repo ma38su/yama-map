@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 以降。クラウドへのバックアップ（上限25MB）からだけ保存した地図を除く。端末間の引っ越しには上限がないので、そのまま移す -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="app_webview/Default/Service Worker/" />
+    </cloud-backup>
+</data-extraction-rules>

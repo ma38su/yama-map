@@ -1,5 +1,5 @@
 /** オフライン用に地図タイル・道データを保存する */
-import { viewBounds } from '../geo';
+import { bbox, viewBounds } from '../geo';
 import { BASE_LAYERS } from '../map/style';
 import {
   MAX_TILES,
@@ -29,10 +29,9 @@ offlineBtn.addEventListener('click', async () => {
   // ルートがあればルート全体、なければ表示中の範囲
   let bounds: [number, number, number, number];
   if (state.route) {
-    const lngs = state.route.coords.map((c) => c[0]);
-    const lats = state.route.coords.map((c) => c[1]);
+    const [w, s, e, n] = bbox(state.route.coords);
     const pad = 0.005;
-    bounds = [Math.min(...lngs) - pad, Math.min(...lats) - pad, Math.max(...lngs) + pad, Math.max(...lats) + pad];
+    bounds = [w - pad, s - pad, e + pad, n + pad];
   } else {
     const c = map.getCenter();
     const canvas = map.getCanvas();
@@ -71,7 +70,7 @@ offlineBtn.addEventListener('click', async () => {
 });
 
 $('btn-cache-clear').addEventListener('click', async () => {
-  if (!confirm('保存した地図をすべて削除しますか？（記録した軌跡は消えません）')) return;
+  if (!confirm('保存した地図と、表示したときに残った地図をすべて削除しますか？（記録した軌跡は消えません）')) return;
   await clearTileCache();
   offlineInfo.textContent = '削除しました';
   void refreshStorage();

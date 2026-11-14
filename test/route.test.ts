@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cumulativeDistances, type LngLat } from '../src/geo';
-import { detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, preferredOption, routeSpan, trailShare, type ActiveRoute, type RouteOption } from '../src/nav/plan';
+import { departureAt, detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, preferredOption, routeSpan, trailShare, type ActiveRoute, type RouteOption } from '../src/nav/plan';
 import { clipLine, gsiKind, osmKind } from '../src/route/roadTiles';
 import { PROFILES, TrailGraph, overlapRatio, type RouteLine } from '../src/route/trailRouter';
 
@@ -214,5 +214,20 @@ describe('preferredOption', () => {
   it('同じ経路にまとめられた候補も名前で見つける', () => {
     const merged = [opt('登山道優先', 6000, 5000, ['最短距離']), opt('林道・車道経由', 5000, 500)];
     expect(preferredOption(merged, 'short')).toBe(0);
+  });
+});
+
+describe('departureAt', () => {
+  const at = (h: number, m = 0) => new Date(2026, 10, 15, h, m).getTime();
+
+  it('今日のその時刻にする', () => {
+    expect(departureAt('09:30', at(7))).toBe(at(9, 30));
+    // 少し前の時刻（出発したばかりの計画を見直すとき）は今日のまま
+    expect(departureAt('06:00', at(7))).toBe(at(6));
+  });
+
+  it('今より6時間以上前の時刻は翌日（夜に翌朝の出発時刻を入れたとき）', () => {
+    expect(departureAt('05:00', at(21))).toBe(new Date(2026, 10, 16, 5, 0).getTime());
+    expect(departureAt('15:00', at(21))).toBe(at(15));
   });
 });

@@ -78,6 +78,9 @@
         <button id="btn-fit" class="icon-btn" type="button" aria-label="ルート全体を表示" title="ルート全体を表示">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
         </button>
+        <button id="btn-search" class="icon-btn" type="button" aria-label="地名で探す" title="地名で探す">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" /><path d="M15 15l5 5" /></svg>
+        </button>
         <button id="btn-rec" class="rec-btn" type="button">
           <span class="dot" aria-hidden="true"></span><span class="text">記録開始</span>
         </button>
@@ -85,6 +88,9 @@
           <button id="btn-replay" class="rec-btn" type="button"><span aria-hidden="true">▶</span><span>リプレイ</span></button>
           <button id="btn-close-track" class="btn" type="button" aria-label="記録を閉じる">✕ 閉じる</button>
         </div>
+        <button id="btn-photo" class="icon-btn" type="button" aria-label="写真を記録に残す" title="写真を記録に残す" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
+        </button>
         <button id="btn-menu" class="icon-btn" type="button" aria-label="メニュー" title="メニュー">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
@@ -128,10 +134,16 @@
           <label class="toggle"><input type="checkbox" id="opt-daytone" /> 時刻に合わせて空と地図の色を変える（夜は暗め）</label>
           <label class="toggle"><input type="checkbox" id="opt-weather" /> 天気予報を出す（行程の天気・降水確率）</label>
           <label class="toggle"><input type="checkbox" id="opt-weatherfx" /> 3Dで雲・雨・雪を表示する（予報に合わせたアニメーション）</label>
+          <div class="field">
+            <span class="field-label">3Dの起伏の強調 <output id="terrain-ex-value" for="opt-terrain-ex"></output></span>
+            <input type="range" id="opt-terrain-ex" class="range" aria-label="3Dの起伏の強調" />
+          </div>
+          <p class="note">1.0 が実際の高さです。大きくすると勾配が急に見え、谷や尾根が分かりやすくなります。</p>
         </section>
 
         <section>
           <h3>記録</h3>
+          <label class="toggle"><input type="checkbox" id="opt-offroute" /> ルートから離れたら振動と通知で知らせる</label>
           <label class="toggle"><input type="checkbox" id="opt-wakelock" /> 記録中は画面を点けたままにする</label>
           <p class="note" id="wakelock-note">Web版は画面を消すと測位が止まります。ポケットに入れたまま記録するにはアプリ版が必要です。</p>
           <ul id="track-list" class="list"></ul>
@@ -170,6 +182,45 @@
           <p class="note">到着予想は目安です。道の状況・天候・体調で大きく変わります。紙の地図とコンパス、登山届の提出もお忘れなく。</p>
         </section>
       </form>
+    </dialog>
+
+    <dialog id="search" class="sheet-dlg" aria-label="地名で探す">
+      <form method="dialog" class="dlg">
+        <header>
+          <h2>地名で探す</h2>
+          <button class="close" type="button" data-close aria-label="閉じる">✕</button>
+        </header>
+        <input type="search" id="search-q" class="search-q" placeholder="山・沢・温泉・地名（例：鬼怒沼山）" enterkeyhint="search" autocomplete="off" />
+        <p class="note" id="search-note"></p>
+        <ul id="search-results" class="list search-results"></ul>
+        <p class="note">国土地理院の地名検索を使います。選ぶと、その場所を出発地・経由地・目的地にできます。</p>
+      </form>
+    </dialog>
+
+    <dialog id="photo-pick" class="sheet-dlg" aria-label="写真を記録に残す">
+      <div class="dlg">
+        <header>
+          <h2>写真を記録に残す</h2>
+          <button class="close" type="button" data-close aria-label="閉じる">✕</button>
+        </header>
+        <div class="stack">
+          <button type="button" class="btn block" id="photo-pick-camera"><span>カメラで撮る</span><small>今の現在地に置きます</small></button>
+          <button type="button" class="btn block" id="photo-pick-file"><span>写真から選ぶ</span><small>撮った場所（なければ撮った時刻と軌跡）に置きます</small></button>
+        </div>
+      </div>
+    </dialog>
+    <input type="file" id="photo-camera" accept="image/*" capture="environment" hidden />
+    <input type="file" id="photo-file" accept="image/jpeg,image/*" multiple hidden />
+
+    <dialog id="photo-view" class="photo-view" aria-label="写真">
+      <img id="photo-view-img" alt="記録の写真" />
+      <p id="photo-view-caption" class="photo-caption"></p>
+      <div class="row photo-actions">
+        <button type="button" class="btn" id="photo-prev" aria-label="前の写真">‹</button>
+        <button type="button" class="btn" id="photo-next" aria-label="次の写真">›</button>
+        <button type="button" class="btn danger" id="photo-delete">削除</button>
+        <button type="button" class="btn" data-close>閉じる</button>
+      </div>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

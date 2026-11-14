@@ -3,7 +3,7 @@
  *  - auto: 地図で選んだ地点の間を、道・登山道データでルート検索してつなぐ。候補を複数作って選べる
  *  - gpx : 読み込んだGPXの経路をそのまま使い、地点は経路上に投影する
  */
-import { cumulativeDistances, densify, distance, type LngLat } from '../geo';
+import { bbox, cumulativeDistances, densify, distance, type LngLat } from '../geo';
 import { loadOsmLines, loadRoadLines, type PlaceLabel } from '../route/roadTiles';
 import { PROFILES, TrailGraph, WAY_KINDS, overlapRatio, type CostProfile, type RouteLine, type WayKind } from '../route/trailRouter';
 import type { GpxData } from '../track/gpx';
@@ -117,9 +117,7 @@ export function normalizePoints(points: PlanPoint[]): PlanPoint[] {
 }
 
 function boundsAround(points: LngLat[]): [number, number, number, number] {
-  const lngs = points.map((p) => p[0]);
-  const lats = points.map((p) => p[1]);
-  let [w, s, e, n] = [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)];
+  let [w, s, e, n] = bbox(points);
   // 周囲に余裕（25% か 800m の大きい方）を持たせる：道は直線より大回りすることが多い
   const mLat = 1 / 110_574;
   const mLng = 1 / (111_320 * Math.cos(((s + n) / 2) * (Math.PI / 180)));
@@ -350,6 +348,21 @@ export function placeOnRoute(route: ActiveRoute, point: PlanPoint, maxOffset = 2
   if (point.kind !== 'via') marks = marks.filter((m) => m.kind !== point.kind);
   marks = [...marks, { ...point, along: pos.along }].sort((a, b) => a.along - b.along);
   return { ...route, marks };
+}
+
+/** 今より前の出発時刻をこれ以上さかのぼったら、翌日の出発とみなす */
+const PAST_DEPARTURE_MS = 6 * 3_600_000;
+
+/**
+ * 出発時刻 "HH:MM" を、now の日のその時刻 (ms) にする。
+ * 今より6時間以上前の時刻は翌日とみなす（夜に翌朝の出発時刻を入れたとき）
+ */
+export function departureAt(hhmm: string, now: number): number {
+  const [hh, mm] = hhmm.split(':').map(Number);
+  const d = new Date(now);
+  d.setHours(hh, mm, 0, 0);
+  if (d.getTime() < now - PAST_DEPARTURE_MS) d.setDate(d.getDate() + 1);
+  return d.getTime();
 }
 
 /** 行程に使う区間：出発地〜目的地 */

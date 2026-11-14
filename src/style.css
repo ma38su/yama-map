@@ -87,6 +87,10 @@ button,
 .maplibregl-ctrl-attrib {
   font-size: 10px;
 }
+/* 現在地の印の脈動は止める（無限に続くアニメーションは、表示している間ずっと画面の合成を毎フレーム走らせるため） */
+.maplibregl-user-location-dot::before {
+  animation: none;
+}
 /* シートを開いている間は縮尺・出典を隠す（シートの裏に回るため） */
 .sheet-open .maplibregl-ctrl-bottom-left,
 .sheet-open .maplibregl-ctrl-bottom-right {
@@ -551,7 +555,7 @@ button,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   padding-top: 8px;
 }
 .icon-btn {
@@ -602,7 +606,8 @@ button,
 }
 .rec-btn.recording .dot {
   border-radius: 3px;
-  animation: blink 1.6s ease-in-out infinite;
+  /* 記録を始めたときに3回だけ点滅（ずっと点滅させると、記録中ずっと画面の合成が毎フレーム走る） */
+  animation: blink 1.6s ease-in-out 3;
 }
 .view-actions {
   flex: 1;
@@ -611,12 +616,13 @@ button,
   gap: 8px;
 }
 .view-actions .rec-btn {
+  gap: 6px;
   font-size: 16px;
   white-space: nowrap;
 }
 .view-actions .btn {
   min-height: 56px;
-  padding: 0 16px;
+  padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: #fff;
@@ -773,7 +779,8 @@ progress {
 }
 
 /* ---------- メニュー（全画面に近いシート） ---------- */
-dialog#menu {
+dialog#menu,
+dialog.sheet-dlg {
   width: 100%;
   max-width: 560px;
   max-height: 88dvh;
@@ -784,7 +791,9 @@ dialog#menu {
   background: #fff;
   color: var(--ink);
 }
-dialog#menu::backdrop {
+dialog#menu::backdrop,
+dialog.sheet-dlg::backdrop,
+dialog.photo-view::backdrop {
   background: rgba(0, 0, 0, 0.35);
 }
 .dlg {
@@ -962,4 +971,131 @@ dialog#menu::backdrop {
 }
 .timeline li.pass .name {
   font-weight: 600;
+}
+
+/* ---------- 3D の起伏の強調 ---------- */
+.range {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.field-label output {
+  margin-left: 6px;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* ---------- 方位：現在地の扇と「進む向きを上」のボタン ---------- */
+.heading-cone {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.heading-cone::before {
+  content: '';
+  position: absolute;
+  left: -22px;
+  top: -46px;
+  width: 44px;
+  height: 46px;
+  background: radial-gradient(circle at 50% 100%, rgba(29, 161, 242, 0.75), rgba(29, 161, 242, 0.05) 80%);
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
+}
+.heading-cone[hidden] {
+  display: none;
+}
+.ctrl-heading svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vertical-align: middle;
+}
+.ctrl-heading[aria-pressed='true'] {
+  color: #1da1f2;
+}
+.ctrl-heading[aria-pressed='true'] svg {
+  fill: currentColor;
+}
+
+/* ---------- 地名の検索 ---------- */
+.search-q {
+  width: 100%;
+  min-height: var(--tap);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font: inherit;
+  font-size: 16px; /* iPhone で入力時に拡大されないように */
+}
+.search-results li {
+  padding: 0;
+}
+.search-item {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--tap);
+  padding: 10px 2px;
+  border: none;
+  background: none;
+  text-align: left;
+  color: var(--ink);
+}
+.search-item .title {
+  font-size: 15px;
+}
+.search-item .meta {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ---------- 記録の写真 ---------- */
+.photo-mk {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ddd;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.photo-mk img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+dialog.photo-view {
+  width: min(100% - 16px, 720px);
+  max-height: 92dvh;
+  padding: 8px;
+  border: none;
+  border-radius: 14px;
+  background: #111;
+  color: #fff;
+}
+.photo-view img {
+  display: block;
+  width: 100%;
+  max-height: 72dvh;
+  object-fit: contain;
+}
+.photo-caption {
+  margin: 8px 4px;
+  font-size: 13px;
+}
+.photo-actions {
+  justify-content: flex-end;
+}
+.photo-actions .btn {
+  min-width: 48px;
 }

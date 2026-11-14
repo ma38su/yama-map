@@ -1,11 +1,14 @@
 /**
  * 表示中の範囲の地図タイルを端末に保存する（山の中の圏外対策）。
- * 保存先は Service Worker と共有の Cache Storage。
+ * 保存先は Service Worker と共有の Cache Storage（src/sw.js）。
  * 地理院タイルのサーバーに負担をかけないよう、同時接続数と枚数に上限を設けている。
  */
-import { tileCount, tileRange, type TileRange } from '../geo';
+import { tileCount, tileRange, tileUrl, type TileRange } from '../geo';
 
+/** 保存した地図（消すまで残す） */
 export const TILE_CACHE = 'yama-map-tiles-v1';
+/** 表示しただけの地図（Service Worker が枚数を制限して残す） */
+export const BROWSE_CACHE = 'yama-map-browse-v1';
 export const MAX_TILES = 4000;
 const CONCURRENCY = 4;
 
@@ -36,7 +39,7 @@ export function planTiles(bounds: [number, number, number, number], layers: Laye
       const r: TileRange = tileRange(bounds, z);
       for (let x = r.minX; x <= r.maxX; x++) {
         for (let y = r.minY; y <= r.maxY; y++) {
-          urls.push(layer.template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)));
+          urls.push(tileUrl(layer.template, z, x, y));
         }
       }
     }
@@ -66,6 +69,7 @@ export async function downloadTiles(
   // ブラウザが容量不足時に勝手に消さないよう永続化を要求（拒否されても続行）
   await navigator.storage?.persist?.().catch(() => false);
   const cache = await caches.open(TILE_CACHE);
+  const browse = await caches.open(BROWSE_CACHE);
   const progress: DownloadProgress = { done: 0, total: urls.length, failed: 0 };
   let next = 0;
   const worker = async () => {
@@ -75,8 +79,11 @@ export async function downloadTiles(
         if (!(await cache.match(url, { ignoreVary: true }))) {
           const res = await fetch(url, { mode: 'cors', signal });
           // 404 = データなし（海など）。それも覚えておけばオフライン時に問い合わせずに済む
-          if (res.ok || res.status === 404) await cache.put(url, res);
-          else progress.failed++;
+          if (res.ok || res.status === 404) {
+            await cache.put(url, res);
+            // 表示しただけの地図に同じものがあれば、そちらは消す（二重に持たない）
+            await browse.delete(url, { ignoreVary: true });
+          } else progress.failed++;
         }
       } catch {
         if (signal?.aborted) break;
@@ -90,8 +97,9 @@ export async function downloadTiles(
   return progress;
 }
 
+/** 保存した地図と、表示しただけの地図をすべて消す */
 export async function clearTileCache(): Promise<void> {
-  await caches.delete(TILE_CACHE);
+  await Promise.all([caches.delete(TILE_CACHE), caches.delete(BROWSE_CACHE)]);
 }
 
 export async function storageUsage(): Promise<string | null> {

@@ -156,10 +156,11 @@ export function applyDaylight(map: MlMap, sun: SunPosition, { terrain, tone, clo
   const colorAltitude = tone ? sun.altitude : 90;
   map.setSky(overcastSky(skyAt(colorAltitude), cloud));
   const t = toneAt(colorAltitude);
-  for (const layer of map.getStyle().layers) {
-    if (layer.type !== 'raster') continue;
-    map.setPaintProperty(layer.id, 'raster-brightness-max', t.brightness);
-    map.setPaintProperty(layer.id, 'raster-saturation', t.saturation);
+  // getStyle() はスタイル全体を作り直すので使わず、レイヤーの名前と種類だけを見る
+  for (const id of map.getLayersOrder()) {
+    if (map.getLayer(id)?.type !== 'raster') continue;
+    map.setPaintProperty(id, 'raster-brightness-max', t.brightness);
+    map.setPaintProperty(id, 'raster-saturation', t.saturation);
   }
   if (map.getLayer(TINT_LAYER)) {
     map.setPaintProperty(TINT_LAYER, 'fill-color', t.tint);

@@ -2,14 +2,14 @@
  * 記録のリプレイ：歩いた位置を時間を縮めて動かし、地図（3D）のカメラが後ろから追いかける。
  * 休憩（点と点のあいだが空いているところ）は速く送る。
  */
-import { distance, type LngLat } from '../geo';
+import { cumulativeDistances, distance, type LngLat } from '../geo';
 import type { TrackPoint } from '../track/db';
-import { $, fmtClock } from '../ui/dom';
-import { lineFC, map, pointFC, setTerrain, src, updateDaylight } from './mapView';
+import { $, fileStamp, fmtClock } from '../ui/dom';
+import { lineFC, map, pointFC, replayDoneGradient, setTerrain, src, updateDaylight } from './mapView';
 import { profile } from './profileView';
 import { updateRecButton } from './recording';
 import { captureSupported, capturing, startCapture, stopCapture } from './replayVideo';
-import { settings } from '../settings';
+import { saveSettings, savedOverrides, settings } from '../settings';
 import { state } from './state';
 
 /** 再生の速さ（実際の何倍か） */
@@ -23,6 +23,10 @@ const DAYLIGHT_STEP_MS = 2 * 60_000;
 const LOOK_AHEAD_M = 120;
 
 let pts: TrackPoint[] = [];
+/** 点ごとの累積距離 (m)。歩き終えた線をどこまで塗るかに使う */
+let cumD: number[] = [];
+/** 歩き終えた線を塗った割合（変わったときだけ塗り直す） */
+let drawnProgress = -1;
 let t = 0;
 let speedIdx = 1;
 let playing = false;
@@ -100,10 +104,16 @@ function render(follow: boolean) {
     state.daylightAt = t;
     updateDaylight();
   }
-  // 歩き終えた線とグラフの印は、点を一つ進んだときだけ描き直す（毎フレーム作り直すと重い）
+  // 歩き終えた線は、線全体のうち歩いた距離の割合までを塗る（線を作り直さず、塗る範囲だけを変える）
+  const total = cumD[cumD.length - 1];
+  const progress = total > 0 ? (cumD[i] + (cumD[Math.min(i + 1, cumD.length - 1)] - cumD[i]) * f) / total : 0;
+  if (Math.abs(progress - drawnProgress) >= 0.0005) {
+    drawnProgress = progress;
+    if (map.getLayer('replay-done')) map.setPaintProperty('replay-done', 'line-gradient', replayDoneGradient(progress));
+  }
+  // グラフの印は、点を一つ進んだときだけ描き直す
   if (i !== lastIndex) {
     lastIndex = i;
-    src('replay-done')?.setData(lineFC(pts.slice(0, i + 1).map(lngLat)));
     profile.setMarker(i);
   }
 }
@@ -157,10 +167,14 @@ export function startReplay() {
   const shown = state.shown;
   if (!shown || shown.points.length < 2) return;
   pts = shown.points;
+  cumD = cumulativeDistances(pts.map(lngLat));
   t = pts[0].t;
   lastIndex = -1;
+  drawnProgress = -1;
+  src('replay-done')?.setData(lineFC(pts.map(lngLat)));
   bar.hidden = false;
   terrainBefore = settings.terrain;
+  savedOverrides.terrain = terrainBefore;
   setTerrain(true);
   bearing = headingAt(0) ?? map.getBearing();
   const intro = 1200;
@@ -183,11 +197,14 @@ export function stopReplay() {
   bar.hidden = true;
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
   state.daylightAt = null;
+  delete savedOverrides.terrain;
   // 2D から始めたリプレイなら 2D に戻す（setTerrain が空の色も合わせ直す）
   if (!terrainBefore) setTerrain(false);
+  else saveSettings();
   updateDaylight();
   src('replay')?.setData(pointFC(null));
   src('replay-done')?.setData(lineFC([]));
+  if (map.getLayer('replay-done')) map.setPaintProperty('replay-done', 'line-gradient', replayDoneGradient(0));
   lastIndex = -1;
   profile.setMarker(null);
 }
@@ -215,10 +232,8 @@ recBtn.addEventListener('click', () => {
   }
   const track = state.shown?.track;
   if (!track || pts.length < 2) return;
-  const d = new Date(track.startedAt);
-  const pad = (n: number) => String(n).padStart(2, '0');
   startCapture(
-    `yama-replay-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`,
+    `yama-replay-${fileStamp(track.startedAt)}`,
     () => [track.name, clock.textContent ?? ''],
     () => $('sheet').getBoundingClientRect().top,
   );

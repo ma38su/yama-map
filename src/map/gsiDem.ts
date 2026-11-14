@@ -38,14 +38,20 @@ export function heightToTerrarium(h: number): [number, number, number] {
   return [r, g, b];
 }
 
-/** RGBA 配列を地理院形式から Terrarium 形式へその場で変換する（無効値は 0m 扱い） */
+/**
+ * RGBA 配列を地理院形式から Terrarium 形式へその場で変換する（無効値は 0m 扱い）。
+ * 1タイル6.5万画素を地図の描画と同じスレッドで回すので、gsiRgbToHeight・heightToTerrarium と同じ計算を
+ * 配列を作らずに書いている
+ */
 export function convertGsiToTerrarium(px: Uint8ClampedArray): void {
   for (let i = 0; i < px.length; i += 4) {
-    const h = gsiRgbToHeight(px[i], px[i + 1], px[i + 2]) ?? 0;
-    const [r, g, b] = heightToTerrarium(h);
-    px[i] = r;
-    px[i + 1] = g;
-    px[i + 2] = b;
+    const x = px[i] * 65536 + px[i + 1] * 256 + px[i + 2];
+    const h = x === NA ? 0 : (x < NA ? x : x - 0x1000000) * 0.01;
+    const v = Math.max(0, Math.min(65535.996, h + 32768));
+    const fl = Math.floor(v);
+    px[i] = Math.floor(v / 256);
+    px[i + 1] = fl % 256;
+    px[i + 2] = Math.floor((v - fl) * 256);
     px[i + 3] = 255;
   }
 }
@@ -88,18 +94,57 @@ async function decodeImage(blob: Blob): Promise<ImageData> {
   return ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height);
 }
 
-let flatTile: Promise<ImageBitmap> | null = null;
-/** データのないタイル（海・範囲外）用の 0m 平面 */
-function flatTerrariumTile(): Promise<ImageBitmap> {
+let flatTile: ImageData | null = null;
+/**
+ * データのないタイル（海・範囲外）用の 0m 平面。画像（ImageBitmap）は地図のワーカーへ渡すと使えなくなるので、
+ * 中身だけを覚えておき、画像は毎回作る
+ */
+function flatTerrariumTile(): ImageData {
   if (!flatTile) {
-    const data = new ImageData(256, 256);
-    for (let i = 0; i < data.data.length; i += 4) {
-      data.data[i] = 128; // 0m = 32768 = 128*256
-      data.data[i + 3] = 255;
+    flatTile = new ImageData(256, 256);
+    for (let i = 0; i < flatTile.data.length; i += 4) {
+      flatTile.data[i] = 128; // 0m = 32768 = 128*256
+      flatTile.data[i + 3] = 255;
     }
-    flatTile = createImageBitmap(data);
   }
   return flatTile;
+}
+
+/**
+ * 変換したタイル。3D の地形と陰影は別のソースなので、同じタイルがほぼ同時に2回頼まれる。
+ * 取得と変換は1回で済ませ、画像（ImageBitmap は地図のワーカーへ渡すと使えなくなる）だけを毎回作る。null はデータなし（404）
+ */
+const converted = new Map<string, Promise<ImageData | null>>();
+const CONVERTED_MAX = 16;
+
+async function fetchTerrarium(url: string, signal: AbortSignal): Promise<ImageData | null> {
+  const res = await fetch(url, { signal });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`DEM tile ${res.status}: ${url}`);
+  const img = await decodeImage(await res.blob());
+  convertGsiToTerrarium(img.data);
+  return img;
+}
+
+async function terrariumTile(url: string, signal: AbortSignal): Promise<ImageData | null> {
+  for (let attempt = 0; ; attempt++) {
+    let p = converted.get(url);
+    const mine = !p;
+    if (!p) {
+      const created = fetchTerrarium(url, signal);
+      p = created;
+      converted.set(url, created);
+      // 失敗（途中で取り消された場合も）は覚えておかない
+      created.catch(() => converted.get(url) === created && converted.delete(url));
+      while (converted.size > CONVERTED_MAX) converted.delete(converted.keys().next().value as string);
+    }
+    try {
+      return await p;
+    } catch (e) {
+      // ほかの依頼が取り消したせいで失敗したなら、自分の分を取り直す
+      if (mine || signal.aborted || attempt > 0) throw e;
+    }
+  }
 }
 
 let registered = false;
@@ -108,12 +153,8 @@ export function registerGsiDemProtocol(): void {
   registered = true;
   addProtocol(GSI_DEM_PROTOCOL, async (params, abortController) => {
     const url = params.url.replace(`${GSI_DEM_PROTOCOL}://`, 'https://');
-    const res = await fetch(url, { signal: abortController.signal });
-    if (res.status === 404) return { data: await flatTerrariumTile() };
-    if (!res.ok) throw new Error(`DEM tile ${res.status}: ${url}`);
-    const img = await decodeImage(await res.blob());
-    convertGsiToTerrarium(img.data);
-    return { data: await createImageBitmap(img) };
+    const img = await terrariumTile(url, abortController.signal);
+    return { data: await createImageBitmap(img ?? flatTerrariumTile()) };
   });
 }
 

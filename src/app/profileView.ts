@@ -49,7 +49,7 @@ function profileTrack(): TrackPoint[] | null {
 // 区間ごとのペースは点が増えたときだけ計算し直す
 let paceCache: { key: string; value: ReturnType<typeof paceSegments> } | null = null;
 function cachedPace(points: TrackPoint[]) {
-  const key = `${points[0].trackId}:${points.length}`;
+  const key = `${points[0].trackId}:${points.length}:${state.revision}`;
   if (paceCache?.key !== key) paceCache = { key, value: paceSegments(points) };
   return paceCache.value;
 }
@@ -81,12 +81,12 @@ export function updateProfile(nav: Nav | null) {
     profile.setMarker(replayIndex());
   } else if (state.route && state.timeline) {
     profileCoords = state.route.coords;
-    // 時刻の軸：このペースでの到着予想。歩いている途中なら、今いる位置が今の時刻になるように
+    // 時刻の軸：行程と同じ到着予想。歩いている途中なら、今いる位置（ルートに戻る地点）の時刻から逆算して出発地の時刻を決める
     const span = routeSpan(state.route);
     const factors = nav?.factors ?? defaultFactors(settings.pace);
     const tl = state.timeline;
-    const start = nav?.onRoute
-      ? Date.now() - estimate(tl, span.from, nav.fromAlong, factors).totalMin * 60_000
+    const start = nav
+      ? nav.startAt + ((nav.rejoin?.totalMin ?? 0) - estimate(tl, span.from, nav.fromAlong, factors).totalMin) * 60_000
       : departureTime();
     profile.setSeries({
       dists: state.route.dists,

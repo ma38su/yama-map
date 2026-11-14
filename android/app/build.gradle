@@ -1,4 +1,16 @@
+import groovy.json.JsonSlurper
+
 apply plugin: 'com.android.application'
+
+// 版は package.json の version から決める（"1.2.3" → versionName "1.2.3"、versionCode 10203）。
+// 上書きインストールで更新するには versionCode が上がっている必要があるので、package.json の version を上げれば揃って上がる
+def appVersion = new JsonSlurper().parse(rootProject.file('../package.json')).version as String
+def (vMajor, vMinor, vPatch) = appVersion.tokenize('.-').take(3).collect { it as int }
+
+// リリース用の鍵（android/keystore.properties。コミットしない。作り方は docs/android.md）。なければ署名しない APK になる
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) keystorePropsFile.withInputStream { keystoreProps.load(it) }
 
 android {
     namespace = "io.github.ma38su.yamamap"
@@ -7,8 +19,8 @@ android {
         applicationId "io.github.ma38su.yamamap"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode vMajor * 10000 + vMinor * 100 + vPatch
+        versionName appVersion
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,10 +28,21 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (keystorePropsFile.exists()) signingConfig signingConfigs.release
         }
     }
 }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 6〜11 の自動バックアップ。保存した地図（WebView の Cache Storage）は大きいので除く。記録（IndexedDB）と設定（localStorage）は残す -->
+<full-backup-content>
+    <exclude domain="root" path="app_webview/Default/Service Worker/" />
+</full-backup-content>

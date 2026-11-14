@@ -24,6 +24,12 @@ export const fmtHM = (min: number) => {
   const m = Math.max(0, Math.round(min));
   return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
 };
+/** ファイル名に付ける日時「20261115-0930」 */
+export const fileStamp = (ms: number) => {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+};
 
 
 export function segButtons(wrap: HTMLElement, items: readonly (readonly [string, string])[], onPick: (id: string) => void) {
@@ -63,12 +69,21 @@ export function download(filename: string, data: string | Blob) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
 }
 
+/** 動画などを書き出すときの1回分の大きさ。全体を一度に base64 にすると、長い動画でメモリが足りなくなる */
+const WRITE_CHUNK = 3 * 1024 * 1024;
+
 async function shareFile(filename: string, data: string | Blob): Promise<void> {
-  // 文字列はそのまま、動画などは base64 にして書き出す
-  const { uri } =
-    typeof data === 'string'
-      ? await Filesystem.writeFile({ path: filename, data, directory: Directory.Cache, encoding: Encoding.UTF8 })
-      : await Filesystem.writeFile({ path: filename, data: await blobToBase64(data), directory: Directory.Cache });
+  const file = { path: filename, directory: Directory.Cache };
+  let uri: string;
+  if (typeof data === 'string') {
+    ({ uri } = await Filesystem.writeFile({ ...file, data, encoding: Encoding.UTF8 }));
+  } else {
+    // 動画などは小分けにして base64 で書き足す（ネイティブ側で1回分ずつ戻して追記される）
+    ({ uri } = await Filesystem.writeFile({ ...file, data: await blobToBase64(data.slice(0, WRITE_CHUNK)) }));
+    for (let at = WRITE_CHUNK; at < data.size; at += WRITE_CHUNK) {
+      await Filesystem.appendFile({ ...file, data: await blobToBase64(data.slice(at, at + WRITE_CHUNK)) });
+    }
+  }
   await Share.share({ title: filename, files: [uri] });
 }
 

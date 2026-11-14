@@ -121,6 +121,24 @@ export function weatherAt(h: HourlyWeather, time: number): WeatherAt | null {
   };
 }
 
+const HOUR_MS = 3_600_000;
+
+/** 端末に保存する形。時刻は1時間おきなので、先頭の時刻と本数だけにする（保存の大きさが3分の2ほどになる） */
+export type StoredWeather = Omit<HourlyWeather, 't'> & { t?: number[]; t0?: number; n?: number };
+
+export function packWeather(h: HourlyWeather): StoredWeather {
+  const { t, ...rest } = h;
+  const hourly = t.length > 0 && t.every((v, i) => i === 0 || v - t[i - 1] === HOUR_MS);
+  return hourly ? { ...rest, t0: t[0], n: t.length } : h;
+}
+
+/** 保存した形から戻す（以前の形の t の配列もそのまま読む）。読めない・古い形（風向なし）なら null */
+export function unpackWeather(s: StoredWeather): HourlyWeather | null {
+  const t = s.t ?? (s.t0 != null && s.n != null ? Array.from({ length: s.n }, (_, i) => s.t0! + i * HOUR_MS) : null);
+  if (!t || !s.dir) return null;
+  return { t, pop: s.pop, precip: s.precip, code: s.code, cloud: s.cloud, temp: s.temp, wind: s.wind, dir: s.dir };
+}
+
 /** 天気コード（WMO）の絵文字と名前 */
 export function weatherLabel(code: number | null): { icon: string; label: string } {
   if (code == null) return { icon: '', label: '' };

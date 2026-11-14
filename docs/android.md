@@ -13,14 +13,16 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 
 | 場所 | Web版 | アプリ版 |
 |---|---|---|
-| 記録の測位（`track/location.ts`） | `navigator.geolocation.watchPosition` | `@capacitor-community/background-geolocation`。フォアグラウンドサービスとして動き、記録中は通知「やまマップで記録中」が出る |
-| 許可（`requestTrackingPermissions`） | ブラウザに任せる | 記録開始時に、通知 → 位置情報の順に**1つずつ**求める |
+| 記録の測位（`track/location.ts`） | `navigator.geolocation.watchPosition` | `@capacitor-community/background-geolocation`。フォアグラウンドサービスとして動き、記録中は通知「やまマップで記録中」が出る。5m 動くまでは届けない（`distanceFilter`） |
+| 許可（`requestTrackingPermissions`） | ブラウザに任せる（拒否済みなら記録を始めない） | 記録開始時に、通知 → 位置情報の順に**1つずつ**求める。位置情報を拒否されたら記録を始めない |
+| 戻るボタン（`app/backButton.ts`） | ブラウザに任せる | アプリを終了しない。メニュー → 地図の吹き出し → 下のシート → リプレイの順に閉じ、何もなければ裏に回す（`@capacitor/app`） |
 | 画面に戻ったとき（`track/recorder.ts`） | 測位をやり直す | ネイティブの測位は止まらないので、やり直さない |
 | 地図の青い現在地マーク（`app/recording.ts` の `feedNativeFix`） | WebView の位置情報 | WebView の位置情報が古いときは、ネイティブの位置で上書きする |
 | 画面を点けたままにする（`settings.ts`） | 初期値オン | 初期値オフ。メニューの説明文も差し替える（`app/menu.ts`） |
 | 「画面を消すと記録が止まります」の警告（`app/status.ts`） | 出す | 出さない |
-| GPX の書き出し（`ui/dom.ts` の `download`） | `<a download>` | キャッシュフォルダに書き出し、共有シートを開く（`@capacitor/filesystem`・`@capacitor/share`） |
+| GPX・動画の書き出し（`ui/dom.ts` の `download`） | `<a download>` | キャッシュフォルダに書き出し、共有シートを開く（`@capacitor/filesystem`・`@capacitor/share`）。動画は3MBずつ書き足す |
 | メニューの「ホーム画面に追加」（`app/install.ts`） | 出す | 出さない |
+| Service Worker（`src/sw.js`） | アプリ本体と地図タイルをキャッシュ | 地図タイルだけ（`./sw.js?native=1` で登録）。アプリ本体は APK に入っている |
 
 ### なぜこうしているか
 
@@ -36,6 +38,13 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
   `addWatcherWithRetry` で、500ms ごとに最大5回やり直します。
 - **現在地マークを上書きする理由**：画面オフから戻った直後は、WebView の位置情報の再開に数秒かかります。
   その間、記録の線は最新の位置まで伸びているのに、マークだけが遅れて見えます。
+- **戻るボタンでアプリを終了しない理由**：プラグインは、画面（Activity）が終了すると測位サービスも止めます（`handleOnDestroy`）。
+  Android 11 以前は、戻るボタンで画面が終了します。終了すると記録が止まるので、裏に回すだけにしています。
+  履歴からスワイプして消したときは、今の作りでは記録が止まります（[常駐アプリとしての改善計画](android-plan.md)）。
+- **`distanceFilter: 5` の理由**：プラグインは1秒間隔の高精度測位で固定です。0 だと、止まっていても毎秒 JS まで届きます。
+  記録は8m以上動いたときだけ点を足すので、5m 未満の動きは届けなくても記録は変わりません。休憩中や小屋泊のあいだ、JS が起きなくなります。
+- **定期処理を表のときだけ動かす理由**：Capacitor は、裏に回っても JS のタイマーを止めません（`KeepRunning` の初期値）。
+  記録中はアプリが動き続けるので、到着予想や空の色の定期処理は、画面が表のときだけ動かしています（`app/scheduler.ts`）。
 
 ## 使っているプラグイン
 
@@ -46,10 +55,13 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 | `@capacitor/core`・`@capacitor/android`・`@capacitor/cli` | Capacitor 本体（8.x） |
 | `@capacitor-community/background-geolocation` | バックグラウンドの測位（フォアグラウンドサービスと通知） |
 | `@capacitor/local-notifications` | 通知の許可を求める（通知そのものは出さない） |
-| `@capacitor/filesystem`・`@capacitor/share` | GPX の書き出し |
+| `@capacitor/filesystem`・`@capacitor/share` | GPX・動画の書き出し |
+| `@capacitor/app` | 戻るボタン（アプリを終了せず、裏に回す） |
 
 アプリが求める主な権限は、位置情報（精密・おおよそ）、フォアグラウンドサービス（位置情報）、通知、インターネットです。
 権限はプラグインのマニフェストから自動で追加されるので、`android/app/src/main/AndroidManifest.xml` には書いていません。
+ただし、測位プラグインのサービスはプラグインの設定では `exported="true"`（ほかのアプリから使える）になっているので、
+`AndroidManifest.xml` で `exported="false"` に上書きしています。
 
 ## ビルドの準備（初回だけ）
 
@@ -148,12 +160,42 @@ APK ファイルをそのまま送ります（LINE・メール・Google ドラ�
   **アップデートは同じ鍵で署名した APK でないと上書きできません**。
   別の PC でビルドした APK は、一度アンインストールしないと入らず、端末に保存した記録も消えます。
   ビルドする PC を決めておくか、鍵をバックアップしておきます。
-- 長く配るなら、リリース用の鍵を作って `assembleRelease` で署名するほうが確実です。
-  鍵は `keytool -genkey` で作り、`android/app/build.gradle` に `signingConfigs` を追加します。
-  鍵とパスワードはコミットしないでください。
-- `android/app/build.gradle` の `versionCode`（整数）と `versionName` は 1 / "1.0" のままです。
-  Play ストアに出すときは、更新のたびに `versionCode` を上げる必要があります。
-  APK を直接配るだけなら、上げなくても上書きできます。
+- 常駐させて長く使うなら、リリース版をリリース用の鍵で署名して入れるほうが確実です。
+  デバッグ版は USB で WebView の中身を見られる状態で（`chrome://inspect`）、動作もやや遅くなります。
+- 版は `package.json` の `version` から決めます（`android/app/build.gradle`）。
+  `"1.2.3"` なら `versionName` は `1.2.3`、`versionCode` は `10203` です。
+  **更新のたびに `package.json` の version を上げてください**（versionCode が下がると上書きできません）。
+
+#### リリース版を作る
+
+1. 鍵を作ります（初回だけ）。`android/` で次を実行し、パスワードを決めます。
+
+   ```bash
+   keytool -genkeypair -v -keystore yamamap-release.jks -alias yamamap -keyalg RSA -keysize 4096 -validity 36500
+   ```
+
+2. `android/keystore.properties` を作ります。
+
+   ```properties
+   storeFile=yamamap-release.jks
+   storePassword=（決めたパスワード）
+   keyAlias=yamamap
+   keyPassword=（決めたパスワード）
+   ```
+
+   `keystore.properties` と `*.jks` は `android/.gitignore` でコミットしないようにしています。
+   **鍵とパスワードをなくすと、同じアプリとして上書き更新できなくなります**。パスワードマネージャーなどに控えておきます。
+
+3. ビルドして入れます。
+
+   ```bash
+   npm run android:release
+   adb install -r android/app/build/outputs/apk/release/app-release.apk
+   ```
+
+   `keystore.properties` がないと、署名していない `app-release-unsigned.apk` ができます（端末には入りません）。
+
+デバッグ版からリリース版に切り替えるときは、鍵が違うので一度アンインストールが要ります（端末の記録は消えるので、先に GPX で書き出しておきます）。
 
 ### アプリの情報
 
@@ -165,6 +207,7 @@ APK ファイルをそのまま送ります（LINE・メール・Google ドラ�
 | 記録中の通知 | アイコン `res/drawable/ic_tracking.xml`（山の形）。色 `#16805c`、チャンネル名「軌跡の記録」（`strings.xml`） |
 | アプリのアイコン | PWA と同じ山のアイコン（`public/icons/icon.svg`）。アダプティブアイコンの前景は `res/drawable/ic_launcher_foreground.xml`、背景色は `res/values/ic_launcher_background.xml`（`#16805c`）。Android 7 以前向けの `res/mipmap-*/ic_launcher*.png` は `public/icons/icon-512.png` を `sips -z` で縮小したもの。アイコンを変えたら両方を作り直す |
 | 起動画面 | Capacitor の初期画像のまま（`res/drawable*/splash.png`） |
+| 自動バックアップ | 記録（IndexedDB）と設定は残し、保存した地図（WebView の `Service Worker/` フォルダ）は除く（`res/xml/backup_rules.xml`・`data_extraction_rules.xml`）。地図を含めると上限の25MBを超え、バックアップ自体がされなくなるため。除く場所は WebView の版で変わる可能性があるので、実機で確かめる |
 
 ## 確かめたこと・残っていること
 
@@ -176,9 +219,13 @@ APK ファイルをそのまま送ります（LINE・メール・Google ドラ�
 - 停止で通知が消えること
 - GPX を共有シートで書き出せること
 
-残っていること：
+2026-11-15 の見直し（戻るボタン・`distanceFilter`・バックアップ・リリース版の準備など）は、`npm run android:build` でビルドできることと、
+組み上がったマニフェストでサービスが `exported="false"` になっていることまで確かめました。エミュレータ・実機での動作はまだ確かめていません。
 
+残っていること（詳しくは [常駐アプリとしての改善計画](android-plan.md)）：
+
+- 履歴からスワイプして消しても記録が続くようにする（記録の点をネイティブ側で保存する）
 - 実機での確認。特に、メーカー独自の省電力機能でアプリが止められないか
 - 起動画面（スプラッシュ）の画像
-- リリース用の鍵での署名
+- リリース用の鍵を作って署名する（ビルドの準備は済み）
 - 標高を気圧センサーで測る（今は標高タイルの値を使っている）

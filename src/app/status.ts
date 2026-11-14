@@ -23,6 +23,9 @@ export function renderStatus() {
   else if (flash && flash.until > Date.now()) {
     text = flash.text;
     warn = flash.warn;
+  } else if (rs.saveFailed && recorder.recording) {
+    text = '記録を端末に保存できていません（空き容量を確認してください）。保存できるまで記録し続けます';
+    warn = true;
   } else if (rs.error && recorder.recording) {
     text = rs.error;
     warn = true;

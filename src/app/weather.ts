@@ -4,7 +4,18 @@
  * 表示する時刻は今（リプレイ中は再生中の時刻）。
  */
 import type { LngLat } from '../geo';
-import { WEATHER_CELL_DEG, cellCenter, cellKey, fetchForecast, weatherAt, type HourlyWeather, type WeatherAt } from '../nav/weather';
+import {
+  WEATHER_CELL_DEG,
+  cellCenter,
+  cellKey,
+  fetchForecast,
+  packWeather,
+  unpackWeather,
+  weatherAt,
+  type HourlyWeather,
+  type StoredWeather,
+  type WeatherAt,
+} from '../nav/weather';
 import { settings } from '../settings';
 import { hookDaylight, map } from './mapView';
 import { updateNav } from './nav';
@@ -26,14 +37,32 @@ const queue = new Set<string>();
 let flushTimer = 0;
 
 try {
-  const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as Record<string, { h: HourlyWeather; at: number }>;
-  for (const [k, v] of Object.entries(saved)) if (Date.now() - v.at < KEEP_MS && v.h.dir) cache.set(k, v);
+  const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as Record<string, { h: StoredWeather; at: number }>;
+  for (const [k, v] of Object.entries(saved)) {
+    const h = Date.now() - v.at < KEEP_MS ? unpackWeather(v.h) : null;
+    if (h) cache.set(k, { h, at: v.at });
+  }
 } catch {
   /* 保存領域が使えない環境でも動かす */
 }
 /** 端末に残すマス目の数の上限（歩き回っても保存領域を使いすぎないように） */
 const KEEP_CELLS = 200;
+/**
+ * 保存は少しまとめてから行う（localStorage への書き込みは画面の処理を止めるので、3D で動かして続けて届くたびには書かない）。
+ * 裏に回るときは待たずに保存する
+ */
+const PERSIST_DELAY_MS = 3000;
+let persistTimer = 0;
+function schedulePersist() {
+  clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(persist, PERSIST_DELAY_MS);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && persistTimer) persist();
+});
 function persist() {
+  clearTimeout(persistTimer);
+  persistTimer = 0;
   const now = Date.now();
   for (const [k, v] of cache) if (now - v.at > KEEP_MS) cache.delete(k);
   if (cache.size > KEEP_CELLS) {
@@ -41,7 +70,9 @@ function persist() {
     for (const [k] of old) cache.delete(k);
   }
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(cache)));
+    const out: Record<string, { h: StoredWeather; at: number }> = {};
+    for (const [k, v] of cache) out[k] = { h: packWeather(v.h), at: v.at };
+    localStorage.setItem(STORE_KEY, JSON.stringify(out));
   } catch {
     /* 容量が足りなければ保存しない */
   }
@@ -70,7 +101,7 @@ async function flush() {
   try {
     const list = await fetchForecast(keys.map(cellCenter), AbortSignal.timeout(15_000));
     keys.forEach((k, i) => list[i] && cache.set(k, { h: list[i], at: Date.now() }));
-    persist();
+    schedulePersist();
     updateNav();
     updateWeatherLayers(true);
   } catch (e) {
@@ -241,8 +272,11 @@ export function addWeatherLayers(before?: string) {
  * 雲の層と雨・雪を、今（リプレイ中は再生中の時刻）の予報に合わせる。
  * 雲の画像は時刻が10分動くか、表示範囲のマス目が変わったときだけ描き直す
  */
+/** 3D の雲・雨・雪を出すか */
+const fxOn = () => settings.weather && settings.weatherFx && settings.terrain;
+
 export function updateWeatherLayers(force = false) {
-  const show = settings.weather && settings.weatherFx && settings.terrain;
+  const show = fxOn();
   const layerOn = !!map.getLayer('weather-cloud');
   if (layerOn) map.setLayoutProperty('weather-cloud', 'visibility', show ? 'visible' : 'none');
   updateRain(show);
@@ -323,7 +357,7 @@ function updateRain(show: boolean) {
 // 地図を動かしたら、画面のどこで降っているかを数えなおす（動かしている間は間引く）
 let rainMoveAt = 0;
 map.on('move', () => {
-  if (!settings.weatherFx || !settings.terrain || performance.now() - rainMoveAt < 300) return;
+  if (!fxOn() || performance.now() - rainMoveAt < 300) return;
   rainMoveAt = performance.now();
   updateRain(true);
 });

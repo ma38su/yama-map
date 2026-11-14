@@ -1,6 +1,6 @@
 /** 端末に保存する設定と、空や地図の色を決める時刻 */
 import type { LngLat } from './geo';
-import { BASE_LAYERS, type BaseLayerId } from './map/style';
+import { BASE_LAYERS, TERRAIN_EXAGGERATION, TERRAIN_EXAGGERATION_RANGE, type BaseLayerId } from './map/style';
 import { PACE_PRESETS, type PacePreset } from './nav/eta';
 import { ROUTE_PREFS, type RoutePref } from './nav/plan';
 import { backgroundCapable } from './track/location';
@@ -11,12 +11,16 @@ export interface Settings {
   /** 空と地図の色を時刻に合わせる（夜は暗め） */
   dayTone: boolean;
   terrain: boolean;
+  /** 3D の起伏の強調（1 = 実際の高さ。大きいほど勾配が急に見える） */
+  terrainExaggeration: number;
   /** 天気予報を出す（行程の降水確率など） */
   weather: boolean;
   /** 天気の演出：3D の雲・雨・雪、曇りの空（weather がオンのときだけ） */
   weatherFx: boolean;
   /** 記録中は画面を点けたままにする（アプリ版は画面オフでも記録できるので初期値オフ） */
   wakeLock: boolean;
+  /** 記録中にルートから離れたら振動と通知で知らせる */
+  offRouteAlert: boolean;
   pace: PacePreset;
   /** ルートの探し方 */
   routePref: RoutePref;
@@ -27,19 +31,27 @@ export interface Settings {
   builtinPlan?: boolean;
 }
 const SETTINGS_KEY = 'yama-map:settings';
-export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, weather: true, weatherFx: true, wakeLock: !backgroundCapable, pace: 'normal', routePref: 'trail', departAt: null };
+export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, terrainExaggeration: TERRAIN_EXAGGERATION, weather: true, weatherFx: true, wakeLock: !backgroundCapable, offRouteAlert: true, pace: 'normal', routePref: 'trail', departAt: null };
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}'));
 } catch {
   /* 保存領域が使えない環境でも動かす */
 }
 if (!(settings.base in BASE_LAYERS)) settings.base = 'std';
+if (!(settings.terrainExaggeration >= TERRAIN_EXAGGERATION_RANGE.min && settings.terrainExaggeration <= TERRAIN_EXAGGERATION_RANGE.max)) {
+  settings.terrainExaggeration = TERRAIN_EXAGGERATION;
+}
 if (!(settings.pace in PACE_PRESETS)) settings.pace = 'normal';
 if (!(settings.routePref in ROUTE_PREFS)) settings.routePref = 'trail';
 if (settings.departAt != null && !/^\d{2}:\d{2}$/.test(settings.departAt)) settings.departAt = null;
+/**
+ * 保存するときだけ差し替える値。リプレイで一時的に 3D にしているあいだ、元の 2D のほうを保存するのに使う
+ * （途中でアプリを閉じても、次の起動が 3D にならないように）
+ */
+export const savedOverrides: Partial<Settings> = {};
 export function saveSettings() {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings, ...savedOverrides }));
   } catch {
     /* noop */
   }
