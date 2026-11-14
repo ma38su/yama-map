@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- 自動バックアップから保存した地図（WebView の Cache Storage）を除く。上限の25MBを超えると、記録も含めてバックアップされなくなるため -->
     <application
@@ -28,12 +27,11 @@
 
         </activity>
 
-        <!-- 記録用の測位サービス（@capacitor-community/background-geolocation）はほかのアプリから使えないようにする。
-             プラグインの設定では exported="true" になっている -->
+        <!-- 軌跡の記録（TrackingService.java）。画面とは別に動き続けるフォアグラウンドサービス。ほかのアプリからは使えない -->
         <service
-            android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
+            android:name=".TrackingService"
             android:exported="false"
-            tools:replace="android:exported" />
+            android:foregroundServiceType="location" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -49,6 +47,12 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 軌跡の記録（TrackingService）。通知の許可（POST_NOTIFICATIONS）は @capacitor/local-notifications のマニフェストから入る -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <!-- 道迷いアラートで振動させる -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- 気圧計で標高を補う（ない端末でもインストールできるように required="false"） -->

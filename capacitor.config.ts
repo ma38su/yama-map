@@ -6,7 +6,7 @@ const config: CapacitorConfig = {
   appName: 'やまマップ',
   webDir: 'dist',
   android: {
-    // バックグラウンドで5分ほど経つと位置の通知が止まる問題を避ける（background-geolocation の推奨設定）
+    // 裏に回って5分ほど経つと、ネイティブから JS への知らせ（記録の点を保存した、など）が届かなくなる問題を避ける
     useLegacyBridge: true,
   },
 };

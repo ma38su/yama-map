@@ -14,8 +14,9 @@
 
 **結論：まずPWAで地図まわりを作り込み、記録を本格的に使うなら Capacitor でアプリ化**するのがおすすめです。Android 版はこの方針で作りました（`src/track/location.ts`）。
 地図・UI のコード（MapLibre + TypeScript）はそのまま使い回せ、GPS部分だけ
-[`@capacitor-community/background-geolocation`](https://github.com/capacitor-community/background-geolocation)
-などのネイティブプラグインに差し替えれば、画面を消したまま記録できます。
+ネイティブの測位に差し替えれば、画面を消したまま記録できます。
+最初は [`@capacitor-community/background-geolocation`](https://github.com/capacitor-community/background-geolocation) を使いましたが、
+画面の終了と一緒に測位が止まり、点の保存も WebView 任せだったので、今はアプリの中のフォアグラウンドサービスで測位と保存をしています（[android.md](android.md)）。
 
 PWA版では代わりに、記録中は **Screen Wake Lock で画面を点けたまま** にしています（画面の明るさを最低にすると電池の減りを抑えられます）。
 

@@ -22,7 +22,7 @@ src/
 public/
   routes/             おすすめルートの GPX
 test/                 vitest のユニットテスト（nav・track・map の計算が中心）
-android/              Capacitor の Android プロジェクト（docs/android.md）
+android/              Capacitor の Android プロジェクト（docs/android.md）。記録のサービス（TrackingService）と気圧計はアプリの中の Java
 ```
 
 `nav/`・`route/`・`track/`・`map/` の計算部分は DOM に依存しないので、テストから直接呼べます。画面に関わるものは `app/` に置いています。
@@ -109,8 +109,12 @@ android/              Capacitor の Android プロジェクト（docs/android.md
 - 表示中のルートは `localStorage`（`yama-map:route`）に保存し、次の起動で戻す
 
 ### 記録（`track/`）
-- `location.ts`：測位元。Web は `watchPosition`、アプリ版はネイティブのバックグラウンド測位（`backgroundCapable` で判定）
+- `location.ts`：測位元。Web は `watchPosition`。アプリ版（`backgroundCapable` で判定）は、アプリの中のフォアグラウンドサービス（`TrackingService.java`）が測位して端末の SQLite に保存し、
+  JS は保存の知らせ（最大20秒ぶんまとめて）と表に出たときに取り込む（`watchNative`）。点に気圧が付いていれば、それを使う。
+  取り込みは測位の時刻で重ならないようにし（`since`）、まとめて取り込むときは最後の1点で IndexedDB にまとめて保存する（`Fix.more`）
 - `recorder.ts`：誤差40m超の測位を捨て、8m以上動いたときだけ点を足す。Web 版は設定で画面を点けたままにする（Wake Lock）
+  - 記録を終えるとき（`stop`）は、アプリ版の端末側にたまっている点を取り込み終えてから締め、IndexedDB に保存できたら端末側の点を消す
+  - 途中で閉じられた記録は、続ける（`resume`）か、端末側に残った点を取り込んで締める（`finish`）。アプリ版で裏で記録が続いていれば、聞かずに続ける（`app/recording.ts` の `checkUnfinished`）
   - 位置情報の許可を先に求め、拒否されたら記録を始めない（点のない「記録中」の記録を残さない）
   - 端末に保存できなかった点は覚えておき、次の点と一緒に保存し直す。保存できていない間は `saveFailed` で上に警告を出す
   - 圏外で標高が取れなかった点は、記録の終了時と記録を開いたときに標高タイルから埋める（`fillMissingElevations`、`app/recording.ts` の `fillShownElevations`）。埋めたら `state.revision` を上げ、点の数で覚えている計算（ペース・実績）を作り直す

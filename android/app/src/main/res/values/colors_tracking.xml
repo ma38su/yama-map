@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 記録中の通知の色（アプリのアイコンの背景と同じ緑） -->
+    <color name="tracking">#16805c</color>
+</resources>

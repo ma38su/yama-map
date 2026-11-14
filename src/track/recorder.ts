@@ -17,7 +17,15 @@ import type { DemSampler } from '../map/gsiDem';
 import { BaroFusion } from './baroAltitude';
 import { readPressure, setBarometer } from './barometer';
 import { appendPoints, getPoints, putTrack, updateElevations, type Track, type TrackPoint } from './db';
-import { backgroundCapable, requestTrackingPermissions, watchLocation, type Fix, type LocationWatch } from './location';
+import {
+  backgroundCapable,
+  clearRecordedFixes,
+  readRecordedFixes,
+  requestTrackingPermissions,
+  watchLocation,
+  type Fix,
+  type LocationWatch,
+} from './location';
 
 const MAX_ACCURACY_M = 40;
 const MIN_STEP_M = 8;
@@ -109,9 +117,52 @@ export class TrackRecorder {
     return true;
   }
 
-  /** 前回途中で閉じられた記録を再開する */
+  /** 前回途中で閉じられた記録を再開する（アプリ版で裏で記録が続いていれば、そのまま続ける） */
   async resume(track: Track): Promise<void> {
-    this.track = track;
+    await this.load(track);
+    void setBarometer(true);
+    await requestTrackingPermissions();
+    this.startWatch();
+    await this.acquireWakeLock();
+    this.emit();
+  }
+
+  /** 記録を終える。アプリ版は端末にたまっている測位を取り込み終えてから締める。endedAt は終えた時刻（通知の「停止」のとき） */
+  async stop(endedAt = Date.now()): Promise<Track | null> {
+    if (!this.track) return null;
+    await this.stopWatch();
+    void setBarometer(false);
+    await this.queue;
+    return this.close(endedAt);
+  }
+
+  /**
+   * 途中で閉じられた記録を、再開せずに締める（アプリ版では、端末に残っている測位を取り込んでから）。
+   * endedAt がなければ最後の点の時刻
+   */
+  async finish(track: Track, endedAt?: number): Promise<Track> {
+    await this.load(track);
+    this.emit();
+    await readRecordedFixes(track.id, this.points.at(-1)?.t ?? 0, (fix) => this.enqueue(fix));
+    await this.queue;
+    return (await this.close(endedAt ?? this.points.at(-1)?.t ?? track.startedAt))!;
+  }
+
+  private async close(endedAt: number): Promise<Track | null> {
+    if (!this.track) return null;
+    this.track = { ...this.track, status: 'done', endedAt };
+    await this.save();
+    // IndexedDB に保存し終えたら、アプリ版の端末側の測位は消す（保存できていなければ残しておく）
+    if (!this.unsaved.length) await clearRecordedFixes(this.track.id);
+    await this.releaseWakeLock();
+    const finished = this.track;
+    this.emit();
+    return finished;
+  }
+
+  /** 保存してある記録と点を読み込み、続きを記録できるようにする */
+  private async load(track: Track): Promise<void> {
+    this.track = { ...track, status: 'recording' };
     this.points = await getPoints(track.id);
     this.unsaved = [];
     this.rejectedJumps = 0;
@@ -122,24 +173,6 @@ export class TrackRecorder {
       this.gain.push(p.ele);
       if (p.hpa != null) this.baro.push(p.t, p.hpa, p.dem ?? p.ele);
     }
-    void setBarometer(true);
-    await requestTrackingPermissions();
-    this.startWatch();
-    await this.acquireWakeLock();
-    this.emit();
-  }
-
-  async stop(): Promise<Track | null> {
-    if (!this.track) return null;
-    this.stopWatch();
-    void setBarometer(false);
-    await this.queue;
-    this.track = { ...this.track, status: 'done', endedAt: Date.now() };
-    await this.save();
-    await this.releaseWakeLock();
-    const finished = this.track;
-    this.emit();
-    return finished;
   }
 
   /** 記録中の今の標高を気圧計から求める（気圧計がない・まだ合わせられていなければ null） */
@@ -164,14 +197,18 @@ export class TrackRecorder {
     this.emit();
   }
 
+  private enqueue(fix: Fix): void {
+    this.lastFix = fix;
+    this.error = null;
+    this.queue = this.queue.then(() => this.handle(fix)).catch((e) => console.error(e));
+  }
+
   private startWatch(): void {
-    this.stopWatch();
+    const track = this.track;
+    if (!track) return;
+    void this.stopWatch();
     this.watch = watchLocation(
-      (fix) => {
-        this.lastFix = fix;
-        this.error = null;
-        this.queue = this.queue.then(() => this.handle(fix)).catch((e) => console.error(e));
-      },
+      (fix) => this.enqueue(fix),
       (err) => {
         // 一時的な取得失敗は、直近20秒以内に測位できていれば表示しない
         const recent = this.lastFix && Date.now() - this.lastFix.timestamp < 20_000;
@@ -180,38 +217,41 @@ export class TrackRecorder {
           err === 'denied' ? '位置情報の利用が許可されていません' : '現在地を取得できません（GPSの電波が弱い可能性があります）';
         this.emit();
       },
+      {
+        trackId: track.id,
+        startedAt: track.startedAt,
+        since: this.points.at(-1)?.t ?? 0,
+        // 通知の「停止」で止められたら、ここまでで締める
+        onEnded: (endedAt) => void this.stop(endedAt),
+      },
     );
   }
 
-  private stopWatch(): void {
-    this.watch?.stop();
+  private async stopWatch(): Promise<void> {
+    const watch = this.watch;
     this.watch = null;
+    await watch?.stop();
   }
 
   private async handle(pos: Fix): Promise<void> {
     const track = this.track;
     if (!track || track.status !== 'recording') return;
     const { lng, lat, accuracy, altitude } = pos;
-    if (accuracy > MAX_ACCURACY_M) {
-      this.emit();
-      return;
-    }
+    if (accuracy > MAX_ACCURACY_M) return this.settle(pos);
     const last = this.points[this.points.length - 1];
     let step = 0;
     if (last) {
       step = distance([last.lng, last.lat], [lng, lat]);
-      if (step < Math.max(MIN_STEP_M, accuracy / 2)) {
-        this.emit();
-        return;
-      }
+      if (step < Math.max(MIN_STEP_M, accuracy / 2)) return this.settle(pos);
       const dt = (pos.timestamp - last.t) / 1000;
       if (dt > 0 && step / dt > MAX_SPEED_MPS && this.rejectedJumps < 3) {
         this.rejectedJumps++;
-        return;
+        return this.settle(pos);
       }
     }
     this.rejectedJumps = 0;
-    const [dem, hpa] = await Promise.all([this.dem.elevation(lng, lat), readPressure()]);
+    // アプリ版は測位と一緒に残した気圧を使う（取り込むのが後になっても、その時の気圧）
+    const [dem, hpa] = await Promise.all([this.dem.elevation(lng, lat), pos.hpa !== undefined ? pos.hpa : readPressure()]);
     const ele = hpa != null ? this.baro.push(pos.timestamp, hpa, dem) : dem;
     const point: TrackPoint = {
       trackId: track.id,
@@ -233,7 +273,13 @@ export class TrackRecorder {
       pointCount: this.points.length,
     };
     this.unsaved.push(point);
-    await this.save();
+    await this.settle(pos);
+  }
+
+  /** まとめて取り込んでいるあいだは何もせず、最後の1点（ふだんの測位は毎回）で、たまった点を保存して知らせる */
+  private async settle(pos: Fix): Promise<void> {
+    if (pos.more) return;
+    if (this.unsaved.length) await this.save();
     this.emit();
   }
 

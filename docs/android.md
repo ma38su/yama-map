@@ -3,6 +3,8 @@
 Android アプリ版は、PWA と同じ Web のコード（`dist/`）を [Capacitor](https://capacitorjs.com) の WebView に入れたものです。
 アプリにした目的は、**画面を消したままでも軌跡を記録できる**ようにすることです。
 ブラウザの位置情報（`watchPosition`）は、画面オフやバックグラウンドで止まってしまいます。
+アプリ版の記録は、アプリの中のフォアグラウンドサービスが測位して端末に保存するので、画面を消しても、ほかのアプリを使っても、
+アプリを履歴からスワイプして消しても続きます。止まるのは「記録終了」か、通知の「停止」を押したときだけです。
 
 iOS 版はありません（Xcode と Apple Developer Program が必要なため保留）。
 
@@ -13,10 +15,11 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 
 | 場所 | Web版 | アプリ版 |
 |---|---|---|
-| 記録の測位（`track/location.ts`） | `navigator.geolocation.watchPosition` | `@capacitor-community/background-geolocation`。フォアグラウンドサービスとして動き、記録中は通知「やまマップで記録中」が出る。5m 動くまでは届けない（`distanceFilter`） |
-| 許可（`requestTrackingPermissions`） | ブラウザに任せる（拒否済みなら記録を始めない） | 記録開始時に、通知 → 位置情報の順に**1つずつ**求める。位置情報を拒否されたら記録を始めない |
+| 記録の測位（`track/location.ts`） | `navigator.geolocation.watchPosition` | アプリの中のフォアグラウンドサービス（`TrackingService.java`）。届いた測位をその場で端末（SQLite）に保存する。JS は保存の知らせ（最大20秒ぶんまとめて）と、表に出たときに取り込む。記録中は通知「やまマップで記録中」（経過時間・距離・停止ボタン）が出る |
+| 許可（`requestTrackingPermissions`） | ブラウザに任せる（拒否済みなら記録を始めない） | 記録開始時に、通知 → 位置情報の順に**1つずつ**求める（位置情報は `TrackingPlugin` の `requestPermissions`）。位置情報を拒否されたら記録を始めない |
 | 戻るボタン（`app/backButton.ts`） | ブラウザに任せる | アプリを終了しない。メニュー → 地図の吹き出し → 下のシート → リプレイの順に閉じ、何もなければ裏に回す（`@capacitor/app`） |
-| 画面に戻ったとき（`track/recorder.ts`） | 測位をやり直す | ネイティブの測位は止まらないので、やり直さない |
+| 画面に戻ったとき（`track/recorder.ts`） | 測位をやり直す | ネイティブの記録は止まらないので、やり直さず、たまった測位を取り込む |
+| アプリを開いたとき（`app/recording.ts` の `checkUnfinished`） | 記録中のまま閉じていたら、続けるか聞く | 裏で記録が続いていれば、聞かずに取り込んで続ける。通知の「停止」で止めていれば、そこまでで締める。端末の再起動などで止まっていたら、続けるか聞く |
 | 地図の青い現在地マーク（`app/recording.ts` の `feedNativeFix`） | WebView の位置情報 | WebView の位置情報が古いときは、ネイティブの位置で上書きする |
 | 画面を点けたままにする（`settings.ts`） | 初期値オン | 初期値オフ。メニューの説明文も差し替える（`app/menu.ts`） |
 | 「画面を消すと記録が止まります」の警告（`app/status.ts`） | 出す | 出さない |
@@ -26,23 +29,23 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 
 ### なぜこうしているか
 
-- **許可を1つずつ求める理由**：WebView の位置情報（地図の現在地表示）とプラグインが同時に許可を求めると、許可ダイアログが2枚重なります。
-  すると Android のタップ乗っ取り対策で、どちらのダイアログも押せなくなります。そのため記録開始前に順番に許可を求め、
-  `addWatcher` には `requestPermissions: false` を渡しています。
+- **記録の点をネイティブ側で保存する理由**：以前は `@capacitor-community/background-geolocation` から測位を JS に届け、JS が IndexedDB に保存していました。
+  このプラグインは画面（Activity）の終了と一緒に測位サービスを止めるうえ、WebView が止まると点が保存されないので、
+  履歴からスワイプしたときや OS に画面を止められたときに記録が途切れました。今はサービスが画面と関係なく動き続け、点はその場で SQLite に入ります。
+  JS は取り込んで IndexedDB に保存し終えたら、端末側の点を消します（`clearFixes`）。
+- **測位の間隔とまとめて受け取る理由**：測位は1秒間隔の高精度で、5m 動いたときだけ受け取ります（記録は8m以上動いたときだけ点を足すので、記録は変わらない）。
+  さらに最大20秒ぶんをまとめて受け取ります（`setMaxUpdateDelayMillis`）。止まっていれば何も届かず、歩いていても最大20秒に1回しか JS を起こしません。
+- **許可を1つずつ求める理由**：WebView の位置情報（地図の現在地表示）と記録の許可を同時に求めると、許可ダイアログが2枚重なります。
+  すると Android のタップ乗っ取り対策で、どちらのダイアログも押せなくなります。そのため記録開始前に順番に許可を求めています。
 - **通知の許可を `@capacitor/local-notifications` で求める理由**：Android 13 以降は、記録中の通知を出すのに通知の許可が要ります。
   WebView には Notification API が無いので、このプラグインを許可の取得にだけ使っています。
   通知を拒否されても測位は続きます。
-- **`useLegacyBridge: true`（`capacitor.config.ts`）の理由**：これが無いと、バックグラウンドで5分ほど経つと位置が届かなくなります。
-  プラグインの推奨設定です。
-- **「Service not running.」で再試行する理由**：起動直後は、プラグインの測位サービスがまだ接続されていないことがあります。
-  `addWatcherWithRetry` で、500ms ごとに最大5回やり直します。
+- **`useLegacyBridge: true`（`capacitor.config.ts`）の理由**：これが無いと、裏に回って5分ほど経つと、ネイティブから JS への知らせ（`notifyListeners`）が届かなくなります。
+  道迷いアラートは、画面を消していても点が届くたびに判定するので、知らせが届く必要があります（届かなくても点は端末に残り、表に出たときに取り込まれます）。
 - **現在地マークを上書きする理由**：画面オフから戻った直後は、WebView の位置情報の再開に数秒かかります。
   その間、記録の線は最新の位置まで伸びているのに、マークだけが遅れて見えます。
-- **戻るボタンでアプリを終了しない理由**：プラグインは、画面（Activity）が終了すると測位サービスも止めます（`handleOnDestroy`）。
-  Android 11 以前は、戻るボタンで画面が終了します。終了すると記録が止まるので、裏に回すだけにしています。
-  履歴からスワイプして消したときは、今の作りでは記録が止まります（[常駐アプリとしての改善計画](android-plan.md)）。
-- **`distanceFilter: 5` の理由**：プラグインは1秒間隔の高精度測位で固定です。0 だと、止まっていても毎秒 JS まで届きます。
-  記録は8m以上動いたときだけ点を足すので、5m 未満の動きは届けなくても記録は変わりません。休憩中や小屋泊のあいだ、JS が起きなくなります。
+- **戻るボタンでアプリを終了しない理由**：Android 11 以前は、戻るボタンで画面が終了します。記録は続きますが、次に開くときに地図や WebView を作り直すことになり、
+  開いていたシートや表示の状態もなくなるので、裏に回すだけにしています。
 - **定期処理を表のときだけ動かす理由**：Capacitor は、裏に回っても JS のタイマーを止めません（`KeepRunning` の初期値）。
   記録中はアプリが動き続けるので、到着予想や空の色の定期処理は、画面が表のときだけ動かしています（`app/scheduler.ts`）。
 
@@ -53,15 +56,22 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 | パッケージ | 用途 |
 |---|---|
 | `@capacitor/core`・`@capacitor/android`・`@capacitor/cli` | Capacitor 本体（8.x） |
-| `@capacitor-community/background-geolocation` | バックグラウンドの測位（フォアグラウンドサービスと通知） |
-| `@capacitor/local-notifications` | 通知の許可を求める（通知そのものは出さない） |
+| `@capacitor/local-notifications` | 通知の許可を求める。道迷いアラートの通知 |
 | `@capacitor/filesystem`・`@capacitor/share` | GPX・動画の書き出し |
 | `@capacitor/app` | 戻るボタン（アプリを終了せず、裏に回す） |
 
-アプリが求める主な権限は、位置情報（精密・おおよそ）、フォアグラウンドサービス（位置情報）、通知、インターネットです。
-権限はプラグインのマニフェストから自動で追加されるので、`android/app/src/main/AndroidManifest.xml` には書いていません。
-ただし、測位プラグインのサービスはプラグインの設定では `exported="true"`（ほかのアプリから使える）になっているので、
-`AndroidManifest.xml` で `exported="false"` に上書きしています。
+アプリの中に作ったもの（`android/app/src/main/java/io/github/ma38su/yamamap/`。`MainActivity` で登録する）：
+
+| ファイル | 用途 |
+|---|---|
+| `TrackingService.java` | 軌跡の記録（位置情報タイプのフォアグラウンドサービス）。測位は `play-services-location` の FusedLocationProviderClient。気圧計があれば気圧も点に付ける。通知の経過時間・距離・停止ボタン |
+| `TrackingStore.java` | 記録中の測位を入れておく SQLite（`tracking.db`） |
+| `TrackingPlugin.java` | JS（`src/track/location.ts`）から使う `Tracking`。`start`・`stop`・`status`・`getFixes`・`clearFixes` と、位置情報の許可 |
+| `BarometerPlugin.java` | 気圧計（`src/track/barometer.ts`）。記録中の今の標高を気圧から求める |
+
+アプリが求める主な権限は、位置情報（精密・おおよそ）、フォアグラウンドサービス（位置情報）、通知、インターネット、振動です。
+通知の許可（`POST_NOTIFICATIONS`）は `@capacitor/local-notifications` のマニフェストから入り、ほかは `AndroidManifest.xml` に書いています。
+記録のサービスは `exported="false"` で、ほかのアプリからは使えません。
 
 ## ビルドの準備（初回だけ）
 
@@ -204,7 +214,7 @@ APK ファイルをそのまま送ります（LINE・メール・Google ドラ�
 | アプリID | `io.github.ma38su.yamamap`（`capacitor.config.ts`。変えると別アプリ扱いになる） |
 | 表示名 | やまマップ（`capacitor.config.ts`、`android/app/src/main/res/values/strings.xml`） |
 | 対応 Android | 7.0 以降（`minSdkVersion 24`）、`targetSdkVersion 36`（`android/variables.gradle`） |
-| 記録中の通知 | アイコン `res/drawable/ic_tracking.xml`（山の形）。色 `#16805c`、チャンネル名「軌跡の記録」（`strings.xml`） |
+| 記録中の通知 | アイコン `res/drawable/ic_tracking.xml`（山の形）。色 `res/values/colors_tracking.xml`（`#16805c`）、チャンネル名「軌跡の記録」・文言・停止ボタン（`strings.xml` の `tracking_*`） |
 | アプリのアイコン | PWA と同じ山のアイコン（`public/icons/icon.svg`）。アダプティブアイコンの前景は `res/drawable/ic_launcher_foreground.xml`、背景色は `res/values/ic_launcher_background.xml`（`#16805c`）。Android 7 以前向けの `res/mipmap-*/ic_launcher*.png` は `public/icons/icon-512.png` を `sips -z` で縮小したもの。アイコンを変えたら両方を作り直す |
 | 起動画面 | Capacitor の初期画像のまま（`res/drawable*/splash.png`） |
 | 自動バックアップ | 記録（IndexedDB）と設定は残し、保存した地図（WebView の `Service Worker/` フォルダ）は除く（`res/xml/backup_rules.xml`・`data_extraction_rules.xml`）。地図を含めると上限の25MBを超え、バックアップ自体がされなくなるため。除く場所は WebView の版で変わる可能性があるので、実機で確かめる |
@@ -219,12 +229,19 @@ APK ファイルをそのまま送ります（LINE・メール・Google ドラ�
 - 停止で通知が消えること
 - GPX を共有シートで書き出せること
 
-2026-11-15 の見直し（戻るボタン・`distanceFilter`・バックアップ・リリース版の準備など）は、`npm run android:build` でビルドできることと、
-組み上がったマニフェストでサービスが `exported="false"` になっていることまで確かめました。エミュレータ・実機での動作はまだ確かめていません。
+2026-11-15 に、記録をネイティブ側で保存する作りにして、エミュレータ（Android 16、Pixel 7）で次のことを確認しました。
+
+- 記録中に履歴からアプリを消して（`adb shell am stack remove <タスク番号>`）も、通知が残って測位が続くこと
+- そのあとアプリを開くと、聞かずに同じ記録を続け、消していた間の点も取り込まれること
+- 通知の「停止」で、アプリが開いていれば記録が締まること。アプリを消したあとに止めた場合も、次に開いたときに締まること
+- 「記録終了」で記録が締まり、端末側の点が消えること
+- 点に気圧が付くこと
+
+戻るボタン・バックアップの除外・リリース版の署名は、エミュレータ・実機ではまだ確かめていません。
 
 残っていること（詳しくは [常駐アプリとしての改善計画](android-plan.md)）：
 
-- 履歴からスワイプして消しても記録が続くようにする（記録の点をネイティブ側で保存する）
+- システムに止められたあとの再起動（`START_STICKY`）で記録が続くか。Android 12 以降は裏からフォアグラウンドサービスを始められないことがある
 - 実機での確認。特に、メーカー独自の省電力機能でアプリが止められないか
 - 起動画面（スプラッシュ）の画像
 - リリース用の鍵を作って署名する（ビルドの準備は済み）

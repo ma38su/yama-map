@@ -1,7 +1,7 @@
 /** 現在地と記録（開始・終了、記録の線、途中で閉じた記録の再開） */
 import { distance, formatDistance, type LngLat } from '../geo';
-import { getPoints, listTracks, putTrack, type Track } from '../track/db';
-import { backgroundCapable, type Fix } from '../track/location';
+import { listTracks, type Track } from '../track/db';
+import { backgroundCapable, trackingStatus, type Fix } from '../track/location';
 import { TrackRecorder, fillMissingElevations } from '../track/recorder';
 import { saveSettings, settings } from '../settings';
 import { $, fmtM } from '../ui/dom';
@@ -98,8 +98,12 @@ document.addEventListener('visibilitychange', () => feedNativeFix(recorder.state
 let lastRecState = '';
 let lastPointCount = 0;
 let lastChecked = '';
+let wasRecording = false;
 export const recorder = new TrackRecorder(dem, (s) => {
   feedNativeFix(s.lastFix);
+  // 記録を終えたとき（「記録終了」ボタン、またはアプリ版の通知の「停止」）
+  const ended = wasRecording && !recorder.recording && s.track?.status === 'done';
+  wasRecording = recorder.recording;
   if (s.track) state.shown = { track: s.track, points: s.points };
   else if (state.shown && !recorder.recording) state.shown = null;
   // 開始・終了・エラーなどはすぐ画面に出す。点が増えただけなら、次にまとめて描き直す
@@ -115,7 +119,16 @@ export const recorder = new TrackRecorder(dem, (s) => {
   if (s.points.length !== lastPointCount || recState !== lastChecked) checkOffRoute(s.points, recorder.recording);
   lastChecked = recState;
   lastPointCount = s.points.length;
+  if (ended) onRecordingEnded(s.track!);
 });
+
+/** 記録を終えたら、その記録を開いたまま実績を見られるようにする */
+function onRecordingEnded(t: Track) {
+  stopGeolocate();
+  status(`記録を保存しました：${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}`);
+  void fillShownElevations();
+  void refreshTrackList();
+}
 recorder.keepScreenOn = settings.wakeLock;
 
 const recBtn = $<HTMLButtonElement>('btn-rec');
@@ -138,13 +151,7 @@ recBtn.addEventListener('click', async () => {
     status('記録を開始しました。歩いた実績から到着予想を調整します');
   } else {
     if (!confirm('記録を終了しますか？')) return;
-    const t = await recorder.stop();
-    if (t) {
-      // 歩き終えた記録をそのまま開いて、実績を見られるように
-      stopGeolocate();
-      status(`記録を保存しました：${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}`);
-      void fillShownElevations();
-    }
+    await recorder.stop();
   }
   void refreshTrackList();
 });
@@ -210,16 +217,30 @@ export function renderTrack() {
 }
 
 
-/** 前回、記録中のままアプリが閉じられていたら再開を確認する */
+/**
+ * 前回、記録中のままアプリが閉じられていたら：
+ *  - アプリ版で、裏で記録が続いていれば、そのまま続ける（履歴から消した・画面が止められたあと）
+ *  - アプリ版で、通知の「停止」で止められていれば、そこまでで締める
+ *  - それ以外（端末の再起動・Web 版で閉じた）は、続きを記録するか聞く
+ * アプリ版は、裏で記録した測位を取り込んでから続ける・締める
+ */
 export async function checkUnfinished() {
   const tracks = await listTracks().catch(() => [] as Track[]);
   const open = tracks.find((t) => t.status === 'recording');
   if (!open) return;
-  if (confirm(`「${open.name}」の記録が途中です。続きを記録しますか？\n（キャンセルするとここまでで保存します）`)) {
+  const native = await trackingStatus();
+  if (native?.recording && native.trackId === open.id) {
+    await recorder.resume(open);
+    startGeolocate();
+    status('裏で続けていた記録を取り込みました');
+  } else if (native && native.stoppedTrack === open.id) {
+    await recorder.finish(open, native.stoppedAt ?? undefined);
+    void refreshTrackList();
+  } else if (confirm(`「${open.name}」の記録が途中です。続きを記録しますか？\n（キャンセルするとここまでで保存します）`)) {
     await recorder.resume(open);
     startGeolocate();
   } else {
-    const points = await getPoints(open.id);
-    await putTrack({ ...open, status: 'done', endedAt: points[points.length - 1]?.t ?? open.startedAt });
+    await recorder.finish(open);
+    void refreshTrackList();
   }
 }

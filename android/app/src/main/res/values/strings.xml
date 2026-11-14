@@ -4,8 +4,9 @@
     <string name="title_activity_main">やまマップ</string>
     <string name="package_name">io.github.ma38su.yamamap</string>
     <string name="custom_url_scheme">io.github.ma38su.yamamap</string>
-    <!-- 記録中の通知（@capacitor-community/background-geolocation） -->
-    <string name="capacitor_background_geolocation_notification_channel_name">軌跡の記録</string>
-    <string name="capacitor_background_geolocation_notification_icon">drawable/ic_tracking</string>
-    <string name="capacitor_background_geolocation_notification_color">#16805c</string>
+    <!-- 記録中の通知（TrackingService） -->
+    <string name="tracking_channel_name">軌跡の記録</string>
+    <string name="tracking_title">やまマップで記録中</string>
+    <string name="tracking_text">%1$s・画面を消しても記録しています</string>
+    <string name="tracking_stop">停止</string>
 </resources>
