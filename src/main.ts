@@ -371,8 +371,8 @@ async function loadRoute(text: string) {
     r.eles = pts.map((p) => p.ele!);
   } else {
     $('route-info').textContent = '標高を計算中…';
-    r.eles = [];
-    for (const c of coords) r.eles.push(await dem.elevation(c[0], c[1]));
+    // まとめて問い合わせる（同じタイルへの取得は DemSampler 内で1回にまとまる）
+    r.eles = await Promise.all(coords.map((c) => dem.elevation(c[0], c[1])));
   }
   if (route !== r) return;
   const g = elevationGain(r.eles);
