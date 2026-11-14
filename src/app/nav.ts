@@ -17,7 +17,7 @@ import type { TrackPoint } from '../track/db';
 import { sunTimes } from '../nav/sun';
 import { settings } from '../settings';
 import { lineFC, emptyFC, src } from './mapView';
-import { hereLngLat, recorder } from './recording';
+import { hereLngLat, recorder, renderTrack, updateCurrentEle } from './recording';
 import { renderBody, renderCard, sheet } from './sheetView';
 import { state } from './state';
 import { renderStatus, status } from './status';
@@ -156,9 +156,30 @@ export function updateNav() {
   if (sheet.isOpen) renderBody(nav);
   renderStatus();
 }
-setInterval(() => {
-  if (document.visibilityState === 'visible') updateNav();
-}, 15_000);
+// ---------- 描き直しの間隔 ----------
+/**
+ * 測位などのデータは届いたら受け取って保存するだけにし、計算と描き直しは画面が表のときにまとめて行う。
+ * 現在地の印は MapLibre が測位のたびに動かすので、ここが30秒ごとでも見た目は遅れない
+ */
+const REFRESH_MS = 30_000;
+let trackStale = false;
+/** 記録の点が増えたことを覚えておく（次にまとめて描き直す） */
+export function markTrackStale() {
+  trackStale = true;
+}
+/** たまっているデータを処理して、画面を今の状態に合わせる */
+export async function refreshNow() {
+  if (trackStale) {
+    trackStale = false;
+    renderTrack();
+  }
+  await updateCurrentEle();
+  updateNav();
+}
+const visible = () => document.visibilityState === 'visible';
+setInterval(() => visible() && void refreshNow(), REFRESH_MS);
+// 裏から戻ったら、たまった分をすぐ処理する
+document.addEventListener('visibilitychange', () => visible() && void refreshNow());
 setInterval(() => {
   // ルートなしで記録中は経過時間を毎秒更新
   if (recorder.recording && !state.route && document.visibilityState === 'visible') renderCard(state.lastNav);

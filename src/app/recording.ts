@@ -10,27 +10,26 @@ import { refreshTrackList } from './menu';
 import { setProfileSource } from './profileView';
 import { replayActive, startReplay, stopReplay } from './replay';
 import { sheet } from './sheetView';
-import { updateNav } from './nav';
+import { markTrackStale, refreshNow, updateNav } from './nav';
 import { state } from './state';
 import { status } from './status';
 
 // ---------- 現在地 ----------
 let lastEleAt: { coords: LngLat; t: number } | null = null;
-let lastNavAt: { coords: LngLat; t: number } | null = null;
-geolocate.on('geolocate', async (pos) => {
-  const coords: LngLat = [pos.coords.longitude, pos.coords.latitude];
-  state.lastFix = { coords, acc: pos.coords.accuracy, t: Date.now() };
-  // 標高の再計算は 20m 以上動いたか 30秒経ったときだけ（無駄な処理を減らす）
-  if (!lastEleAt || distance(lastEleAt.coords, coords) > 20 || Date.now() - lastEleAt.t > 30_000) {
-    lastEleAt = { coords, t: Date.now() };
-    state.currentEle = await dem.elevation(coords[0], coords[1]);
-  }
-  // 測位は1秒ごとくらいに届くので、到着予想の計算と描き直しは15m動いたか5秒経ったときだけにする
-  if (!lastNavAt || distance(lastNavAt.coords, coords) > 15 || Date.now() - lastNavAt.t > 5000) {
-    lastNavAt = { coords, t: Date.now() };
-    updateNav();
-  }
+geolocate.on('geolocate', (pos) => {
+  const first = !state.lastFix;
+  state.lastFix = { coords: [pos.coords.longitude, pos.coords.latitude], acc: pos.coords.accuracy, t: Date.now() };
+  // 測位は1秒ごとくらいに届くので、受け取るだけにして計算はまとめて行う（nav.ts の refreshNow）。
+  // 初めて現在地が分かったときだけ、すぐ到着予想を出す
+  if (first) void refreshNow();
 });
+/** 現在地の標高。20m 以上動いたか5分経ったときだけ求め直す（標高タイルを読むので） */
+export async function updateCurrentEle() {
+  const fix = state.lastFix;
+  if (!fix || (lastEleAt && distance(lastEleAt.coords, fix.coords) <= 20 && Date.now() - lastEleAt.t < 5 * 60_000)) return;
+  lastEleAt = { coords: fix.coords, t: Date.now() };
+  state.currentEle = await dem.elevation(fix.coords[0], fix.coords[1]);
+}
 geolocate.on('error', (e) => {
   if (e.code === 1) {
     status('位置情報の利用が許可されていません。端末の設定を確認してください', true);
@@ -88,13 +87,22 @@ function feedNativeFix(fix: Fix | null) {
 document.addEventListener('visibilitychange', () => feedNativeFix(recorder.state.lastFix));
 
 // ---------- 記録 ----------
+let lastRecState = '';
+let lastPointCount = 0;
 export const recorder = new TrackRecorder(dem, (s) => {
   feedNativeFix(s.lastFix);
   if (s.track) state.shown = { track: s.track, points: s.points };
   else if (state.shown && !recorder.recording) state.shown = null;
-  renderTrack();
-  updateRecButton();
-  updateNav();
+  // 開始・終了・エラーなどはすぐ画面に出す。点が増えただけなら、次にまとめて描き直す
+  // （記録中は測位のたびに呼ばれ、アプリ版では画面を消していても届くため）
+  const recState = `${s.track?.id}:${s.track?.status}:${s.error}:${s.wakeLock}`;
+  if (recState !== lastRecState) {
+    lastRecState = recState;
+    renderTrack();
+    updateRecButton();
+    updateNav();
+  } else if (s.points.length !== lastPointCount) markTrackStale();
+  lastPointCount = s.points.length;
 });
 recorder.keepScreenOn = settings.wakeLock;
 
