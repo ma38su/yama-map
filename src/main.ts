@@ -28,6 +28,7 @@ import {
   RouteTimeline,
   analyzePace,
   defaultFactors,
+  paceSegments,
   estimate,
   projectOnRoute,
   type LegEstimate,
@@ -37,6 +38,7 @@ import {
 } from './nav/eta';
 import {
   buildGpxRoute,
+  ROUTE_PREFS,
   buildRouteOptions,
   chooseOption,
   insertVia,
@@ -50,11 +52,12 @@ import {
   type Mark,
   type PlanPoint,
   type PointKind,
-  type RouteOption,
-  trailShare,
+  preferredOption,
+  type RoutePref,
 } from './nav/plan';
 import { sunPosition, sunTimes } from './nav/sun';
 import { applyDaylight, toneStyle } from './map/daylight';
+import { swapTouchGestures } from './map/gestures';
 import {
   MAX_TILES,
   clearTileCache,
@@ -65,10 +68,11 @@ import {
   storageUsage,
 } from './offline/download';
 import { OSM_ATTRIBUTION, nearestPlaceName, osmTileUrls } from './route/roadTiles';
-import { deleteTrack, getPoints, listTracks, putTrack, type Track, type TrackPoint } from './track/db';
+import { deleteTrack, getPoints, listTracks, putTrack, putTrackWithPoints, type Track, type TrackPoint } from './track/db';
+import { generateSampleTrack } from './track/sample';
 import { parseGpx, toGpx } from './track/gpx';
 import { TrackRecorder } from './track/recorder';
-import { ElevationProfile } from './ui/profile';
+import { ElevationProfile, type ProfileAxis } from './ui/profile';
 import { BottomSheet } from './ui/sheet';
 
 setWorkerUrl(workerUrl);
@@ -83,10 +87,14 @@ interface Settings {
   terrain: boolean;
   wakeLock: boolean;
   pace: PacePreset;
+  /** ルートの探し方 */
+  routePref: RoutePref;
+  /** 出発時刻 "HH:MM"。null なら現在時刻に出発する想定 */
+  departAt: string | null;
   view?: { center: LngLat; zoom: number; pitch: number; bearing: number };
 }
 const SETTINGS_KEY = 'yama-map:settings';
-const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, wakeLock: true, pace: 'normal' };
+const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, wakeLock: true, pace: 'normal', routePref: 'trail', departAt: null };
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}'));
 } catch {
@@ -94,6 +102,8 @@ try {
 }
 if (!(settings.base in BASE_LAYERS)) settings.base = 'std';
 if (!(settings.pace in PACE_PRESETS)) settings.pace = 'normal';
+if (!(settings.routePref in ROUTE_PREFS)) settings.routePref = 'trail';
+if (settings.departAt != null && !/^\d{2}:\d{2}$/.test(settings.departAt)) settings.departAt = null;
 function saveSettings() {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
@@ -149,6 +159,9 @@ const map = new MlMap({
   attributionControl: { compact: true },
 });
 
+// 3D のときは 1本指で回転、2本指で移動
+swapTouchGestures(map, () => settings.terrain);
+
 class Terrain3DControl implements IControl {
   private container?: HTMLDivElement;
   private button?: HTMLButtonElement;
@@ -199,26 +212,11 @@ const pointFC = (c: LngLat | null): FeatureCollection =>
 const src = (id: string) => map.getSource(id) as GeoJSONSource | undefined;
 
 map.on('load', () => {
-  for (const id of ['route-alt', 'route', 'route-done', 'track', 'cursor']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  for (const id of ['route', 'route-done', 'track', 'cursor']) map.addSource(id, { type: 'geojson', data: emptyFC });
   // OpenStreetMap 由来のルートを表示しているときだけ出典を出すためのソース
   map.addSource('osm-credit', { type: 'geojson', data: emptyFC, attribution: OSM_ATTRIBUTION });
   const casing = { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 };
   const round = { 'line-join': 'round' as const, 'line-cap': 'round' as const };
-  // ほかのルート候補（灰色の破線）。タップで切り替え
-  map.addLayer({
-    id: 'route-alt-casing',
-    type: 'line',
-    source: 'route-alt',
-    layout: round,
-    paint: { 'line-color': '#ffffff', 'line-width': 7, 'line-opacity': 0.8 },
-  });
-  map.addLayer({
-    id: 'route-alt',
-    type: 'line',
-    source: 'route-alt',
-    layout: round,
-    paint: { 'line-color': '#64748b', 'line-width': 4, 'line-dasharray': [1.5, 1] },
-  });
   map.addLayer({ id: 'osm-credit', type: 'circle', source: 'osm-credit', layout: { visibility: 'none' } });
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: round, paint: casing });
   map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: round, paint: { 'line-color': '#2563eb', 'line-width': 5 } });
@@ -275,21 +273,6 @@ function fitTo(coords: LngLat[]) {
 const popup = new Popup({ closeButton: false, maxWidth: '300px', offset: 8 });
 let popupSeq = 0;
 map.on('click', async (e) => {
-  // ほかのルート候補の線をタップしたら、その候補に切り替える（指で押しやすいよう周囲12pxも判定）
-  const r12 = 12;
-  const hit = map.getLayer('route-alt')
-    ? map.queryRenderedFeatures(
-        [
-          [e.point.x - r12, e.point.y - r12],
-          [e.point.x + r12, e.point.y + r12],
-        ],
-        { layers: ['route-alt'] },
-      )[0]
-    : undefined;
-  if (hit && route?.options) {
-    selectOption(Number(hit.properties?.i));
-    return;
-  }
   const lngLat: LngLat = [e.lngLat.lng, e.lngLat.lat];
   const seq = ++popupSeq;
   const box = h('div', 'pp');
@@ -384,6 +367,11 @@ recBtn.addEventListener('click', async () => {
       return;
     }
     await recorder.start();
+    // 記録を始めたら、出発時刻は現在時刻に
+    if (settings.departAt) {
+      settings.departAt = null;
+      saveSettings();
+    }
     if (!lastFix || Date.now() - lastFix.t > 30_000) geolocate.trigger();
     status('記録を開始しました。歩いた実績から到着予想を調整します');
   } else {
@@ -463,25 +451,19 @@ function setRoute(r: ActiveRoute | null, fit = false) {
   updateNav();
 }
 
-function selectOption(i: number) {
-  if (!route?.options?.[i] || route.chosen === i) return;
+/** 設定の「ルートの探し方」に合う候補に切り替える（候補は作り直さない） */
+function applyRoutePref() {
+  if (!route?.options) return;
+  const i = preferredOption(route.options, settings.routePref);
+  if (route.chosen === i) return;
   setRoute(chooseOption(route, i));
-  const o = route.options![i];
-  const span = routeSpan(o);
-  status(`「${o.label}」に切り替えました：${formatDistance(span.to - span.from)}`);
+  const span = routeSpan(route);
+  status(`「${route.label}」のルートに切り替えました：${formatDistance(span.to - span.from)}`);
 }
 
 function renderRoute() {
   src('route')?.setData(lineFC(route?.coords ?? []));
-  const alts: FeatureCollection = {
-    type: 'FeatureCollection',
-    features: (route?.options ?? [])
-      .map((o, i) => ({ o, i }))
-      .filter(({ i }) => i !== route?.chosen)
-      .map(({ o, i }) => ({ type: 'Feature' as const, properties: { i }, geometry: { type: 'LineString' as const, coordinates: o.coords } })),
-  };
-  src('route-alt')?.setData(alts);
-  if (map.getLayer('osm-credit')) map.setLayoutProperty('osm-credit', 'visibility', route?.options?.some((o) => o.source === 'osm') ? 'visible' : 'none');
+  if (map.getLayer('osm-credit')) map.setLayoutProperty('osm-credit', 'visibility', route?.source === 'osm' ? 'visible' : 'none');
   for (const m of markers) m.remove();
   const list: (PlanPoint | Mark)[] = route ? route.marks : pending;
   let viaNo = 0;
@@ -541,16 +523,15 @@ async function choosePoint(kind: PointKind, lngLat: LngLat, name?: string) {
 async function rebuild(pts: PlanPoint[]) {
   building = true;
   try {
-    const r = await buildRouteOptions(pts, elevation, (msg) => {
+    const r = await buildRouteOptions(pts, elevation, settings.routePref, (msg) => {
       progressMsg = msg;
       renderStatus();
     });
     progressMsg = '';
     setRoute(r, true);
     const span = routeSpan(r);
-    const n = r.options?.length ?? 1;
     if (r.straightLegs) status('道が見つからない区間は直線で結んでいます（到着予想は不正確です）', true);
-    else status(n > 1 ? `ルート候補が${n}つ見つかりました。カードで比べて選べます` : `ルートを作成しました：${formatDistance(span.to - span.from)}`);
+    else status(`ルートを作成しました（${r.label}）：${formatDistance(span.to - span.from)}`);
     openSheet();
   } catch (err) {
     pending = pts;
@@ -637,6 +618,16 @@ function arrivalTime(m: Mark): number | null {
   return null;
 }
 
+/** 出発時刻 (ms)。記録中・時刻を指定していないときは今 */
+function departureTime(): number {
+  const now = Date.now();
+  if (recorder.recording || !settings.departAt) return now;
+  const [hh, mm] = settings.departAt.split(':').map(Number);
+  const d = new Date(now);
+  d.setHours(hh, mm, 0, 0);
+  return d.getTime();
+}
+
 function computeNav(): Nav | null {
   const r = route;
   const tl = timeline;
@@ -644,11 +635,13 @@ function computeNav(): Nav | null {
   const span = routeSpan(r);
   const here = hereLngLat();
   const pos = here ? projectOnRoute(r.coords, r.dists, here, lastNav?.pos?.along) : null;
-  const onRoute = !!pos && pos.offset < 300 && pos.along >= span.from - 100 && pos.along <= span.to + 100;
+  // 出発時刻を指定しているあいだは計画の確認なので、現在地に関係なく出発地から数える
+  const planning = !recorder.recording && !!settings.departAt;
+  const onRoute = !planning && !!pos && pos.offset < 300 && pos.along >= span.from - 100 && pos.along <= span.to + 100;
   const pace = recorder.recording ? analyzePace(recorder.state.points, settings.pace) : null;
   const factors = pace?.factors ?? defaultFactors(settings.pace);
   const fromAlong = onRoute && pos ? Math.min(span.to, Math.max(span.from, pos.along)) : span.from;
-  const now = Date.now();
+  const now = onRoute ? Date.now() : departureTime();
   const marks = r.marks.filter((m) => m.along >= span.from - 1 && m.along <= span.to + 1);
   const rows: Row[] = marks.map((m, i) => {
     const prev = i > 0 ? marks[i - 1].along : m.along;
@@ -658,7 +651,7 @@ function computeNav(): Nav | null {
     return {
       mark: m,
       passed,
-      time: remain ? now + remain.totalMin * 60_000 : arrivalTime(m),
+      time: remain ? now + remain.totalMin * 60_000 : passed ? arrivalTime(m) : now,
       remainM: Math.max(0, m.along - fromAlong),
       remain,
       leg: i > 0 ? { dist: m.along - prev, up: g.ascent, down: g.descent, est: estimate(tl, prev, m.along, factors) } : null,
@@ -725,57 +718,19 @@ function navRow(label: string, row: Row, primary: boolean, sunset: number | null
   return el;
 }
 
-/** 候補ごとの標準時間・標高（候補は変わらないのでキャッシュ）と、現在のペースでの所要時間 */
-const optionCache = new WeakMap<RouteOption, { tl: RouteTimeline; from: number; to: number; gain: { ascent: number; descent: number } }>();
-function optionInfo(o: RouteOption, factors: Nav['factors']) {
-  let c = optionCache.get(o);
-  if (!c) {
-    const tl = new RouteTimeline(o.dists, o.eles);
-    const span = routeSpan(o);
-    c = { tl, from: span.from, to: span.to, gain: tl.gain(span.from, span.to) };
-    optionCache.set(o, c);
-  }
-  return { est: estimate(c.tl, c.from, c.to, factors), gain: c.gain, dist: c.to - c.from };
-}
-
-function routeChips(nav: Nav): HTMLElement | null {
-  const opts = route?.options;
-  if (!opts || opts.length < 2) return null;
-  const wrap = h('div', 'chips');
-  wrap.setAttribute('role', 'radiogroup');
-  wrap.setAttribute('aria-label', 'ルート候補');
-  opts.forEach((o, i) => {
-    const info = optionInfo(o, nav.factors);
-    const share = trailShare(o);
-    const b = h('button', 'chip-opt');
-    b.type = 'button';
-    b.setAttribute('role', 'radio');
-    b.setAttribute('aria-checked', String(i === route!.chosen));
-    b.append(
-      h('span', 'chip-label', o.label),
-      h('span', 'chip-time', fmtHM(info.est.totalMin)),
-      h('span', 'chip-meta', `${formatDistance(info.dist)}${share != null ? ` · 登山道${Math.round(share * 100)}%` : ''}`),
-    );
-    b.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      selectOption(i);
-    });
-    wrap.append(b);
-  });
-  return wrap;
-}
-
 function renderCard(nav: Nav | null) {
   const card = $('card');
   card.replaceChildren();
   if (nav && route) {
-    const chips = routeChips(nav);
-    if (chips) card.append(chips);
+    const span = routeSpan(route);
+    const title = h('div', 'nav-title');
+    title.append(h('b', '', route.name), h('span', '', ` · ${route.label} · ${formatDistance(span.to - span.from)}`));
+    card.append(title);
     const { next, dest } = nav;
     if (next && dest && next !== dest) card.append(navRow('次', next, false, nav.sunset));
     if (dest) card.append(navRow('目的地', dest, true, nav.sunset));
     const sub = h('div', 'nav-sub');
-    if (!nav.onRoute && dest && !dest.passed) sub.append(h('span', '', '今出発した場合'));
+    if (!nav.onRoute && dest && !dest.passed) sub.append(h('span', '', settings.departAt && !recorder.recording ? `${settings.departAt}出発の場合` : '今出発した場合'));
     if (nav.pace && nav.pace.evidenceMin > 10) sub.append(h('span', '', `実績ペース 標準の${nav.pace.overall.toFixed(2)}倍`));
     else sub.append(h('span', '', `ペース「${PACE_PRESETS[settings.pace].label}」`));
     sub.append(h('span', '', `休憩込み`));
@@ -818,7 +773,7 @@ function renderBody(nav: Nav | null) {
   const actions = $('plan-actions');
   actions.replaceChildren();
   $('sec-plan').hidden = !route;
-  $('sec-profile').hidden = !(route || (shown && shown.points.length > 1));
+  $('plan-empty').hidden = !!route;
   if (nav && route && timeline) {
     const items: { time: number | null; passed: boolean; el: HTMLElement }[] = [];
     for (const row of nav.rows) {
@@ -873,14 +828,21 @@ function renderBody(nav: Nav | null) {
     btn('GPXで保存', exportRoute);
     btn('ルートを消す', clearRoute, 'danger');
   }
-  renderOptions(nav);
+  renderDeparture();
 
   updateProfile(nav);
 
   // これまでのペース
   const grid = $('pace-grid');
   grid.replaceChildren();
-  const p = nav?.pace ?? (recorder.recording ? analyzePace(recorder.state.points, settings.pace) : null);
+  // 記録中はその記録、地図に表示中の保存した記録はその記録を、歩き終えた時点で分析する
+  const p =
+    nav?.pace ??
+    (recorder.recording
+      ? analyzePace(recorder.state.points, settings.pace)
+      : shown && shown.points.length > 1
+        ? analyzePace(shown.points, settings.pace, shown.points[shown.points.length - 1].t)
+        : null);
   const tiles: [string, string][] = p
     ? [
         ['経過', formatDuration(p.elapsedMs)],
@@ -903,78 +865,141 @@ function renderBody(nav: Nav | null) {
     tile.append(h('span', 'label', label), h('span', 'value', value));
     grid.append(tile);
   }
+  $('pace-title').textContent = recorder.recording || !shown ? 'これまでのペース' : 'この記録のペース';
   $('pace-note').textContent = p
     ? `「標準比」は地形（距離と勾配）から求めた標準タイムに対して何倍かかっているか。1より小さいほど速いペースです。登り・平坦・下りそれぞれの実績を使い、休憩は歩行1時間あたり約${Math.round(p.factors.rest * 60)}分の見込みで到着予想に含めています。`
     : '記録を開始すると、歩いた実績（登り・平坦・下りの速さ、休憩の取り方）から到着予想を自動で調整します。';
-  for (const b of $('pace-preset').querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.pace));
 }
 
-function renderOptions(nav: Nav | null) {
-  const sec = $('sec-options');
-  const list = $('options');
-  list.replaceChildren();
-  const opts = route?.options;
-  sec.hidden = !opts || opts.length < 2 || !nav;
-  if (!opts || !nav) return;
-  opts.forEach((o, i) => {
-    const info = optionInfo(o, nav.factors);
-    const share = trailShare(o);
-    const li = h('li', `opt${i === route!.chosen ? ' chosen' : ''}`);
-    const head = h('div', 'opt-head');
-    head.append(h('span', 'opt-label', o.label), h('span', 'opt-time', `${fmtHM(info.est.totalMin)}（休憩込み）`));
-    const kinds = o.byKind;
-    const total = kinds.trail + kinds.track + kinds.road + kinds.major || 1;
-    const bar = h('div', 'kind-bar');
-    for (const k of ['trail', 'track', 'road', 'major'] as const) {
-      if (kinds[k] <= 0) continue;
-      const seg = h('span', `k-${k}`);
-      seg.style.width = `${(kinds[k] / total) * 100}%`;
-      bar.append(seg);
-    }
-    const detail = h(
-      'div',
-      'opt-detail',
-      `${formatDistance(info.dist)} · ↑${Math.round(info.gain.ascent)}m ↓${Math.round(info.gain.descent)}m · 標準 ${fmtHM(info.est.stdMin)}`,
-    );
-    const kindText = h(
-      'div',
-      'opt-kinds',
-      share == null
-        ? ''
-        : `登山道 ${formatDistance(kinds.trail)} / 林道・細道 ${formatDistance(kinds.track)} / 車道 ${formatDistance(kinds.road + kinds.major)}`,
-    );
-    const src = o.source === 'osm' ? 'データ: OpenStreetMap' : o.source === 'gsi' ? 'データ: 国土地理院' : '';
-    const same = (o.sameAs ?? []).map((x) => (x === 'OpenStreetMap' ? 'OpenStreetMapでも同じ経路' : `「${x}」と同じ経路`));
-    const srcText = h('div', 'opt-src', [src, ...same].filter(Boolean).join('・'));
-    li.append(head, detail, bar, kindText, srcText);
-    li.addEventListener('click', () => selectOption(i));
-    list.append(li);
-  });
+/** 行程の「出発」：今すぐ／時刻を指定 */
+function renderDeparture() {
+  const planning = !!settings.departAt && !recorder.recording;
+  for (const b of $('depart-mode').querySelectorAll('button')) b.setAttribute('aria-checked', String((b.dataset.id === 'at') === planning));
+  const input = $<HTMLInputElement>('depart-time');
+  input.hidden = !planning;
+  if (planning && document.activeElement !== input) input.value = settings.departAt!;
+  $('depart-note').textContent = recorder.recording ? '記録中は現在時刻から到着予想を出します' : '';
+  for (const b of $('depart-mode').querySelectorAll('button')) (b as HTMLButtonElement).disabled = recorder.recording;
 }
 
 // ---------- 標高グラフ ----------
+type ProfileSource = 'route' | 'track';
+let profileSource: ProfileSource = 'route';
 const profileCanvas = $<HTMLCanvasElement>('profile');
 let profileCoords: LngLat[] = [];
-const profile = new ElevationProfile(profileCanvas, (i) => {
-  src('cursor')?.setData(pointFC(i == null ? null : (profileCoords[i] ?? null)));
+const profilePos = $<HTMLInputElement>('profile-pos');
+const profile = new ElevationProfile(
+  profileCanvas,
+  (i) => src('cursor')?.setData(pointFC(i == null ? null : (profileCoords[i] ?? null))),
+  (view) => {
+    // 拡大しているときだけ、表示位置のスライダーを出す
+    const span = view.to - view.from;
+    profilePos.hidden = span >= 0.999;
+    profilePos.value = String(Math.round((view.from / Math.max(1e-6, 1 - span)) * 1000));
+  },
+);
+profilePos.addEventListener('input', () => {
+  const v = profile.currentView;
+  profile.setPosition((Number(profilePos.value) / 1000) * (1 - (v.to - v.from)));
 });
+$('zoom-in').addEventListener('click', () => profile.zoom(2));
+$('zoom-out').addEventListener('click', () => profile.zoom(0.5));
+$('zoom-reset').addEventListener('click', () => profile.resetView());
+
+/** グラフに出せる記録：記録中ならその記録、なければ地図に表示している保存した記録 */
+function profileTrack(): TrackPoint[] | null {
+  const pts = recorder.recording ? recorder.state.points : (shown?.points ?? []);
+  return pts.length > 1 ? pts : null;
+}
+
+// 区間ごとのペースは点が増えたときだけ計算し直す
+let paceCache: { key: string; value: ReturnType<typeof paceSegments> } | null = null;
+function cachedPace(points: TrackPoint[]) {
+  const key = `${points[0].trackId}:${points.length}`;
+  if (paceCache?.key !== key) paceCache = { key, value: paceSegments(points) };
+  return paceCache.value;
+}
+
+function segButtons(wrap: HTMLElement, items: readonly (readonly [string, string])[], onPick: (id: string) => void) {
+  for (const [id, label] of items) {
+    const b = h('button', '', label);
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.dataset.id = id;
+    b.addEventListener('click', () => onPick(id));
+    wrap.append(b);
+  }
+}
+const checkSeg = (wrap: HTMLElement, id: string) => {
+  for (const b of wrap.querySelectorAll<HTMLButtonElement>('button')) b.setAttribute('aria-checked', String(b.dataset.id === id));
+};
+segButtons($('profile-source'), [['route', 'ルート'], ['track', '記録']], (id) => {
+  profileSource = id as ProfileSource;
+  updateProfile(lastNav);
+});
+segButtons($('profile-axis'), [['dist', '距離'], ['time', '時刻']], (id) => {
+  profile.setAxis(id as ProfileAxis);
+  updateProfile(lastNav);
+});
+
 function updateProfile(nav: Nav | null) {
-  if (route) {
+  const track = profileTrack();
+  const useTrack = !!track && (!route || profileSource === 'track');
+  $('profile-source').hidden = !(track && route);
+  checkSeg($('profile-source'), useTrack ? 'track' : 'route');
+  $('profile-empty').hidden = !!(route || track);
+  profileCanvas.hidden = !(route || track);
+  if (useTrack) {
+    profileCoords = track.map((p) => [p.lng, p.lat]);
+    profile.setSeries({
+      dists: cumulativeDistances(profileCoords),
+      eles: track.map((p) => p.ele),
+      times: track.map((p) => p.t),
+      pace: cachedPace(track),
+    });
+    profile.setMarker(null);
+  } else if (route && timeline) {
     profileCoords = route.coords;
-    profile.setData(route.dists, route.eles);
-    profile.setTicks(route.marks.map((m) => ({ d: m.along, kind: m.kind, label: m.name })));
+    // 時刻の軸：出発地を出る時刻から、このペースでの到着予想
+    const span = routeSpan(route);
+    const factors = nav?.factors ?? defaultFactors(settings.pace);
+    const start = nav?.rows[0]?.time ?? departureTime();
+    const tl = timeline;
+    profile.setSeries({
+      dists: route.dists,
+      eles: route.eles,
+      times: route.dists.map((d) => start + estimate(tl, span.from, Math.max(span.from, d), factors).totalMin * 60_000),
+      ticks: route.marks.map((m) => ({ d: m.along, kind: m.kind, label: m.name })),
+    });
     if (nav?.onRoute) {
       let i = 0;
       while (i < route.dists.length - 1 && route.dists[i] < nav.fromAlong) i++;
       profile.setMarker(i);
     } else profile.setMarker(null);
-  } else if (shown && shown.points.length > 1) {
-    profileCoords = shown.points.map((p) => [p.lng, p.lat]);
-    profile.setData(cumulativeDistances(profileCoords), shown.points.map((p) => p.ele));
-    profile.setTicks([]);
-    profile.setMarker(null);
   }
+  checkSeg($('profile-axis'), profile.currentAxis);
+  $('pace-legend').hidden = !useTrack;
 }
+
+// ---------- 詳細のタブ ----------
+type SheetTab = 'plan' | 'profile';
+let sheetTab: SheetTab = 'plan';
+function setTab(tab: SheetTab) {
+  sheetTab = tab;
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.tabs [role="tab"]')) {
+    const on = b.dataset.tab === tab;
+    b.setAttribute('aria-selected', String(on));
+    b.tabIndex = on ? 0 : -1;
+  }
+  $('panel-plan').hidden = tab !== 'plan';
+  $('panel-profile').hidden = tab !== 'profile';
+  // 表示されてから大きさが決まるので、切り替えたら描き直す
+  if (tab === 'profile') profile.draw();
+}
+for (const b of document.querySelectorAll<HTMLButtonElement>('.tabs [role="tab"]')) {
+  b.addEventListener('click', () => setTab(b.dataset.tab as SheetTab));
+}
+setTab(sheetTab);
 
 // ---------- ボトムシート ----------
 const sheet = new BottomSheet($('sheet-handle'), [$('card')], $('sheet-body'), (open) => {
@@ -985,6 +1010,31 @@ function openSheet() {
   if (!sheet.isOpen) sheet.setOpen(true);
 }
 $('btn-fit').addEventListener('click', () => route && fitTo(route.coords));
+const departSeg = $('depart-mode');
+for (const [id, label] of [['now', '今すぐ'], ['at', '時刻を指定']] as const) {
+  const b = h('button', '', label);
+  b.type = 'button';
+  b.setAttribute('role', 'radio');
+  b.dataset.id = id;
+  b.addEventListener('click', () => {
+    if (id === 'now') settings.departAt = null;
+    else if (!settings.departAt) {
+      // 初めて指定するときは、次のちょうどの時刻（例: 8:20 → 9:00）
+      const d = new Date();
+      settings.departAt = `${String((d.getHours() + 1) % 24).padStart(2, '0')}:00`;
+    }
+    saveSettings();
+    updateNav();
+  });
+  departSeg.append(b);
+}
+$<HTMLInputElement>('depart-time').addEventListener('change', (e) => {
+  const v = (e.target as HTMLInputElement).value;
+  if (!/^\d{2}:\d{2}$/.test(v)) return;
+  settings.departAt = v;
+  saveSettings();
+  updateNav();
+});
 const paceSeg = $('pace-preset');
 for (const [id, def] of Object.entries(PACE_PRESETS) as [PacePreset, (typeof PACE_PRESETS)[PacePreset]][]) {
   const b = h('button', '', def.label);
@@ -994,6 +1044,7 @@ for (const [id, def] of Object.entries(PACE_PRESETS) as [PacePreset, (typeof PAC
   b.addEventListener('click', () => {
     settings.pace = id;
     saveSettings();
+    syncMenu();
     updateNav();
   });
   paceSeg.append(b);
@@ -1070,6 +1121,20 @@ $<HTMLInputElement>('gpx-file').addEventListener('change', async (e) => {
   }
 });
 
+const routePrefWrap = $('route-pref');
+for (const [id, def] of Object.entries(ROUTE_PREFS) as [RoutePref, (typeof ROUTE_PREFS)[RoutePref]][]) {
+  const b = h('button', '', def.label);
+  b.type = 'button';
+  b.setAttribute('role', 'radio');
+  b.dataset.id = id;
+  b.addEventListener('click', () => {
+    settings.routePref = id;
+    saveSettings();
+    syncMenu();
+    applyRoutePref();
+  });
+  routePrefWrap.append(b);
+}
 const baseWrap = $('base-layers');
 for (const [id, def] of Object.entries(BASE_LAYERS) as [BaseLayerId, (typeof BASE_LAYERS)[BaseLayerId]][]) {
   const b = h('button', '', def.label);
@@ -1104,6 +1169,9 @@ wakeOpt.addEventListener('change', () => {
 });
 function syncMenu() {
   for (const b of baseWrap.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.base));
+  for (const b of paceSeg.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.pace));
+  for (const b of routePrefWrap.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.routePref));
+  $('route-pref-note').textContent = ROUTE_PREFS[settings.routePref].desc;
   hillshadeOpt.checked = settings.hillshade;
   dayToneOpt.checked = settings.dayTone;
   wakeOpt.checked = settings.wakeLock;
@@ -1120,6 +1188,39 @@ function download(filename: string, text: string) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
 }
+
+/**
+ * 記録のサンプルを作って保存する。おすすめルート（女夫渕 → 手白澤温泉）を、前日の8:30から
+ * 標準タイムどおりに歩き、歩行30分ごとに5〜10分休んだ想定
+ */
+async function addSampleTrack() {
+  const preset = PRESETS[0];
+  try {
+    progressMsg = 'サンプルの記録を作成中…';
+    renderStatus();
+    const res = await fetch(preset.file);
+    if (!res.ok) throw new Error('サンプルのルートを読み込めませんでした');
+    const r = await buildGpxRoute(parseGpx(await res.text()), elevation);
+    const start = new Date();
+    start.setDate(start.getDate() - 1);
+    start.setHours(8, 30, 0, 0);
+    const label = `${start.getMonth() + 1}/${start.getDate()}`;
+    const { track, points } = generateSampleTrack(r.coords, r.eles, {
+      startMs: start.getTime(),
+      name: `サンプル：${preset.title}（${label}）`,
+      seed: start.getTime(),
+    });
+    await putTrackWithPoints(track, points);
+    await refreshTrackList();
+    status('サンプルの記録を追加しました。「地図に表示」で確認できます');
+  } catch (err) {
+    status(err instanceof Error ? err.message : String(err), true);
+  } finally {
+    progressMsg = '';
+    renderStatus();
+  }
+}
+$('btn-sample-track').addEventListener('click', () => void addSampleTrack());
 
 async function refreshTrackList() {
   const list = $('track-list');
@@ -1169,8 +1270,10 @@ async function showSavedTrack(t: Track) {
   recorder.clear();
   const points = await getPoints(t.id);
   shown = { track: t, points };
+  profileSource = 'track';
   renderTrack();
   menu.close();
+  setTab('profile');
   fitTo(points.map((p) => [p.lng, p.lat]));
   updateNav();
 }

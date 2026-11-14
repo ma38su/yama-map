@@ -1,9 +1,17 @@
 /**
  * ボトムシート：カードを上下にドラッグ（またはタップ）すると詳細が開閉する。
- * 開いても画面上部の地図ボタンは隠さない。中身はスクロールできる。
+ * 止まる高さは3段階：閉じる／半分（画面上部の地図ボタンは隠さない）／全画面（地図は見えなくなる）。
+ * 中身はスクロールできる。
  */
+export type SheetState = 'closed' | 'half' | 'full';
+
+/** 全画面のときに上に残す余白 (px)。ノッチ・ステータスバーの分は別に足す */
+const FULL_TOP_GAP = 8;
+/** 半分のときに上に残す高さ (px)。状態表示と地図のボタンがかからないように */
+const HALF_TOP_GAP = 210;
+
 export class BottomSheet {
-  private open = false;
+  private state: SheetState = 'closed';
   private drag: { y0: number; h0: number; t0: number; moved: boolean; id: number } | null = null;
 
   constructor(
@@ -19,41 +27,64 @@ export class BottomSheet {
       el.addEventListener('pointercancel', (e) => this.end(e));
     }
     window.addEventListener('resize', () => {
-      if (this.open) this.body.style.height = `${this.maxHeight()}px`;
+      if (this.state !== 'closed') this.body.style.height = `${this.heightOf(this.state)}px`;
     });
   }
 
   get isOpen(): boolean {
-    return this.open;
+    return this.state !== 'closed';
   }
 
-  /** 開いたときの高さ。画面上部（状態表示・地図のボタン）にはかからないようにする */
-  private maxHeight(): number {
+  /** カードとボタン列など、閉じていても見えている部分の高さ */
+  private collapsed(): number {
     const sheet = this.body.parentElement!;
-    const collapsed = sheet.getBoundingClientRect().height - this.body.getBoundingClientRect().height;
-    return Math.max(160, Math.round(window.innerHeight - collapsed - 210));
+    return sheet.getBoundingClientRect().height - this.body.getBoundingClientRect().height;
+  }
+
+  /** ノッチ・ステータスバーの高さ（env(safe-area-inset-top) は JS から直接読めないので、要素に当てて測る） */
+  private safeTop(): number {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;top:0;height:env(safe-area-inset-top);visibility:hidden;pointer-events:none';
+    document.body.append(probe);
+    const h = probe.getBoundingClientRect().height;
+    probe.remove();
+    return h;
+  }
+
+  private heightOf(state: SheetState): number {
+    if (state === 'closed') return 0;
+    const room = window.innerHeight - this.collapsed();
+    const full = Math.max(160, Math.round(room - this.safeTop() - FULL_TOP_GAP));
+    return state === 'full' ? full : Math.min(full, Math.max(160, Math.round(room - HALF_TOP_GAP)));
   }
 
   setOpen(open: boolean): void {
-    this.open = open;
+    this.setState(open ? 'half' : 'closed');
+  }
+
+  setState(state: SheetState): void {
+    const wasOpen = this.isOpen;
+    this.state = state;
+    const open = state !== 'closed';
     this.body.hidden = false;
-    this.body.style.height = `${open ? this.maxHeight() : 0}px`;
+    this.body.style.height = `${this.heightOf(state)}px`;
     this.handle.setAttribute('aria-expanded', String(open));
     document.body.classList.toggle('sheet-open', open);
+    document.body.classList.toggle('sheet-full', state === 'full');
     this.handle.setAttribute('aria-label', open ? '詳細を閉じる' : '詳細を開く');
     if (!open) {
       // 閉じきったら非表示（スクリーンリーダー・タブ移動の対象外に）
       const done = () => {
-        if (!this.open) this.body.hidden = true;
+        if (!this.isOpen) this.body.hidden = true;
       };
       this.body.addEventListener('transitionend', done, { once: true });
       setTimeout(done, 400);
     }
-    this.onChange(open);
+    if (open || wasOpen) this.onChange(open);
   }
 
   toggle(): void {
-    this.setOpen(!this.open);
+    this.setState(this.isOpen ? 'closed' : 'half');
   }
 
   private start(e: PointerEvent, el: HTMLElement) {
@@ -71,7 +102,7 @@ export class BottomSheet {
     if (!d.moved && Math.abs(dy) < 6) return;
     d.moved = true;
     this.body.classList.add('dragging');
-    this.body.style.height = `${Math.max(0, Math.min(this.maxHeight(), d.h0 - dy))}px`;
+    this.body.style.height = `${Math.max(0, Math.min(this.heightOf('full'), d.h0 - dy))}px`;
   }
 
   private end(e: PointerEvent) {
@@ -86,7 +117,13 @@ export class BottomSheet {
     const dy = e.clientY - d.y0;
     const v = dy / Math.max(1, performance.now() - d.t0); // px/ms（上方向が負）
     const h = this.body.getBoundingClientRect().height;
-    const open = v < -0.4 ? true : v > 0.4 ? false : h > this.maxHeight() / 3;
-    this.setOpen(open);
+    const states: SheetState[] = ['closed', 'half', 'full'];
+    // 素早く払ったら、払った向きの次の段へ。ゆっくりなら近い段へ
+    let i = states.reduce((best, s, k) => (Math.abs(this.heightOf(s) - h) < Math.abs(this.heightOf(states[best]) - h) ? k : best), 0);
+    if (Math.abs(v) > 0.4) {
+      const from = states.indexOf(this.state);
+      i = Math.max(0, Math.min(2, from + (v < 0 ? 1 : -1)));
+    }
+    this.setState(states[i]);
   }
 }

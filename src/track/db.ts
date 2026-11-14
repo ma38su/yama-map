@@ -85,6 +85,16 @@ export async function appendPoint(track: Track, point: TrackPoint): Promise<void
   await done(tx);
 }
 
+/** 記録をまとめて保存する（サンプルの記録や、読み込んだ記録用） */
+export async function putTrackWithPoints(track: Track, points: TrackPoint[]): Promise<void> {
+  const db = await open();
+  const tx = db.transaction(['tracks', 'points'], 'readwrite');
+  const store = tx.objectStore('points');
+  for (const p of points) store.add(p);
+  tx.objectStore('tracks').put(track);
+  await done(tx);
+}
+
 export async function getTrack(id: string): Promise<Track | undefined> {
   const db = await open();
   return wrap(db.transaction('tracks').objectStore('tracks').get(id));

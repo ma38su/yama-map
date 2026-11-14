@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cumulativeDistances, type LngLat } from '../src/geo';
-import { detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, routeSpan, trailShare, type ActiveRoute } from '../src/nav/plan';
+import { detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, preferredOption, routeSpan, trailShare, type ActiveRoute, type RouteOption } from '../src/nav/plan';
 import { clipLine, gsiKind, osmKind } from '../src/route/roadTiles';
 import { PROFILES, TrailGraph, overlapRatio, type RouteLine } from '../src/route/trailRouter';
 
@@ -189,5 +189,30 @@ describe('通過点・登山道の割合', () => {
   it('trailShare', () => {
     expect(trailShare({ byKind: { trail: 750, track: 250, road: 0, major: 0 } } as never)).toBeCloseTo(0.75);
     expect(trailShare({ byKind: { trail: 0, track: 0, road: 0, major: 0 } } as never)).toBeNull();
+  });
+});
+
+describe('preferredOption', () => {
+  const opt = (label: string, len: number, trail: number, sameAs: string[] = []) =>
+    ({
+      label,
+      source: 'gsi',
+      coords: [],
+      eles: [],
+      dists: [0, len],
+      marks: [],
+      byKind: { trail, track: 0, road: len - trail, major: 0 },
+      straightLegs: 0,
+      sameAs,
+    }) as unknown as RouteOption;
+  const opts = [opt('登山道優先', 6000, 5000), opt('林道・車道経由', 5000, 500), opt('最短距離', 4800, 2000)];
+
+  it('既定（登山道優先）と最短距離で選ぶ候補が変わる', () => {
+    expect(preferredOption(opts, 'trail')).toBe(0);
+    expect(preferredOption(opts, 'short')).toBe(2);
+  });
+  it('同じ経路にまとめられた候補も名前で見つける', () => {
+    const merged = [opt('登山道優先', 6000, 5000, ['最短距離']), opt('林道・車道経由', 5000, 500)];
+    expect(preferredOption(merged, 'short')).toBe(0);
   });
 });

@@ -23,29 +23,48 @@
       <button id="sheet-handle" type="button" aria-label="詳細を開く" aria-expanded="false"><span></span></button>
       <div id="card"></div>
       <div id="sheet-body" hidden>
-        <section id="sec-options" hidden>
-          <h3>ルート候補（タップで切り替え）</h3>
-          <ol id="options" class="options"></ol>
-          <p class="note">地図上の灰色の破線もほかの候補です。線をタップしても切り替えられます。</p>
-        </section>
-        <section id="sec-plan">
-          <h3>行程</h3>
-          <ol id="timeline" class="timeline"></ol>
-          <div class="row" id="plan-actions"></div>
-        </section>
-        <section id="sec-profile">
-          <h3>標高グラフ</h3>
-          <canvas id="profile"></canvas>
-        </section>
-        <section id="sec-pace">
-          <h3>これまでのペース</h3>
-          <div id="pace-grid" class="tiles"></div>
-          <p class="note" id="pace-note"></p>
-          <div class="field">
-            <span class="field-label">記録が少ないときのペース</span>
-            <div class="segmented" id="pace-preset" role="radiogroup" aria-label="ペース設定"></div>
-          </div>
-        </section>
+        <div class="tabs" role="tablist" aria-label="詳細の表示">
+          <button type="button" role="tab" id="tab-plan" data-tab="plan" aria-controls="panel-plan">行程</button>
+          <button type="button" role="tab" id="tab-profile" data-tab="profile" aria-controls="panel-profile">標高・ペース</button>
+        </div>
+        <div id="panel-plan" role="tabpanel" aria-labelledby="tab-plan">
+          <section id="sec-plan">
+            <div class="field depart">
+              <span class="field-label">出発</span>
+              <div class="segmented" id="depart-mode" role="radiogroup" aria-label="出発時刻"></div>
+              <input type="time" id="depart-time" aria-label="出発時刻" hidden />
+            </div>
+            <p class="note" id="depart-note"></p>
+            <ol id="timeline" class="timeline"></ol>
+            <div class="row" id="plan-actions"></div>
+          </section>
+          <p class="note" id="plan-empty" hidden>目的地を設定すると、ここに行程と到着予想が出ます。</p>
+        </div>
+        <div id="panel-profile" role="tabpanel" aria-labelledby="tab-profile" hidden>
+          <section id="sec-profile">
+            <div class="profile-bar">
+              <div class="segmented small" id="profile-source" role="radiogroup" aria-label="グラフに出すもの"></div>
+              <div class="segmented small" id="profile-axis" role="radiogroup" aria-label="横軸"></div>
+              <div class="zoom-btns">
+                <button type="button" class="btn small" id="zoom-out" aria-label="縮小">−</button>
+                <button type="button" class="btn small" id="zoom-in" aria-label="拡大">＋</button>
+                <button type="button" class="btn small" id="zoom-reset">全体</button>
+              </div>
+            </div>
+            <canvas id="profile"></canvas>
+            <input type="range" id="profile-pos" min="0" max="1000" value="0" aria-label="表示する位置" hidden />
+            <p class="pace-legend" id="pace-legend" hidden>
+              <span>速い</span><span class="pace-scale" aria-hidden="true"></span><span>遅い</span>
+              <span>（棒の高さ＝速さ、点線＝標準）</span><span><b class="rest-mark">休</b> 休憩</span>
+            </p>
+            <p class="note" id="profile-empty" hidden>ルートを作るか記録を表示すると、標高グラフが出ます。</p>
+          </section>
+          <section id="sec-pace">
+            <h3 id="pace-title">これまでのペース</h3>
+            <div id="pace-grid" class="tiles"></div>
+            <p class="note" id="pace-note"></p>
+          </section>
+        </div>
       </div>
       <div id="actions">
         <button id="btn-fit" class="icon-btn" type="button" aria-label="ルート全体を表示" title="ルート全体を表示">
@@ -69,11 +88,25 @@
 
         <section>
           <h3>ルート</h3>
+          <div class="field">
+            <span class="field-label">ルートの探し方</span>
+            <div class="segmented" id="route-pref" role="radiogroup" aria-label="ルートの探し方"></div>
+          </div>
+          <p class="note" id="route-pref-note"></p>
           <div class="stack" id="preset-routes"></div>
           <div class="row">
             <label class="btn"><input type="file" id="gpx-file" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden />GPXを読み込む</label>
           </div>
           <p class="note">地図をタップして「目的地」を選ぶと、国土地理院の道・徒歩道データから自動でルートを作ります。</p>
+        </section>
+
+        <section>
+          <h3>ペース</h3>
+          <div class="field">
+            <span class="field-label">記録が少ないときのペース</span>
+            <div class="segmented" id="pace-preset" role="radiogroup" aria-label="ペース設定"></div>
+          </div>
+          <p class="note">到着予想に使う歩く速さです。記録を始めると、歩いた実績に合わせて自動で調整します。</p>
         </section>
 
         <section>
@@ -88,6 +121,10 @@
           <label class="toggle"><input type="checkbox" id="opt-wakelock" /> 記録中は画面を点けたままにする</label>
           <p class="note">Web版は画面を消すと測位が止まります。ポケットに入れたまま記録するにはアプリ版が必要です。</p>
           <ul id="track-list" class="list"></ul>
+          <div class="row">
+            <button type="button" class="btn" id="btn-sample-track">サンプルの記録を追加</button>
+          </div>
+          <p class="note">標準タイムで歩き、30分ごとに5〜10分休んだ想定の記録です。記録の見え方（軌跡・標高グラフ・ペースの分析）を試せます。</p>
         </section>
 
         <section>

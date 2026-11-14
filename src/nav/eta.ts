@@ -211,6 +211,80 @@ export function defaultFactors(preset: PacePreset = 'normal'): PaceFactors {
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+/** 記録の中の休憩（立ち止まり） */
+export interface RestSpan {
+  /** 記録の始点からの距離 (m) */
+  d: number;
+  /** 休憩の始まりと終わり (ms) */
+  t0: number;
+  t1: number;
+}
+
+/** 点ごとの累積距離 (m) と累積の歩行時間 (s)、休憩の区間 */
+export function splitMoving(points: TrackSample[]): { cumD: Float64Array; cumMove: Float64Array; rests: RestSpan[] } {
+  const cumD = new Float64Array(points.length);
+  const cumMove = new Float64Array(points.length);
+  const rests: RestSpan[] = [];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const d = distance([a.lng, a.lat], [b.lng, b.lat]);
+    const d3 = a.ele != null && b.ele != null ? Math.hypot(d, b.ele - a.ele) : d;
+    const dt = Math.max(0, (b.t - a.t) / 1000);
+    let moving = dt;
+    if (dt > STOP_MIN_GAP_S && d3 / dt < STOP_SPEED) {
+      moving = Math.min(dt, d / ASSUMED_WALK);
+      // 歩いた分は休憩の前に置く
+      rests.push({ d: cumD[i - 1] + d, t0: a.t + moving * 1000, t1: b.t });
+    }
+    cumD[i] = cumD[i - 1] + d;
+    cumMove[i] = cumMove[i - 1] + moving;
+  }
+  return { cumD, cumMove, rests };
+}
+
+/** 記録を区切った区間ごとのペース */
+export interface PaceSegment {
+  /** 区間の始まりと終わり：記録の始点からの距離 (m) */
+  d0: number;
+  d1: number;
+  /** 区間の始まりと終わりの時刻 (ms)。途中の休憩を含む */
+  t0: number;
+  t1: number;
+  /** 標準時間に対する実際の歩行時間の比（1 で標準どおり、大きいほど遅い） */
+  ratio: number;
+}
+
+/**
+ * 記録を一定の距離ごとに区切って、区間ごとのペース（標準時間の何倍で歩いたか）を求める。
+ * 区間の長さは、全体を40区間ほどに分ける長さ（100m〜500m）。休憩は歩行時間に含めない。
+ */
+export function paceSegments(points: TrackSample[], segmentM?: number): { segments: PaceSegment[]; rests: RestSpan[] } {
+  if (points.length < 2) return { segments: [], rests: [] };
+  const { cumD, cumMove, rests } = splitMoving(points);
+  const total = cumD[points.length - 1];
+  const step = segmentM ?? Math.max(100, Math.min(500, Math.round(total / 40 / 50) * 50));
+  const timeline = new RouteTimeline(Array.from(cumD), points.map((p) => p.ele));
+  const times = points.map((p) => p.t);
+  const segments: PaceSegment[] = [];
+  for (let d0 = 0; d0 < total - 1; d0 += step) {
+    const d1 = Math.min(total, d0 + step);
+    // 端数の短い区間は前の区間にまとめる
+    const end = total - d1 < step / 3 ? total : d1;
+    const std = timeline.between(d0, end).total;
+    const actual = (interp(cumD, cumMove, end) - interp(cumD, cumMove, d0)) / 60;
+    segments.push({
+      d0,
+      d1: end,
+      t0: interp(cumD, times, d0),
+      t1: interp(cumD, times, end),
+      ratio: std > 0.05 ? clamp(actual / std, 0.3, 4) : 1,
+    });
+    if (end === total) break;
+  }
+  return { segments, rests };
+}
+
 export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal', now = Date.now()): PaceStats {
   const prior = PACE_PRESETS[preset].factor;
   const empty: PaceStats = {
@@ -228,23 +302,8 @@ export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal'
   if (points.length < 2) return empty;
 
   // 1) 生の点列から歩行時間と休憩時間を分ける
-  const cumD = new Float64Array(points.length);
-  const cumMove = new Float64Array(points.length);
-  let restS = 0;
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1];
-    const b = points[i];
-    const d = distance([a.lng, a.lat], [b.lng, b.lat]);
-    const d3 = a.ele != null && b.ele != null ? Math.hypot(d, b.ele - a.ele) : d;
-    const dt = Math.max(0, (b.t - a.t) / 1000);
-    let moving = dt;
-    if (dt > STOP_MIN_GAP_S && d3 / dt < STOP_SPEED) {
-      moving = Math.min(dt, d / ASSUMED_WALK);
-      restS += dt - moving;
-    }
-    cumD[i] = cumD[i - 1] + d;
-    cumMove[i] = cumMove[i - 1] + moving;
-  }
+  const { cumD, cumMove, rests } = splitMoving(points);
+  let restS = rests.reduce((sum, r) => sum + (r.t1 - r.t0) / 1000, 0);
   const last = points[points.length - 1];
   const sinceLast = Math.max(0, (now - last.t) / 1000);
   // 最後の測位から3分以上動いていなければ今は休憩中。表示には含めるが、休憩率の推定には使わない

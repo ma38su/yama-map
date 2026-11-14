@@ -58,6 +58,29 @@ export interface ActiveRoute extends RouteOption {
   chosen?: number;
 }
 
+/** ルートの探し方（設定）。候補はどちらでも全部作っておき、選ぶ候補だけを変える */
+export type RoutePref = 'trail' | 'short';
+export const ROUTE_PREFS: Record<RoutePref, { label: string; desc: string }> = {
+  trail: { label: '登山道優先', desc: '車道・林道はなるべく避け、登山道（徒歩道）を通ります' },
+  short: { label: '最短距離', desc: '道の種類を問わず、いちばん短い道を通ります' },
+};
+
+/** 設定に合う候補の番号 */
+export function preferredOption(options: RouteOption[], pref: RoutePref): number {
+  const named = (label: string) => options.findIndex((o) => o.label === label || o.sameAs?.includes(label));
+  const best = (score: (o: RouteOption) => number) =>
+    options.reduce((bi, o, i) => (score(o) < score(options[bi]) ? i : bi), 0);
+  if (pref === 'short') {
+    const i = named('最短距離');
+    return i >= 0 ? i : best((o) => {
+      const span = routeSpan(o);
+      return span.to - span.from;
+    });
+  }
+  const i = named('登山道優先');
+  return i >= 0 ? i : best((o) => -(trailShare(o) ?? 0));
+}
+
 export type ElevationFn = (lng: number, lat: number) => Promise<number | null>;
 
 const newId = () => Math.random().toString(36).slice(2, 10);
@@ -197,6 +220,7 @@ function routeAllLegs(
 export async function buildRouteOptions(
   points: PlanPoint[],
   elevation: ElevationFn,
+  pref: RoutePref = 'trail',
   onProgress?: (msg: string) => void,
 ): Promise<ActiveRoute> {
   const pts = normalizePoints(points);
@@ -274,7 +298,7 @@ export async function buildRouteOptions(
       sameAs: c.sameAs,
     });
   }
-  return chooseOption({ name: `${pts[0].name} → ${pts[pts.length - 1].name}`, kind: 'auto', points: pts, options }, 0);
+  return chooseOption({ name: `${pts[0].name} → ${pts[pts.length - 1].name}`, kind: 'auto', points: pts, options }, preferredOption(options, pref));
 }
 
 /** 候補 i を選ぶ */
