@@ -1,0 +1,103 @@
+/** 現在地と記録（開始・終了、記録の線、途中で閉じた記録の再開） */
+import { distance, formatDistance, type LngLat } from '../geo';
+import { getPoints, listTracks, putTrack, type Track } from '../track/db';
+import { TrackRecorder } from '../track/recorder';
+import { saveSettings, settings } from '../settings';
+import { $, fmtM } from '../ui/dom';
+import { dem, geolocate, lineFC, src } from './mapView';
+import { refreshTrackList } from './menu';
+import { updateNav } from './nav';
+import { state } from './state';
+import { status } from './status';
+
+// ---------- 現在地 ----------
+let lastEleAt: { coords: LngLat; t: number } | null = null;
+geolocate.on('geolocate', async (pos) => {
+  const coords: LngLat = [pos.coords.longitude, pos.coords.latitude];
+  state.lastFix = { coords, acc: pos.coords.accuracy, t: Date.now() };
+  // 標高の再計算は 20m 以上動いたか 30秒経ったときだけ（無駄な処理を減らす）
+  if (!lastEleAt || distance(lastEleAt.coords, coords) > 20 || Date.now() - lastEleAt.t > 30_000) {
+    lastEleAt = { coords, t: Date.now() };
+    state.currentEle = await dem.elevation(coords[0], coords[1]);
+  }
+  updateNav();
+});
+geolocate.on('error', (e) => {
+  if (e.code === 1) {
+    status('位置情報の利用が許可されていません。端末の設定を確認してください', true);
+    return;
+  }
+  // TIMEOUT(3) は止まっているだけでも起きる。一時的な失敗(2)も、直近に測位できていれば気にしない
+  if (e.code === 2 && (!state.lastFix || Date.now() - state.lastFix.t > 20_000)) {
+    status('現在地を取得できません（GPSの電波が弱い可能性があります）', true);
+  }
+});
+/** 直近10分以内に分かっている現在地 */
+export function hereLngLat(): LngLat | null {
+  const recLast = recorder.state.points.at(-1);
+  const cands = [
+    state.lastFix ? { c: state.lastFix.coords, t: state.lastFix.t } : null,
+    recLast ? { c: [recLast.lng, recLast.lat] as LngLat, t: recLast.t } : null,
+  ]
+    .filter((x): x is { c: LngLat; t: number } => !!x)
+    .sort((a, b) => b.t - a.t);
+  return cands[0] && Date.now() - cands[0].t < 10 * 60_000 ? cands[0].c : null;
+}
+
+// ---------- 記録 ----------
+export const recorder = new TrackRecorder(dem, (s) => {
+  if (s.track) state.shown = { track: s.track, points: s.points };
+  else if (state.shown && !recorder.recording) state.shown = null;
+  renderTrack();
+  updateRecButton();
+  updateNav();
+});
+recorder.keepScreenOn = settings.wakeLock;
+
+const recBtn = $<HTMLButtonElement>('btn-rec');
+recBtn.addEventListener('click', async () => {
+  if (!recorder.recording) {
+    if (!('geolocation' in navigator)) {
+      alert('この端末・ブラウザでは位置情報が使えません');
+      return;
+    }
+    await recorder.start();
+    // 記録を始めたら、出発時刻は現在時刻に
+    if (settings.departAt) {
+      settings.departAt = null;
+      saveSettings();
+    }
+    if (!state.lastFix || Date.now() - state.lastFix.t > 30_000) geolocate.trigger();
+    status('記録を開始しました。歩いた実績から到着予想を調整します');
+  } else {
+    if (!confirm('記録を終了しますか？')) return;
+    const t = await recorder.stop();
+    if (t) status(`記録を保存しました：${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}`);
+  }
+  void refreshTrackList();
+});
+
+export function updateRecButton() {
+  const rec = recorder.recording;
+  recBtn.classList.toggle('recording', rec);
+  recBtn.querySelector('.text')!.textContent = rec ? '記録終了' : '記録開始';
+}
+
+export function renderTrack() {
+  src('track')?.setData(lineFC((state.shown?.points ?? []).map((p): LngLat => [p.lng, p.lat])));
+}
+
+
+/** 前回、記録中のままアプリが閉じられていたら再開を確認する */
+export async function checkUnfinished() {
+  const tracks = await listTracks().catch(() => [] as Track[]);
+  const open = tracks.find((t) => t.status === 'recording');
+  if (!open) return;
+  if (confirm(`「${open.name}」の記録が途中です。続きを記録しますか？\n（キャンセルするとここまでで保存します）`)) {
+    await recorder.resume(open);
+    geolocate.trigger();
+  } else {
+    const points = await getPoints(open.id);
+    await putTrack({ ...open, status: 'done', endedAt: points[points.length - 1]?.t ?? open.startedAt });
+  }
+}

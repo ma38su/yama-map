@@ -1,0 +1,138 @@
+/** 到着予想：ルート上の位置・ペース・出発時刻から、各地点の到着予想を計算して画面に反映する */
+import { distance, type LngLat } from '../geo';
+import {
+  RouteTimeline,
+  analyzePace,
+  defaultFactors,
+  estimate,
+  projectOnRoute,
+  type LegEstimate,
+  type PaceStats,
+  type RoutePosition,
+} from '../nav/eta';
+import { routeSpan, type Mark } from '../nav/plan';
+import { sunTimes } from '../nav/sun';
+import { settings } from '../settings';
+import { lineFC, emptyFC, src } from './mapView';
+import { hereLngLat, recorder } from './recording';
+import { renderBody, renderCard, sheet } from './sheetView';
+import { state } from './state';
+import { renderStatus, status } from './status';
+
+// ---------- 到着予想 ----------
+export interface Row {
+  mark: Mark;
+  passed: boolean;
+  /** 到着予想、または実際に到着した時刻 (ms) */
+  time: number | null;
+  /** 現在地からの残り距離 */
+  remainM: number;
+  remain: LegEstimate | null;
+  /** 前の地点からの区間 */
+  leg: { dist: number; up: number; down: number; est: LegEstimate } | null;
+}
+export interface Nav {
+  pos: RoutePosition | null;
+  onRoute: boolean;
+  offRoute: boolean;
+  fromAlong: number;
+  factors: ReturnType<typeof defaultFactors>;
+  pace: PaceStats | null;
+  rows: Row[];
+  next: Row | null;
+  dest: Row | null;
+  sunset: number | null;
+}
+
+function gainBetween(tl: RouteTimeline, a: number, b: number) {
+  return tl.gain(a, b);
+}
+
+/** 記録の中で地点の近く（80m以内）を最初に通った時刻 */
+function arrivalTime(m: Mark): number | null {
+  for (const p of recorder.state.points) if (distance([p.lng, p.lat], m.lngLat) < 80) return p.t;
+  return null;
+}
+
+/** 出発時刻 (ms)。記録中・時刻を指定していないときは今 */
+export function departureTime(): number {
+  const now = Date.now();
+  if (recorder.recording || !settings.departAt) return now;
+  const [hh, mm] = settings.departAt.split(':').map(Number);
+  const d = new Date(now);
+  d.setHours(hh, mm, 0, 0);
+  return d.getTime();
+}
+
+function computeNav(): Nav | null {
+  const r = state.route;
+  const tl = state.timeline;
+  if (!r || !tl) return null;
+  const span = routeSpan(r);
+  const here = hereLngLat();
+  const pos = here ? projectOnRoute(r.coords, r.dists, here, state.lastNav?.pos?.along) : null;
+  // 出発時刻を指定しているあいだは計画の確認なので、現在地に関係なく出発地から数える
+  const planning = !recorder.recording && !!settings.departAt;
+  const onRoute = !planning && !!pos && pos.offset < 300 && pos.along >= span.from - 100 && pos.along <= span.to + 100;
+  const pace = recorder.recording ? analyzePace(recorder.state.points, settings.pace) : null;
+  const factors = pace?.factors ?? defaultFactors(settings.pace);
+  const fromAlong = onRoute && pos ? Math.min(span.to, Math.max(span.from, pos.along)) : span.from;
+  const now = onRoute ? Date.now() : departureTime();
+  const marks = r.marks.filter((m) => m.along >= span.from - 1 && m.along <= span.to + 1);
+  const rows: Row[] = marks.map((m, i) => {
+    const prev = i > 0 ? marks[i - 1].along : m.along;
+    const g = gainBetween(tl, prev, m.along);
+    const passed = onRoute && m.along <= fromAlong + 30;
+    const remain = passed ? null : estimate(tl, fromAlong, m.along, factors);
+    return {
+      mark: m,
+      passed,
+      time: remain ? now + remain.totalMin * 60_000 : arrivalTime(m),
+      remainM: Math.max(0, m.along - fromAlong),
+      remain,
+      leg: i > 0 ? { dist: m.along - prev, up: g.ascent, down: g.descent, est: estimate(tl, prev, m.along, factors) } : null,
+    };
+  });
+  const sun = sunTimes(new Date(), r.coords[0][1], r.coords[0][0]);
+  return {
+    pos,
+    onRoute,
+    offRoute: !!pos && pos.offset >= 150 && pos.offset < 5000 && recorder.recording,
+    fromAlong,
+    factors,
+    pace,
+    rows,
+    next: rows.find((x) => !x.passed && x.mark.kind !== 'start') ?? null,
+    dest: rows.at(-1) ?? null,
+    sunset: sun.sunset?.getTime() ?? null,
+  };
+}
+
+let arrivedNotified = false;
+export function updateNav() {
+  const nav = computeNav();
+  state.lastNav = nav;
+  if (nav?.dest?.passed && !arrivedNotified) {
+    arrivedNotified = true;
+    status(`${nav.dest.mark.name}に到着しました。おつかれさまでした！`);
+  }
+  if (!nav?.dest?.passed) arrivedNotified = false;
+  // 歩き終えた部分のルートを灰色に
+  if (state.route && nav?.onRoute) {
+    const done: LngLat[] = [];
+    for (let i = 0; i < state.route.coords.length && state.route.dists[i] <= nav.fromAlong; i++) done.push(state.route.coords[i]);
+    src('route-done')?.setData(lineFC(done));
+  } else src('route-done')?.setData(emptyFC);
+  renderCard(nav);
+  if (sheet.isOpen) renderBody(nav);
+  renderStatus();
+}
+setInterval(() => {
+  if (document.visibilityState === 'visible') updateNav();
+}, 15_000);
+setInterval(() => {
+  // ルートなしで記録中は経過時間を毎秒更新
+  if (recorder.recording && !state.route && document.visibilityState === 'visible') renderCard(state.lastNav);
+}, 1000);
+
+export const isLate = (row: Row, sunset: number | null) => !row.passed && !!sunset && !!row.time && row.time > sunset - 30 * 60_000;

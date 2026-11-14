@@ -1,0 +1,32 @@
+/**
+ * 画面のあちこちから読み書きする状態。モジュールをまたいで変わる値はここに置く
+ * （ES モジュールの let は読み込んだ側から書き換えられないため）。
+ */
+import type { LngLat } from '../geo';
+import { RouteTimeline } from '../nav/eta';
+import { loadSavedRoute, type ActiveRoute, type PlanPoint } from '../nav/plan';
+import type { Track, TrackPoint } from '../track/db';
+import type { Nav } from './nav';
+
+const savedRoute = loadSavedRoute();
+
+export const state = {
+  /** 表示中のルート */
+  route: savedRoute as ActiveRoute | null,
+  /** ルートに沿った標準時間の累積（到着予想用） */
+  timeline: (savedRoute ? new RouteTimeline(savedRoute.dists, savedRoute.eles) : null) as RouteTimeline | null,
+  /** ルートができる前に選ばれた地点（出発地待ちなど） */
+  pending: [] as PlanPoint[],
+  /** ルートを計算中か */
+  building: false,
+  /** 地図に表示している記録（記録中ならその記録） */
+  shown: null as { track: Track; points: TrackPoint[] } | null,
+  /** 最後に計算した到着予想 */
+  lastNav: null as Nav | null,
+  /** 地図の現在地ボタンで最後に分かった位置 */
+  lastFix: null as { coords: LngLat; acc: number; t: number } | null,
+  /** 現在地の標高 */
+  currentEle: null as number | null,
+  /** 読み込み中などの進み具合の表示（あれば状態表示に優先して出す） */
+  progressMsg: '',
+};
