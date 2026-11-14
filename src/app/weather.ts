@@ -31,7 +31,15 @@ try {
 } catch {
   /* 保存領域が使えない環境でも動かす */
 }
+/** 端末に残すマス目の数の上限（歩き回っても保存領域を使いすぎないように） */
+const KEEP_CELLS = 200;
 function persist() {
+  const now = Date.now();
+  for (const [k, v] of cache) if (now - v.at > KEEP_MS) cache.delete(k);
+  if (cache.size > KEEP_CELLS) {
+    const old = [...cache].sort((a, b) => a[1].at - b[1].at).slice(0, cache.size - KEEP_CELLS);
+    for (const [k] of old) cache.delete(k);
+  }
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(cache)));
   } catch {
@@ -48,6 +56,11 @@ function request(key: string) {
 }
 
 async function flush() {
+  // 圏外なら問い合わせない（電波を探して電池を使わないように）。つながったら頼み直される
+  if (!navigator.onLine) {
+    queue.clear();
+    return;
+  }
   const keys = [...queue].slice(0, 100);
   for (const k of keys) {
     queue.delete(k);
@@ -138,6 +151,12 @@ const smooth = (e0: number, e1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
+/** 格子の値の双線形補間 */
+function bilinear(v: number[], ix: number, iy: number, fx: number, fy: number): number {
+  const at = (x: number, y: number) => v[y * GRID_N + x];
+  return (at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) + (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy;
+}
+
 /** 雲の層の画像を描く。マス目ごとの雲量を補間し、風下へ流れる模様で切り取る */
 function drawClouds(center: [number, number], t: number): { url: string; coords: [[number, number], [number, number], [number, number], [number, number]] } | null {
   const grid: WeatherAt[] = [];
@@ -156,6 +175,8 @@ function drawClouds(center: [number, number], t: number): { url: string; coords:
   const hours = t / 3_600_000;
   const ox = (Math.sin(rad) * speed * 3.6 * hours) / kmPerPx;
   const oy = (-Math.cos(rad) * speed * 3.6 * hours) / kmPerPx;
+  const cloudGrid = grid.map((w) => w.cloud);
+  const precipGrid = grid.map((w) => w.precip);
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = IMG;
   const ctx = canvas.getContext('2d')!;
@@ -168,16 +189,13 @@ function drawClouds(center: [number, number], t: number): { url: string; coords:
       const gx = Math.max(0, Math.min(GRID_N - 1.001, (x / IMG) * GRID_N - 0.5));
       const ix = Math.floor(gx);
       const fx = gx - ix;
-      const v = (k: 'cloud' | 'precip', jx: number, jy: number) => grid[jy * GRID_N + jx][k];
-      const bil = (k: 'cloud' | 'precip') =>
-        (v(k, ix, iy) * (1 - fx) + v(k, ix + 1, iy) * fx) * (1 - fy) + (v(k, ix, iy + 1) * (1 - fx) + v(k, ix + 1, iy + 1) * fx) * fy;
-      const c = bil('cloud') / 100;
+      const c = bilinear(cloudGrid, ix, iy, fx, fy) / 100;
       const nx = (((Math.round(x - ox) % IMG) + IMG) % IMG);
       const ny = (((Math.round(y - oy) % IMG) + IMG) % IMG);
       const n = noise[ny * IMG + nx];
       // 雲量が多いほど模様の多くを雲にする
       const density = smooth(1 - c - 0.12, 1 - c + 0.18, n);
-      const grey = 250 - Math.min(1, bil('precip') / 3) * 90;
+      const grey = 250 - Math.min(1, bilinear(precipGrid, ix, iy, fx, fy) / 3) * 90;
       const o = (y * IMG + x) * 4;
       img.data[o] = grey;
       img.data[o + 1] = grey;
@@ -310,7 +328,16 @@ map.on('move', () => {
   updateRain(true);
 });
 
-function rainFrame() {
+/** 雨は30コマ/秒で十分なので、それより速くは描かない */
+const RAIN_FRAME_MS = 33;
+let rainLast = 0;
+function rainFrame(now: number) {
+  rainRaf = drops.length && document.visibilityState === 'visible' ? requestAnimationFrame(rainFrame) : 0;
+  if (now - rainLast < RAIN_FRAME_MS) return;
+  const step = Math.min(3, (now - rainLast) / 16.7);
+  rainLast = now;
+  // シートを全画面に広げて地図が見えないあいだは描かない
+  if (document.body.classList.contains('sheet-full')) return;
   const dpr = window.devicePixelRatio || 1;
   const w = rainCanvas.clientWidth;
   const h = rainCanvas.clientHeight;
@@ -326,7 +353,7 @@ function rainFrame() {
   const snow = new Path2D();
   for (const d of drops) {
     const cell = field[Math.min(FIELD_Y - 1, Math.max(0, Math.floor((d.y / h) * FIELD_Y))) * FIELD_X + Math.min(FIELD_X - 1, Math.max(0, Math.floor((d.x / w) * FIELD_X)))];
-    const speed = cell?.snow ? d.v * 2 : d.v * 18;
+    const speed = (cell?.snow ? d.v * 2 : d.v * 18) * step;
     d.y += speed;
     d.x += slant * speed + (cell?.snow ? Math.sin(d.y / 30) * 0.6 : 0);
     if (d.y > h) {
@@ -347,7 +374,6 @@ function rainFrame() {
   }
   ctx.stroke(rain);
   ctx.fill(snow);
-  rainRaf = drops.length && document.visibilityState === 'visible' ? requestAnimationFrame(rainFrame) : 0;
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && drops.length && !rainRaf) rainRaf = requestAnimationFrame(rainFrame);

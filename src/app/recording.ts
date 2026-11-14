@@ -16,6 +16,7 @@ import { status } from './status';
 
 // ---------- 現在地 ----------
 let lastEleAt: { coords: LngLat; t: number } | null = null;
+let lastNavAt: { coords: LngLat; t: number } | null = null;
 geolocate.on('geolocate', async (pos) => {
   const coords: LngLat = [pos.coords.longitude, pos.coords.latitude];
   state.lastFix = { coords, acc: pos.coords.accuracy, t: Date.now() };
@@ -24,7 +25,11 @@ geolocate.on('geolocate', async (pos) => {
     lastEleAt = { coords, t: Date.now() };
     state.currentEle = await dem.elevation(coords[0], coords[1]);
   }
-  updateNav();
+  // 測位は1秒ごとくらいに届くので、到着予想の計算と描き直しは15m動いたか5秒経ったときだけにする
+  if (!lastNavAt || distance(lastNavAt.coords, coords) > 15 || Date.now() - lastNavAt.t > 5000) {
+    lastNavAt = { coords, t: Date.now() };
+    updateNav();
+  }
 });
 geolocate.on('error', (e) => {
   if (e.code === 1) {

@@ -11,6 +11,7 @@ import {
   type RoutePosition,
 } from '../nav/eta';
 import { routeSpan, type Mark } from '../nav/plan';
+import type { TrackPoint } from '../track/db';
 import { sunTimes } from '../nav/sun';
 import { settings } from '../settings';
 import { lineFC, emptyFC, src } from './mapView';
@@ -64,6 +65,22 @@ export function departureTime(): number {
   return d.getTime();
 }
 
+/**
+ * 記録のペース分析（analyzePace）を覚えておく。点が増えたとき・設定が変わったときだけ計算し直す。
+ * 記録中は経過時間が進むので15秒ごとにも計算し直す。finished なら最後の点の時刻で締める
+ */
+const paceMemo = new Map<string, PaceStats>();
+export function paceOf(points: TrackPoint[], finished = false): PaceStats {
+  const key = `${points[0]?.trackId}:${points.length}:${settings.pace}:${finished ? 'end' : Math.floor(Date.now() / 15_000)}`;
+  let p = paceMemo.get(key);
+  if (!p) {
+    p = analyzePace(points, settings.pace, finished && points.length ? points[points.length - 1].t : Date.now());
+    if (paceMemo.size > 8) paceMemo.clear();
+    paceMemo.set(key, p);
+  }
+  return p;
+}
+
 function computeNav(): Nav | null {
   const r = state.route;
   const tl = state.timeline;
@@ -74,7 +91,7 @@ function computeNav(): Nav | null {
   // 出発時刻を指定しているあいだは計画の確認なので、現在地に関係なく出発地から数える
   const planning = !recorder.recording && !!settings.departAt;
   const onRoute = !planning && !!pos && pos.offset < 300 && pos.along >= span.from - 100 && pos.along <= span.to + 100;
-  const pace = recorder.recording ? analyzePace(recorder.state.points, settings.pace) : null;
+  const pace = recorder.recording ? paceOf(recorder.state.points) : null;
   const factors = pace?.factors ?? defaultFactors(settings.pace);
   const fromAlong = onRoute && pos ? Math.min(span.to, Math.max(span.from, pos.along)) : span.from;
   const now = onRoute ? Date.now() : departureTime();

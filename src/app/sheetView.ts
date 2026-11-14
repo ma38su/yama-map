@@ -1,6 +1,6 @@
 /** 下から出るシート：カード（到着予想の要約）と、詳細のタブ（行程／標高・ペース） */
 import { formatDistance, formatDuration, type LngLat } from '../geo';
-import { PACE_PRESETS, analyzePace, estimate } from '../nav/eta';
+import { PACE_PRESETS, estimate } from '../nav/eta';
 import { routeSpan } from '../nav/plan';
 import { saveSettings, settings } from '../settings';
 import { $, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
@@ -8,7 +8,7 @@ import { BottomSheet } from '../ui/sheet';
 import { actualRows, type ActualRow } from '../track/actual';
 import { weatherLabel } from '../nav/weather';
 import { emptyFC, fitTo, src } from './mapView';
-import { isLate, updateNav, type Nav, type Row } from './nav';
+import { isLate, paceOf, updateNav, type Nav, type Row } from './nav';
 import { profile, updateProfile } from './profileView';
 import { recorder, viewingTrack } from './recording';
 import { clearRoute, exportRoute, removeMark, searchAlternativesForGpx } from './route';
@@ -88,7 +88,7 @@ function renderActualCard(card: HTMLElement) {
     card.append(actualRow('出発', first, '', false));
     card.append(actualRow('目的地', last, `所要 ${fmtHM((last.t - first.t) / 60_000)} · ${formatDistance(track.distance)}`, true));
   }
-  const p = points.length > 1 ? analyzePace(points, settings.pace, points[points.length - 1].t) : null;
+  const p = points.length > 1 ? paceOf(points, true) : null;
   const sub = h('div', 'nav-sub');
   if (p) sub.append(h('span', '', `歩行 ${fmtHM(p.movingMs / 60_000)}`), h('span', '', `休憩 ${fmtHM(p.restMs / 60_000)}`));
   sub.append(h('span', '', `登り ${fmtM(track.ascent)} · 下り ${fmtM(track.descent)}`));
@@ -252,9 +252,9 @@ export function renderBody(nav: Nav | null) {
   const p =
     nav?.pace ??
     (recorder.recording
-      ? analyzePace(recorder.state.points, settings.pace)
+      ? paceOf(recorder.state.points)
       : state.shown && state.shown.points.length > 1
-        ? analyzePace(state.shown.points, settings.pace, state.shown.points[state.shown.points.length - 1].t)
+        ? paceOf(state.shown.points, true)
         : null);
   const tiles: [string, string][] = p
     ? [

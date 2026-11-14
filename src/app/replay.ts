@@ -9,6 +9,7 @@ import { lineFC, map, pointFC, setTerrain, src, updateDaylight } from './mapView
 import { profile } from './profileView';
 import { updateRecButton } from './recording';
 import { captureSupported, capturing, startCapture, stopCapture } from './replayVideo';
+import { settings } from '../settings';
 import { state } from './state';
 
 /** 再生の速さ（実際の何倍か） */
@@ -31,6 +32,8 @@ let bearing = 0;
 let lastIndex = -1;
 /** リプレイを始めるたびに増やす（前のリプレイの開始待ちを無効にする） */
 let session = 0;
+/** リプレイを始める前に 3D だったか（終えたら元に戻す） */
+let terrainBefore = false;
 
 const bar = $('replay');
 const playBtn = $<HTMLButtonElement>('replay-play');
@@ -80,7 +83,6 @@ function render(follow: boolean) {
   const b = pts[Math.min(i + 1, pts.length - 1)];
   const here: LngLat = [a.lng + (b.lng - a.lng) * f, a.lat + (b.lat - a.lat) * f];
   src('replay')?.setData(pointFC(here));
-  src('replay-done')?.setData(lineFC([...pts.slice(0, i + 1).map(lngLat), here]));
   const resting = b.t - a.t > REST_GAP_MS && f > 0 && f < 1;
   clock.textContent = `${fmtClock(t)}${resting ? ` 休憩中（${Math.round((b.t - a.t) / 60_000)}分）` : ''}`;
   seek.value = String(Math.round(((t - pts[0].t) / (pts[pts.length - 1].t - pts[0].t)) * 1000));
@@ -98,8 +100,10 @@ function render(follow: boolean) {
     state.daylightAt = t;
     updateDaylight();
   }
+  // 歩き終えた線とグラフの印は、点を一つ進んだときだけ描き直す（毎フレーム作り直すと重い）
   if (i !== lastIndex) {
     lastIndex = i;
+    src('replay-done')?.setData(lineFC(pts.slice(0, i + 1).map(lngLat)));
     profile.setMarker(i);
   }
 }
@@ -148,6 +152,7 @@ export function startReplay() {
   t = pts[0].t;
   lastIndex = -1;
   bar.hidden = false;
+  terrainBefore = settings.terrain;
   setTerrain(true);
   bearing = headingAt(0) ?? map.getBearing();
   const intro = 1200;
@@ -171,6 +176,8 @@ export function stopReplay() {
   bar.hidden = true;
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
   state.daylightAt = null;
+  // 2D から始めたリプレイなら 2D に戻す（setTerrain が空の色も合わせ直す）
+  if (!terrainBefore) setTerrain(false);
   updateDaylight();
   src('replay')?.setData(pointFC(null));
   src('replay-done')?.setData(lineFC([]));

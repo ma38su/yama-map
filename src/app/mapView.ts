@@ -83,8 +83,9 @@ export function setTerrain(on: boolean) {
   if (settings.terrain === on) return;
   settings.terrain = on;
   saveSettings();
-  // 読み込み中は地図の load で反映する（読み込み前に地形を切り替えるとエラーになる）
-  if (map.isStyleLoaded()) {
+  // 読み込み前は地図の load で反映する（読み込み前に地形を切り替えるとエラーになる）。
+  // isStyleLoaded() はタイルの読み込み中も false になり、切り替えが反映されないことがあるので使わない
+  if (styleReady) {
     set3D(map, on);
     updateDaylight();
   }

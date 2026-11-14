@@ -29,7 +29,9 @@ map.on('load', () => {
   addWeatherLayers('route-casing');
   if (settings.terrain) map.setTerrain({ source: 'dem-terrain', exaggeration: TERRAIN_EXAGGERATION });
   updateDaylight();
-  setInterval(updateDaylight, 60_000);
+  // 空の色は1分ごと。裏に回っている間は止め、戻ったらすぐ合わせる
+  setInterval(() => document.visibilityState === 'visible' && updateDaylight(), 60_000);
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && updateDaylight());
   renderRoute();
   renderTrack();
   updateNav();
