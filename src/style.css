@@ -193,6 +193,7 @@ button,
 .field.depart[hidden],
 .view-actions[hidden],
 .rec-btn[hidden],
+.icon-btn[hidden],
 .btn[hidden],
 .replay[hidden] {
   display: none;
@@ -626,6 +627,19 @@ button,
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+.replay-rec span {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--rec);
+}
+.replay-rec.on {
+  border-color: var(--rec);
+}
+.replay-rec.on span {
+  border-radius: 3px;
+  animation: blink 1.2s ease-in-out infinite;
 }
 .icon-btn.small {
   width: 36px;

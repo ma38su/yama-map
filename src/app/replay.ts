@@ -8,6 +8,7 @@ import { $, fmtClock } from '../ui/dom';
 import { lineFC, map, pointFC, setTerrain, src, updateDaylight } from './mapView';
 import { profile } from './profileView';
 import { updateRecButton } from './recording';
+import { captureSupported, capturing, startCapture, stopCapture } from './replayVideo';
 import { state } from './state';
 
 /** 再生の速さ（実際の何倍か） */
@@ -114,6 +115,8 @@ function frame(now: number) {
     t = end;
     render(true);
     pause();
+    // 最後の場面が少し映ってから録画を止める
+    if (capturing()) setTimeout(() => void stopRecording(), 800);
     return;
   }
   render(true);
@@ -163,6 +166,7 @@ export function startReplay() {
 /** リプレイをやめる */
 export function stopReplay() {
   if (!replayActive()) return;
+  void stopRecording();
   pause();
   bar.hidden = true;
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
@@ -175,6 +179,39 @@ export function stopReplay() {
 }
 
 playBtn.addEventListener('click', () => (playing ? pause() : play()));
+
+// ---------- 録画 ----------
+const recBtn = $<HTMLButtonElement>('replay-rec');
+recBtn.hidden = !captureSupported();
+function updateRecBtn() {
+  const on = capturing();
+  recBtn.classList.toggle('on', on);
+  recBtn.setAttribute('aria-pressed', String(on));
+  recBtn.setAttribute('aria-label', on ? '録画を止めて保存' : '録画');
+}
+async function stopRecording() {
+  if (!capturing()) return;
+  await stopCapture();
+  updateRecBtn();
+}
+recBtn.addEventListener('click', () => {
+  if (capturing()) {
+    void stopRecording();
+    return;
+  }
+  const track = state.shown?.track;
+  if (!track || pts.length < 2) return;
+  const d = new Date(track.startedAt);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  startCapture(
+    `yama-replay-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`,
+    () => [track.name, clock.textContent ?? ''],
+    () => $('sheet').getBoundingClientRect().top,
+  );
+  updateRecBtn();
+  // 止まっていたら再生を始める（最後まで行っていたら最初から）
+  if (!playing) play();
+});
 $('replay-close').addEventListener('click', () => {
   stopReplay();
   updateRecButton();

@@ -40,6 +40,7 @@ android/              Capacitor の Android プロジェクト（docs/android.md
 | `profileView.ts` | 標高グラフ（ルート／記録の切り替え、区間ごとのペース） |
 | `recording.ts` | 現在地、記録の開始・終了、記録を開く・閉じる（`viewingTrack` / `closeTrack`）、途中で閉じた記録の再開 |
 | `replay.ts` | 記録の 3D リプレイ |
+| `replayVideo.ts` | リプレイの録画（webm） |
 | `status.ts` | 上の状態表示 |
 | `menu.ts` | メニュー（ルートの探し方・ペース・地図・記録の一覧・最初から入れる予定の記録） |
 | `weather.ts` | 天気予報の取得と保存、行程に出す天気（`weatherFor`）、3D の雲の層と雨・雪 |
@@ -107,6 +108,12 @@ android/              Capacitor の Android プロジェクト（docs/android.md
 - 点と点のあいだが90秒以上空いているところ（休憩）は10倍で送る
 - 標高グラフにも今の位置の印を出す
 - 空と地図の色、雲と雨は再生中の時刻に合わせる（`state.daylightAt`。再生中の時刻が2分動くごとに更新し、終えたら今の時刻に戻す）
+
+### リプレイの録画（`app/replayVideo.ts`）
+- 地図の `render` イベントのたびに、地図の canvas のうちシートに隠れていない部分と雨・雪の canvas、字幕（記録の名前と時刻）を別の canvas に写す。地図の canvas は描いた直後でないと中身を読めない（`preserveDrawingBuffer` を使わずに済ませるため）
+- その canvas を `captureStream(30)` と `MediaRecorder` で webm（VP9 → VP8 の順に使えるもの。webm を作れない Safari では mp4）に記録する。長いほうの辺は1280pxまで
+- 最初の場面を写してから記録を始める。最後まで再生するか、録画ボタン・リプレイの終了で止めて保存する（アプリ版は共有シート）
+- MediaRecorder の webm には長さの情報が入らないので、再生ソフトによっては長さが出ず、途中へ飛べないことがある
 
 ### 空と地図の色（`map/daylight.ts`・`nav/sun.ts`）
 - `sunPosition`：NOAA の式で太陽の高度・方位を求める

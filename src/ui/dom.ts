@@ -41,19 +41,19 @@ export const checkSeg = (wrap: HTMLElement, id: string) => {
 };
 
 /**
- * テキストをファイルとして保存させる。
+ * テキストや動画をファイルとして保存させる。
  * アプリ版のWebViewは <a download> でのダウンロードに対応していないので、
  * 一時ファイルに書いてから共有シート（保存先・送り先を選ぶ画面）を開く。
  */
-export function download(filename: string, text: string) {
+export function download(filename: string, data: string | Blob) {
   if (Capacitor.isNativePlatform()) {
-    void shareFile(filename, text).catch((e) => {
+    void shareFile(filename, data).catch((e) => {
       // 共有シートを閉じただけでも reject されるので、それ以外だけ知らせる
       if (!String((e as Error)?.message).includes('cancel')) alert(`ファイルを書き出せませんでした: ${(e as Error)?.message ?? e}`);
     });
     return;
   }
-  const blob = new Blob([text], { type: 'application/gpx+xml' });
+  const blob = typeof data === 'string' ? new Blob([data], { type: 'application/gpx+xml' }) : data;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -63,7 +63,20 @@ export function download(filename: string, text: string) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
 }
 
-async function shareFile(filename: string, text: string): Promise<void> {
-  const { uri } = await Filesystem.writeFile({ path: filename, data: text, directory: Directory.Cache, encoding: Encoding.UTF8 });
+async function shareFile(filename: string, data: string | Blob): Promise<void> {
+  // 文字列はそのまま、動画などは base64 にして書き出す
+  const { uri } =
+    typeof data === 'string'
+      ? await Filesystem.writeFile({ path: filename, data, directory: Directory.Cache, encoding: Encoding.UTF8 })
+      : await Filesystem.writeFile({ path: filename, data: await blobToBase64(data), directory: Directory.Cache });
   await Share.share({ title: filename, files: [uri] });
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] ?? '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
 }
