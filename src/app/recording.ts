@@ -1,6 +1,7 @@
 /** 現在地と記録（開始・終了、記録の線、途中で閉じた記録の再開） */
 import { distance, formatDistance, type LngLat } from '../geo';
 import { getPoints, listTracks, putTrack, type Track } from '../track/db';
+import { backgroundCapable, type Fix } from '../track/location';
 import { TrackRecorder } from '../track/recorder';
 import { saveSettings, settings } from '../settings';
 import { $, fmtM } from '../ui/dom';
@@ -44,8 +45,36 @@ export function hereLngLat(): LngLat | null {
   return cands[0] && Date.now() - cands[0].t < 10 * 60_000 ? cands[0].c : null;
 }
 
+/** 現在地の追従をオンにする（trigger() はオン/オフの切り替えなので、オフのときだけ押す） */
+function startGeolocate() {
+  if (geolocate._watchState === 'OFF') geolocate.trigger();
+}
+
+/**
+ * アプリ版では、画面オフから戻ってもWebViewの位置取得が再開するまで数秒かかり、その間は現在地マークが止まる。
+ * 記録中はネイティブ測位がバックグラウンドでも続いているので、WebView側が古いあいだはその位置でマークを動かす。
+ */
+function feedNativeFix(fix: Fix | null) {
+  if (!backgroundCapable || !fix || document.visibilityState !== 'visible') return;
+  if (geolocate._watchState === 'OFF') return; // OFF のとき _onSuccess は例外を投げる
+  const known = geolocate._lastKnownPosition as GeolocationPosition | undefined;
+  if (known && fix.timestamp - known.timestamp < 3000) return; // WebView側の測位が届いている
+  const coords = {
+    longitude: fix.lng,
+    latitude: fix.lat,
+    accuracy: fix.accuracy,
+    altitude: fix.altitude,
+    altitudeAccuracy: null,
+    heading: null,
+    speed: null,
+  };
+  geolocate._onSuccess({ coords, timestamp: fix.timestamp } as GeolocationPosition);
+}
+document.addEventListener('visibilitychange', () => feedNativeFix(recorder.state.lastFix));
+
 // ---------- 記録 ----------
 export const recorder = new TrackRecorder(dem, (s) => {
+  feedNativeFix(s.lastFix);
   if (s.track) state.shown = { track: s.track, points: s.points };
   else if (state.shown && !recorder.recording) state.shown = null;
   renderTrack();
@@ -67,7 +96,7 @@ recBtn.addEventListener('click', async () => {
       settings.departAt = null;
       saveSettings();
     }
-    if (!state.lastFix || Date.now() - state.lastFix.t > 30_000) geolocate.trigger();
+    startGeolocate();
     status('記録を開始しました。歩いた実績から到着予想を調整します');
   } else {
     if (!confirm('記録を終了しますか？')) return;
@@ -95,7 +124,7 @@ export async function checkUnfinished() {
   if (!open) return;
   if (confirm(`「${open.name}」の記録が途中です。続きを記録しますか？\n（キャンセルするとここまでで保存します）`)) {
     await recorder.resume(open);
-    geolocate.trigger();
+    startGeolocate();
   } else {
     const points = await getPoints(open.id);
     await putTrack({ ...open, status: 'done', endedAt: points[points.length - 1]?.t ?? open.startedAt });

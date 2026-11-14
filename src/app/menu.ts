@@ -5,6 +5,7 @@ import { PACE_PRESETS, type PacePreset } from '../nav/eta';
 import { ROUTE_PREFS, buildGpxRoute, makePoint, type RoutePref } from '../nav/plan';
 import { deleteTrack, getPoints, listTracks, putTrackWithPoints, type Track } from '../track/db';
 import { parseGpx, toGpx } from '../track/gpx';
+import { backgroundCapable } from '../track/location';
 import { generateSampleTrack } from '../track/sample';
 import { saveSettings, settings } from '../settings';
 import { $, download, fmtM, h } from '../ui/dom';
@@ -141,6 +142,9 @@ dayToneOpt.addEventListener('change', () => {
   updateDaylight();
 });
 const wakeOpt = $<HTMLInputElement>('opt-wakelock');
+if (backgroundCapable) {
+  $('wakelock-note').textContent = 'アプリ版は画面を消しても記録が続きます。点けたままにすると電池の減りが早くなります。';
+}
 wakeOpt.addEventListener('change', () => {
   settings.wakeLock = wakeOpt.checked;
   saveSettings();

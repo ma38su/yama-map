@@ -42,11 +42,28 @@ GPS（位置情報）は **HTTPS でないと動きません**。スマホで試
 2. `main` ブランチに push すると `.github/workflows/ci.yml` が `https://<ユーザー名>.github.io/yama-map/` に公開
 3. スマホでそのURLを開き、共有メニューから「ホーム画面に追加」
 
+### Androidアプリ（Capacitor）
+
+画面を消したままでも記録できる Android アプリ版を作れます。中身は PWA と同じコードで、
+記録の測位だけがネイティブのバックグラウンド測位（記録中は通知が出ます）に切り替わります（`src/track/location.ts`）。
+
+必要なもの：JDK 21（`brew install openjdk@21`）と Android SDK（`android/local.properties` の `sdk.dir` で場所を指定。このファイルはコミットしない）
+
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
+npm run android:build   # dist/ を取り込んで android/app/build/outputs/apk/debug/app-debug.apk を作る
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+家族などに配るときは APK ファイルを送り、受け取った端末で「提供元不明のアプリ」のインストールを許可してもらいます。
+初回の記録開始時に「位置情報」と「通知」の許可を求めます。電池の最適化でアプリが止められる端末では、
+設定でやまマップを「制限なし」にすると記録が途切れにくくなります。
+
 ## 設計メモ
 
 ### Webアプリ（PWA）か、ネイティブアプリか
 
-| | PWA（今の実装） | ネイティブ / Capacitor 化 |
+| | PWA | Androidアプリ（Capacitor） |
 |---|---|---|
 | 地図・3D・GPX・オフライン | ◯ | ◯（同じコードを流用） |
 | 画面ONでの現在地・記録 | ◯ | ◯ |
@@ -103,6 +120,7 @@ src/
   map/style.ts       背景地図・陰影・2D/3D 切り替え
   map/gsiDem.ts      地理院標高タイル → 3D地形 変換、地点標高の取得
   track/recorder.ts  GPS 記録（フィルタ・Wake Lock・途中再開）
+  track/location.ts  記録の測位元（Web: watchPosition / アプリ: バックグラウンド測位）
   track/db.ts        記録の保存（IndexedDB）
   track/gpx.ts       GPX 読み込み/書き出し
   ui/profile.ts      標高グラフ
@@ -118,7 +136,8 @@ public/sw.js         Service Worker（アプリ本体と地図タイルのキャ
 
 ## 今後の候補
 
-- [ ] Capacitor で iOS/Android アプリ化し、画面OFFでのバックグラウンド記録
+- [x] Capacitor で Android アプリ化し、画面OFFでのバックグラウンド記録
+- [ ] iOS アプリ化（Xcode と Apple Developer Program が必要）
 - [ ] 気圧センサー（ネイティブ）で標高・累積標高の精度向上
 - [ ] OpenStreetMap の登山道レイヤー、山小屋・水場などの POI
 - [ ] ルートからの逸脱アラート（バイブ）

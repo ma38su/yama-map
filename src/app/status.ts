@@ -2,6 +2,7 @@
 import { formatDistance } from '../geo';
 import { settings } from '../settings';
 import { $ } from '../ui/dom';
+import { backgroundCapable } from '../track/location';
 import { recorder } from './recording';
 import { state } from './state';
 
@@ -25,13 +26,13 @@ export function renderStatus() {
   } else if (rs.error && recorder.recording) {
     text = rs.error;
     warn = true;
-  } else if (recorder.recording && rs.lastFix && rs.lastFix.coords.accuracy > 40) {
-    text = `GPSの精度待ち（誤差 ${Math.round(rs.lastFix.coords.accuracy)} m）`;
+  } else if (recorder.recording && rs.lastFix && rs.lastFix.accuracy > 40) {
+    text = `GPSの精度待ち（誤差 ${Math.round(rs.lastFix.accuracy)} m）`;
     warn = true;
   } else if (nav?.offRoute && nav.pos) {
     text = `ルートから約 ${formatDistance(nav.pos.offset)} 離れています`;
     warn = true;
-  } else if (recorder.recording && !rs.wakeLock && settings.wakeLock && 'wakeLock' in navigator) {
+  } else if (recorder.recording && !backgroundCapable && !rs.wakeLock && settings.wakeLock && 'wakeLock' in navigator) {
     text = '画面を消すと記録が止まります';
     warn = true;
   } else if (!navigator.onLine) {

@@ -3,6 +3,7 @@ import type { LngLat } from './geo';
 import { BASE_LAYERS, type BaseLayerId } from './map/style';
 import { PACE_PRESETS, type PacePreset } from './nav/eta';
 import { ROUTE_PREFS, type RoutePref } from './nav/plan';
+import { backgroundCapable } from './track/location';
 
 export interface Settings {
   base: BaseLayerId;
@@ -10,6 +11,7 @@ export interface Settings {
   /** 空と地図の色を時刻に合わせる（夜は暗め） */
   dayTone: boolean;
   terrain: boolean;
+  /** 記録中は画面を点けたままにする（アプリ版は画面オフでも記録できるので初期値オフ） */
   wakeLock: boolean;
   pace: PacePreset;
   /** ルートの探し方 */
@@ -19,7 +21,7 @@ export interface Settings {
   view?: { center: LngLat; zoom: number; pitch: number; bearing: number };
 }
 const SETTINGS_KEY = 'yama-map:settings';
-export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, wakeLock: true, pace: 'normal', routePref: 'trail', departAt: null };
+export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, wakeLock: !backgroundCapable, pace: 'normal', routePref: 'trail', departAt: null };
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}'));
 } catch {

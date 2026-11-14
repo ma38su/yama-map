@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">やまマップ</string>
+    <string name="title_activity_main">やまマップ</string>
+    <string name="package_name">io.github.ma38su.yamamap</string>
+    <string name="custom_url_scheme">io.github.ma38su.yamamap</string>
+    <!-- 記録中の通知（@capacitor-community/background-geolocation） -->
+    <string name="capacitor_background_geolocation_notification_channel_name">軌跡の記録</string>
+    <string name="capacitor_background_geolocation_notification_icon">drawable/ic_tracking</string>
+    <string name="capacitor_background_geolocation_notification_color">#16805c</string>
+</resources>
