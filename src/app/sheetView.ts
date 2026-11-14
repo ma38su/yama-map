@@ -182,17 +182,20 @@ export function renderBody(nav: Nav | null) {
     : '記録を開始すると、歩いた実績（登り・平坦・下りの速さ、休憩の取り方）から到着予想を自動で調整します。';
 }
 
-/** 行程の「出発」：今すぐ／時刻を指定 */
-function renderDeparture() {
-  const planning = !!settings.departAt && !recorder.recording;
-  for (const b of $('depart-mode').querySelectorAll('button')) b.setAttribute('aria-checked', String((b.dataset.id === 'at') === planning));
-  const input = $<HTMLInputElement>('depart-time');
-  input.hidden = !planning;
-  if (planning && document.activeElement !== input) input.value = settings.departAt!;
-  $('depart-note').textContent = recorder.recording ? '記録中は現在時刻から到着予想を出します' : '';
-  for (const b of $('depart-mode').querySelectorAll('button')) (b as HTMLButtonElement).disabled = recorder.recording;
-}
+/** "HH:MM" */
+const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
+/** 行程の「出発」：「今すぐ」なら時刻欄は現在時刻、時刻を変えると「今すぐ」が外れる */
+function renderDeparture() {
+  const now = !settings.departAt || recorder.recording;
+  const btn = $<HTMLButtonElement>('depart-now');
+  btn.setAttribute('aria-pressed', String(now));
+  btn.disabled = recorder.recording;
+  const input = $<HTMLInputElement>('depart-time');
+  input.disabled = recorder.recording;
+  if (document.activeElement !== input) input.value = now ? hhmm(new Date()) : settings.departAt!;
+  $('depart-note').textContent = recorder.recording ? '記録中は現在時刻から到着予想を出します' : '';
+}
 
 // ---------- 詳細のタブ ----------
 type SheetTab = 'plan' | 'profile';
@@ -223,24 +226,12 @@ export function openSheet() {
   if (!sheet.isOpen) sheet.setOpen(true);
 }
 $('btn-fit').addEventListener('click', () => state.route && fitTo(state.route.coords));
-const departSeg = $('depart-mode');
-for (const [id, label] of [['now', '今すぐ'], ['at', '時刻を指定']] as const) {
-  const b = h('button', '', label);
-  b.type = 'button';
-  b.setAttribute('role', 'radio');
-  b.dataset.id = id;
-  b.addEventListener('click', () => {
-    if (id === 'now') settings.departAt = null;
-    else if (!settings.departAt) {
-      // 初めて指定するときは、次のちょうどの時刻（例: 8:20 → 9:00）
-      const d = new Date();
-      settings.departAt = `${String((d.getHours() + 1) % 24).padStart(2, '0')}:00`;
-    }
-    saveSettings();
-    updateNav();
-  });
-  departSeg.append(b);
-}
+$('depart-now').addEventListener('click', () => {
+  // 外すときは、時刻欄に出ている時刻を出発時刻にする
+  settings.departAt = settings.departAt ? null : $<HTMLInputElement>('depart-time').value || hhmm(new Date());
+  saveSettings();
+  updateNav();
+});
 $<HTMLInputElement>('depart-time').addEventListener('change', (e) => {
   const v = (e.target as HTMLInputElement).value;
   if (!/^\d{2}:\d{2}$/.test(v)) return;

@@ -31,8 +31,8 @@
           <section id="sec-plan">
             <div class="field depart">
               <span class="field-label">出発</span>
-              <div class="segmented" id="depart-mode" role="radiogroup" aria-label="出発時刻"></div>
-              <input type="time" id="depart-time" aria-label="出発時刻" hidden />
+              <button type="button" class="depart-now" id="depart-now" aria-pressed="true">今すぐ</button>
+              <input type="time" id="depart-time" aria-label="出発時刻" />
             </div>
             <p class="note" id="depart-note"></p>
             <ol id="timeline" class="timeline"></ol>

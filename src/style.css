@@ -187,12 +187,20 @@ button,
 .field.depart .field-label {
   margin: 0;
 }
-.field.depart .segmented {
-  flex: 1 1 200px;
-}
-.field.depart .segmented button {
-  padding: 8px 12px;
+.depart-now {
+  min-height: 40px;
+  padding: 4px 14px;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
   white-space: nowrap;
+}
+.depart-now[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
 }
 #depart-time {
   min-height: 40px;
