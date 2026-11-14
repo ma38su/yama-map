@@ -144,6 +144,14 @@ function pause() {
   playBtn.setAttribute('aria-label', '再生');
 }
 
+/** シートに隠れない部分の真ん中で追いかけるように、地図の下の余白をシートの高さに合わせる */
+function fitPadding() {
+  const covered = Math.max(0, window.innerHeight - $('sheet').getBoundingClientRect().top);
+  map.setPadding({ top: 0, bottom: covered, left: 0, right: 0 });
+}
+// リプレイ中にシートを最小にしたり開いたりしたら、追いかける位置も合わせる
+new ResizeObserver(() => replayActive() && fitPadding()).observe($('sheet'));
+
 /** 開いている記録のリプレイを始める（3D にして、出発地の後ろから見る） */
 export function startReplay() {
   const shown = state.shown;
@@ -157,8 +165,7 @@ export function startReplay() {
   bearing = headingAt(0) ?? map.getBearing();
   const intro = 1200;
   // シートに隠れない部分の真ん中で追いかける
-  const covered = Math.max(0, window.innerHeight - $('sheet').getBoundingClientRect().top);
-  map.setPadding({ top: 0, bottom: covered, left: 0, right: 0 });
+  fitPadding();
   map.easeTo({ center: lngLat(pts[0]), bearing, pitch: 65, zoom: Math.max(map.getZoom(), 15.5), duration: intro });
   // カメラが出発地に着いてから動かし始める
   const token = ++session;

@@ -152,6 +152,17 @@ button,
 #card {
   touch-action: none; /* 上下ドラッグでシートを開閉 */
   cursor: pointer;
+  user-select: none; /* ドラッグで文字が選ばれないように */
+  -webkit-user-select: none;
+}
+/* 最小：つまみと目的地の1行だけ残し、地図・3Dを広く見せる */
+.sheet-mini #actions,
+.sheet-mini #card > :not(.nav-row.primary) {
+  display: none;
+}
+.sheet-mini #card .nav-row.primary {
+  padding: 0 2px 2px;
+  border: none;
 }
 #sheet-body {
   overflow-y: auto;
