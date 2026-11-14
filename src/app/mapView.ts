@@ -101,11 +101,27 @@ export const pointFC = (c: LngLat | null): FeatureCollection =>
   c ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: c } }] } : emptyFC;
 export const src = (id: string) => map.getSource(id) as GeoJSONSource | undefined;
 
-/** 今の時刻（リプレイ中は再生中の時刻）・地図の中心での太陽に、空・地図の色と陰影を合わせる */
+/**
+ * 空の色を変えるときに一緒に呼ぶもの（天気：雲量と、雲・雨の表示）。weather.ts が登録する
+ * （ここから weather.ts を読み込むと、地図ができる前に weather.ts が動いてしまうため）
+ */
+const daylightHooks = { cloud: () => 0, after: () => {} };
+let styleReady = false;
+map.once('load', () => {
+  styleReady = true;
+});
+export function hookDaylight(hooks: Partial<typeof daylightHooks>) {
+  Object.assign(daylightHooks, hooks);
+}
+
+/** 今の時刻（リプレイ中は再生中の時刻）・地図の中心での太陽と雲に、空・地図の色と陰影を合わせる */
 export function updateDaylight() {
+  // 地図の読み込み前は空を変えられない（読み込んだら main.ts の load で合わせる）
+  if (!styleReady) return;
   const c = map.getCenter();
   const when = state.daylightAt != null ? new Date(state.daylightAt) : daylightTime();
-  applyDaylight(map, sunPosition(when, c.lat, c.lng), { terrain: settings.terrain, tone: settings.dayTone });
+  applyDaylight(map, sunPosition(when, c.lat, c.lng), { terrain: settings.terrain, tone: settings.dayTone, cloud: daylightHooks.cloud() });
+  daylightHooks.after();
 }
 
 map.on('moveend', () => {

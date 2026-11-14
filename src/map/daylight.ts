@@ -76,6 +76,22 @@ export function skyAt(altitude: number): SkySpecification {
   return { ...interpolate(SKY_STOPS, altitude), ...SKY_BLEND };
 }
 
+/**
+ * 曇りの空：雲量（0〜1）に合わせて空の色を灰色に寄せる（明るさは保つ）
+ */
+export function overcastSky(sky: SkySpecification, cloud: number): SkySpecification {
+  if (cloud <= 0) return sky;
+  const out: SkySpecification = { ...sky };
+  for (const key of ['sky-color', 'horizon-color', 'fog-color'] as const) {
+    const c = sky[key];
+    if (typeof c !== 'string' || !c.startsWith('#')) continue;
+    const [r, g, b] = toRgb(c);
+    const l = 0.3 * r + 0.59 * g + 0.11 * b;
+    out[key] = mix(c, toHex([l * 0.94, l * 0.97, l]), Math.min(1, cloud) * 0.75);
+  }
+  return out;
+}
+
 /** 太陽高度に合わせた地図の色合い */
 export function toneAt(altitude: number): MapTone {
   return interpolate(TONE_STOPS, altitude);
@@ -131,12 +147,14 @@ export interface DaylightOptions {
   terrain: boolean;
   /** 空と地図の色を時刻に合わせるか。オフなら昼の色のまま */
   tone: boolean;
+  /** 雲量（0〜1）。曇っているほど空を灰色にし、日差しの陰影を弱める */
+  cloud?: number;
 }
 
 /** 空・地図の色と陰影の光を太陽に合わせる */
-export function applyDaylight(map: MlMap, sun: SunPosition, { terrain, tone }: DaylightOptions): void {
+export function applyDaylight(map: MlMap, sun: SunPosition, { terrain, tone, cloud = 0 }: DaylightOptions): void {
   const colorAltitude = tone ? sun.altitude : 90;
-  map.setSky(skyAt(colorAltitude));
+  map.setSky(overcastSky(skyAt(colorAltitude), cloud));
   const t = toneAt(colorAltitude);
   for (const layer of map.getStyle().layers) {
     if (layer.type !== 'raster') continue;
@@ -153,5 +171,7 @@ export function applyDaylight(map: MlMap, sun: SunPosition, { terrain, tone }: D
   map.setPaintProperty('hillshade', 'hillshade-illumination-direction', light.direction);
   map.setPaintProperty('hillshade', 'hillshade-illumination-altitude', light.altitude);
   map.setPaintProperty('hillshade', 'hillshade-illumination-anchor', light.anchor);
-  map.setPaintProperty('hillshade', 'hillshade-exaggeration', light.exaggeration);
+  // 厚い雲の下では影がぼやける
+  const shade = light.method === 'basic' ? 1 - 0.5 * Math.min(1, cloud) : 1;
+  map.setPaintProperty('hillshade', 'hillshade-exaggeration', light.exaggeration * shade);
 }

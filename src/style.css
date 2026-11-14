@@ -52,6 +52,18 @@ button,
   inset: 0;
 }
 
+.rain {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+}
+.rain[hidden] {
+  display: none;
+}
+
 /* ---------- 地図のコントロール ---------- */
 .maplibregl-ctrl-top-right {
   top: env(safe-area-inset-top);
@@ -392,6 +404,15 @@ button,
   font-weight: 700;
   font-size: 15px;
   padding-top: 2px;
+}
+.timeline .wx {
+  font-size: 12.5px;
+  color: var(--ink);
+  padding-top: 1px;
+}
+.timeline .wx.wet {
+  color: #1d5fbf;
+  font-weight: 600;
 }
 .timeline .leg {
   font-size: 12.5px;

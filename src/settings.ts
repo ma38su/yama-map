@@ -11,6 +11,8 @@ export interface Settings {
   /** 空と地図の色を時刻に合わせる（夜は暗め） */
   dayTone: boolean;
   terrain: boolean;
+  /** 天気予報を出す（行程の降水確率、3D の雲・雨） */
+  weather: boolean;
   /** 記録中は画面を点けたままにする（アプリ版は画面オフでも記録できるので初期値オフ） */
   wakeLock: boolean;
   pace: PacePreset;
@@ -23,7 +25,7 @@ export interface Settings {
   builtinPlan?: boolean;
 }
 const SETTINGS_KEY = 'yama-map:settings';
-export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, wakeLock: !backgroundCapable, pace: 'normal', routePref: 'trail', departAt: null };
+export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, weather: true, wakeLock: !backgroundCapable, pace: 'normal', routePref: 'trail', departAt: null };
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}'));
 } catch {

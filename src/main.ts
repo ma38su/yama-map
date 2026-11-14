@@ -22,9 +22,11 @@ import { checkUnfinished, recorder, renderTrack, updateRecButton } from './app/r
 import { renderRoute } from './app/route';
 import './app/sheetView';
 import { state } from './app/state';
+import { addWeatherLayers } from './app/weather';
 
 map.on('load', () => {
   addOverlayLayers();
+  addWeatherLayers('route-casing');
   if (settings.terrain) map.setTerrain({ source: 'dem-terrain', exaggeration: TERRAIN_EXAGGERATION });
   updateDaylight();
   setInterval(updateDaylight, 60_000);

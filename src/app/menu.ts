@@ -136,6 +136,13 @@ hillshadeOpt.addEventListener('change', () => {
   saveSettings();
   setHillshade(map, settings.hillshade);
 });
+const weatherOpt = $<HTMLInputElement>('opt-weather');
+weatherOpt.addEventListener('change', () => {
+  settings.weather = weatherOpt.checked;
+  saveSettings();
+  updateDaylight();
+  updateNav();
+});
 const dayToneOpt = $<HTMLInputElement>('opt-daytone');
 dayToneOpt.addEventListener('change', () => {
   settings.dayTone = dayToneOpt.checked;
@@ -158,6 +165,7 @@ function syncMenu() {
   $('route-pref-note').textContent = ROUTE_PREFS[settings.routePref].desc;
   hillshadeOpt.checked = settings.hillshade;
   dayToneOpt.checked = settings.dayTone;
+  weatherOpt.checked = settings.weather;
   wakeOpt.checked = settings.wakeLock;
 }
 syncMenu();

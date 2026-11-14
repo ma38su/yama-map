@@ -1,0 +1,317 @@
+/**
+ * 天気予報の取得と表示：行程の各地点の降水確率など（weatherFor）と、3D の雲（地形にかかる雲の層）と雨・雪。
+ * 予報は約5kmのマス目ごとにまとめて取り、端末に保存して圏外でも直近の予報を使う。
+ * 表示する時刻は今（リプレイ中は再生中の時刻）。
+ */
+import type { LngLat } from '../geo';
+import { WEATHER_CELL_DEG, cellCenter, cellKey, fetchForecast, weatherAt, type HourlyWeather, type WeatherAt } from '../nav/weather';
+import { settings } from '../settings';
+import { hookDaylight, map } from './mapView';
+import { updateNav } from './nav';
+import { state } from './state';
+
+const STORE_KEY = 'yama-map:weather';
+/** 取り直すまでの間隔 */
+const STALE_MS = 60 * 60_000;
+/** 取れなかったマス目を次に試すまでの間隔（圏外で何度も問い合わせないように） */
+const RETRY_MS = 5 * 60_000;
+/** 端末に残しておく期間 */
+const KEEP_MS = 3 * 24 * 60 * 60_000;
+export const WEATHER_ATTRIBUTION = '<a href="https://open-meteo.com/" target="_blank" rel="noopener">天気: Open-Meteo</a>';
+
+// ---------- 予報の取得と保存 ----------
+const cache = new Map<string, { h: HourlyWeather; at: number }>();
+const tried = new Map<string, number>();
+const queue = new Set<string>();
+let flushTimer = 0;
+
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}') as Record<string, { h: HourlyWeather; at: number }>;
+  for (const [k, v] of Object.entries(saved)) if (Date.now() - v.at < KEEP_MS && v.h.dir) cache.set(k, v);
+} catch {
+  /* 保存領域が使えない環境でも動かす */
+}
+function persist() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(cache)));
+  } catch {
+    /* 容量が足りなければ保存しない */
+  }
+}
+
+function request(key: string) {
+  if (queue.has(key) || Date.now() - (tried.get(key) ?? 0) < RETRY_MS) return;
+  queue.add(key);
+  clearTimeout(flushTimer);
+  // 同じ描画で頼まれたマス目をまとめて1回で問い合わせる
+  flushTimer = window.setTimeout(() => void flush(), 200);
+}
+
+async function flush() {
+  const keys = [...queue].slice(0, 100);
+  for (const k of keys) {
+    queue.delete(k);
+    tried.set(k, Date.now());
+  }
+  if (!keys.length) return;
+  try {
+    const list = await fetchForecast(keys.map(cellCenter), AbortSignal.timeout(15_000));
+    keys.forEach((k, i) => list[i] && cache.set(k, { h: list[i], at: Date.now() }));
+    persist();
+    updateNav();
+    updateWeatherLayers(true);
+  } catch (e) {
+    console.warn('天気予報を取得できませんでした', e);
+  }
+  if (queue.size) void flush();
+}
+
+/** 地点のマス目の予報（なければ取りに行き、届いたら画面を描き直す） */
+function forecastFor(lngLat: LngLat): HourlyWeather | null {
+  if (!settings.weather) return null;
+  const key = cellKey(lngLat);
+  const hit = cache.get(key);
+  if (!hit || Date.now() - hit.at > STALE_MS) request(key);
+  return hit?.h ?? null;
+}
+
+/** 地点・時刻の天気（予報がまだ届いていない・範囲外なら null） */
+export function weatherFor(lngLat: LngLat, time: number): WeatherAt | null {
+  const h = forecastFor(lngLat);
+  return h ? weatherAt(h, time) : null;
+}
+
+/** 空や雲・雨を合わせる時刻：今、リプレイ中は再生中の時刻 */
+const weatherTime = () => state.daylightAt ?? Date.now();
+
+/** 地図の中心の天気（空の色に使う） */
+export function centerWeather(): WeatherAt | null {
+  const c = map.getCenter();
+  return weatherFor([c.lng, c.lat], weatherTime());
+}
+
+// ---------- 3D の雲 ----------
+/** 雲を描く範囲：地図の中心のマス目から上下左右に何マスか */
+const GRID_R = 4;
+const GRID_N = GRID_R * 2 + 1;
+const IMG = 192;
+/** 雲の模様（タイル状につながる値ノイズ）。雲量に合わせてこの模様を切り取る */
+const noise = makeNoise(IMG, 7);
+let cloudDrawn: { key: string; t: number } | null = null;
+
+function makeNoise(size: number, seed: number): Float32Array {
+  let a = seed >>> 0;
+  const rand = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const out = new Float32Array(size * size);
+  let amp = 1;
+  let total = 0;
+  for (const cells of [4, 8, 16, 32]) {
+    const g = Array.from({ length: cells * cells }, rand);
+    const at = (x: number, y: number) => g[(((y % cells) + cells) % cells) * cells + (((x % cells) + cells) % cells)];
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const fx = (x / size) * cells;
+        const fy = (y / size) * cells;
+        const ix = Math.floor(fx);
+        const iy = Math.floor(fy);
+        const sx = (fx - ix) * (fx - ix) * (3 - 2 * (fx - ix));
+        const sy = (fy - iy) * (fy - iy) * (3 - 2 * (fy - iy));
+        const top = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * sx;
+        const bottom = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * sx;
+        out[y * size + x] += (top + (bottom - top) * sy) * amp;
+      }
+    }
+    total += amp;
+    amp *= 0.5;
+  }
+  for (let i = 0; i < out.length; i++) out[i] /= total;
+  return out;
+}
+
+const smooth = (e0: number, e1: number, x: number) => {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+/** 雲の層の画像を描く。マス目ごとの雲量を補間し、風下へ流れる模様で切り取る */
+function drawClouds(center: [number, number], t: number): { url: string; coords: [[number, number], [number, number], [number, number], [number, number]] } | null {
+  const grid: WeatherAt[] = [];
+  for (let dy = GRID_R; dy >= -GRID_R; dy--) {
+    for (let dx = -GRID_R; dx <= GRID_R; dx++) {
+      const w = weatherFor([(center[0] + dx) * WEATHER_CELL_DEG, (center[1] + dy) * WEATHER_CELL_DEG], t);
+      if (!w) return null;
+      grid.push(w);
+    }
+  }
+  const mid = grid[GRID_R * GRID_N + GRID_R];
+  // 模様は風に流す（地上の風は上空より弱いので3倍にする）。風向は吹いてくる方位なので、流れる向きは逆
+  const speed = (mid.wind ?? 3) * 3;
+  const rad = (((mid.dir ?? 270) + 180) * Math.PI) / 180;
+  const kmPerPx = (GRID_N * WEATHER_CELL_DEG * 111) / IMG;
+  const hours = t / 3_600_000;
+  const ox = (Math.sin(rad) * speed * 3.6 * hours) / kmPerPx;
+  const oy = (-Math.cos(rad) * speed * 3.6 * hours) / kmPerPx;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = IMG;
+  const ctx = canvas.getContext('2d')!;
+  const img = ctx.createImageData(IMG, IMG);
+  for (let y = 0; y < IMG; y++) {
+    const gy = Math.max(0, Math.min(GRID_N - 1.001, (y / IMG) * GRID_N - 0.5));
+    const iy = Math.floor(gy);
+    const fy = gy - iy;
+    for (let x = 0; x < IMG; x++) {
+      const gx = Math.max(0, Math.min(GRID_N - 1.001, (x / IMG) * GRID_N - 0.5));
+      const ix = Math.floor(gx);
+      const fx = gx - ix;
+      const v = (k: 'cloud' | 'precip', jx: number, jy: number) => grid[jy * GRID_N + jx][k];
+      const bil = (k: 'cloud' | 'precip') =>
+        (v(k, ix, iy) * (1 - fx) + v(k, ix + 1, iy) * fx) * (1 - fy) + (v(k, ix, iy + 1) * (1 - fx) + v(k, ix + 1, iy + 1) * fx) * fy;
+      const c = bil('cloud') / 100;
+      const nx = (((Math.round(x - ox) % IMG) + IMG) % IMG);
+      const ny = (((Math.round(y - oy) % IMG) + IMG) % IMG);
+      const n = noise[ny * IMG + nx];
+      // 雲量が多いほど模様の多くを雲にする
+      const density = smooth(1 - c - 0.12, 1 - c + 0.18, n);
+      const grey = 250 - Math.min(1, bil('precip') / 3) * 90;
+      const o = (y * IMG + x) * 4;
+      img.data[o] = grey;
+      img.data[o + 1] = grey;
+      img.data[o + 2] = grey + 4;
+      img.data[o + 3] = density * 200 * Math.min(1, c * 2);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const half = (GRID_R + 0.5) * WEATHER_CELL_DEG;
+  const [cx, cy] = [center[0] * WEATHER_CELL_DEG, center[1] * WEATHER_CELL_DEG];
+  return {
+    url: canvas.toDataURL(),
+    coords: [
+      [cx - half, cy + half],
+      [cx + half, cy + half],
+      [cx + half, cy - half],
+      [cx - half, cy - half],
+    ],
+  };
+}
+
+/** 雲の層を地図に加える（地図の読み込み後に一度だけ）。ルートの線より下に置く */
+export function addWeatherLayers(before?: string) {
+  const blank =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  map.addSource('weather-cloud', {
+    type: 'image',
+    url: blank,
+    coordinates: [
+      [0, 0.001],
+      [0.001, 0.001],
+      [0.001, 0],
+      [0, 0],
+    ],
+  });
+  map.addLayer(
+    { id: 'weather-cloud', type: 'raster', source: 'weather-cloud', layout: { visibility: 'none' }, paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.9 } },
+    before,
+  );
+}
+
+/**
+ * 雲の層と雨・雪を、今（リプレイ中は再生中の時刻）の予報に合わせる。
+ * 雲の画像は時刻が10分動くか、表示範囲のマス目が変わったときだけ描き直す
+ */
+export function updateWeatherLayers(force = false) {
+  const show = settings.weather && settings.terrain;
+  const layerOn = !!map.getLayer('weather-cloud');
+  if (layerOn) map.setLayoutProperty('weather-cloud', 'visibility', show ? 'visible' : 'none');
+  updateRain(show ? centerWeather() : null);
+  if (!show || !layerOn) return;
+  const c = map.getCenter();
+  const center: [number, number] = [Math.round(c.lng / WEATHER_CELL_DEG), Math.round(c.lat / WEATHER_CELL_DEG)];
+  const key = center.join(',');
+  const t = weatherTime();
+  if (!force && cloudDrawn && cloudDrawn.key === key && Math.abs(cloudDrawn.t - t) < 10 * 60_000) return;
+  const drawn = drawClouds(center, t);
+  if (!drawn) return;
+  cloudDrawn = { key, t };
+  (map.getSource('weather-cloud') as import('maplibre-gl').ImageSource | undefined)?.updateImage({ url: drawn.url, coordinates: drawn.coords });
+}
+map.on('moveend', () => updateWeatherLayers());
+hookDaylight({
+  cloud: () => (settings.weather ? (centerWeather()?.cloud ?? 0) / 100 : 0),
+  after: () => updateWeatherLayers(),
+});
+
+// ---------- 雨・雪 ----------
+const rainCanvas = document.createElement('canvas');
+rainCanvas.className = 'rain';
+map.getContainer().append(rainCanvas);
+let rainRaf = 0;
+let drops: { x: number; y: number; v: number; len: number }[] = [];
+let rainKind: { snow: boolean; slant: number } = { snow: false, slant: 0 };
+
+/** 降水量（mm/h）に合わせて雨粒（雪なら雪片）を降らせる。降っていなければ止める */
+function updateRain(w: WeatherAt | null) {
+  const precip = w?.precip ?? 0;
+  const count = precip < 0.1 ? 0 : Math.round(Math.min(500, 40 + precip * 120));
+  const snow = !!w?.code && ((w.code >= 71 && w.code <= 77) || w.code === 85 || w.code === 86);
+  // 風で斜めに降る（画面の向きに合わせる）
+  const windDir = (((w?.dir ?? 0) + 180 - map.getBearing()) * Math.PI) / 180;
+  rainKind = { snow, slant: Math.sin(windDir) * Math.min(1, (w?.wind ?? 0) / 8) * 0.5 };
+  if (count === 0) {
+    drops = [];
+    cancelAnimationFrame(rainRaf);
+    rainRaf = 0;
+    rainCanvas.hidden = true;
+    return;
+  }
+  rainCanvas.hidden = false;
+  const w0 = rainCanvas.clientWidth || window.innerWidth;
+  const h0 = rainCanvas.clientHeight || window.innerHeight;
+  while (drops.length < count) drops.push({ x: Math.random() * w0, y: Math.random() * h0, v: 0.6 + Math.random() * 0.6, len: 8 + Math.random() * 10 });
+  drops.length = count;
+  if (!rainRaf) rainRaf = requestAnimationFrame(rainFrame);
+}
+
+function rainFrame() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = rainCanvas.clientWidth;
+  const h = rainCanvas.clientHeight;
+  if (rainCanvas.width !== Math.round(w * dpr)) rainCanvas.width = Math.round(w * dpr);
+  if (rainCanvas.height !== Math.round(h * dpr)) rainCanvas.height = Math.round(h * dpr);
+  const ctx = rainCanvas.getContext('2d')!;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const { snow, slant } = rainKind;
+  ctx.strokeStyle = 'rgba(215, 228, 245, 0.75)';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (const d of drops) {
+    const speed = snow ? d.v * 2 : d.v * 18;
+    d.y += speed;
+    d.x += slant * speed + (snow ? Math.sin(d.y / 30) * 0.6 : 0);
+    if (d.y > h) {
+      d.y = -20;
+      d.x = Math.random() * w;
+    }
+    if (d.x > w) d.x -= w;
+    if (d.x < 0) d.x += w;
+    if (snow) {
+      ctx.moveTo(d.x + 2, d.y);
+      ctx.arc(d.x, d.y, 2, 0, Math.PI * 2);
+    } else {
+      ctx.moveTo(d.x, d.y);
+      ctx.lineTo(d.x - slant * d.len, d.y - d.len);
+    }
+  }
+  if (snow) ctx.fill();
+  else ctx.stroke();
+  rainRaf = drops.length && document.visibilityState === 'visible' ? requestAnimationFrame(rainFrame) : 0;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && drops.length && !rainRaf) rainRaf = requestAnimationFrame(rainFrame);
+});

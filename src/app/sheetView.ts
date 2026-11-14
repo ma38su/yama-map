@@ -6,12 +6,14 @@ import { saveSettings, settings } from '../settings';
 import { $, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
 import { BottomSheet } from '../ui/sheet';
 import { actualRows, type ActualRow } from '../track/actual';
+import { weatherLabel } from '../nav/weather';
 import { emptyFC, fitTo, src } from './mapView';
 import { isLate, updateNav, type Nav, type Row } from './nav';
 import { profile, updateProfile } from './profileView';
 import { recorder, viewingTrack } from './recording';
 import { clearRoute, exportRoute, removeMark, searchAlternativesForGpx } from './route';
 import { state } from './state';
+import { weatherFor } from './weather';
 
 function navRow(label: string, row: Row, primary: boolean, sunset: number | null): HTMLElement {
   const el = h('div', `nav-row${primary ? ' primary' : ''}${isLate(row, sunset) ? ' late' : ''}`);
@@ -28,6 +30,29 @@ function navRow(label: string, row: Row, primary: boolean, sunset: number | null
   }
   el.append(lab, remain, clock);
   return el;
+}
+
+/** 地点・時刻の天気の一行（予報がまだなければ null） */
+function wxLine(lngLat: LngLat, time: number): HTMLElement | null {
+  const w = weatherFor(lngLat, time);
+  if (!w) return null;
+  const { icon, label } = weatherLabel(w.code);
+  const parts = [`${icon} ${label}`.trim()];
+  if (w.pop != null) parts.push(`降水 ${Math.round(w.pop)}%`);
+  if (w.temp != null) parts.push(`${Math.round(w.temp)}℃`);
+  if (w.wind != null && w.wind >= 5) parts.push(`風 ${Math.round(w.wind)}m/s`);
+  return h('div', `wx${(w.pop ?? 0) >= 50 || w.precip >= 1 ? ' wet' : ''}`, parts.filter(Boolean).join(' · '));
+}
+
+/** これから通る地点の降水確率のうち、いちばん高いもの */
+function maxPop(nav: Nav): number | null {
+  let max: number | null = null;
+  for (const r of nav.rows) {
+    if (r.passed || !r.time) continue;
+    const pop = weatherFor(r.mark.lngLat, r.time)?.pop;
+    if (pop != null) max = Math.max(max ?? 0, pop);
+  }
+  return max;
 }
 
 /** 実績の一行：出発・目的地の時刻 */
@@ -79,6 +104,9 @@ function renderActualTimeline(tl: HTMLElement) {
     time.append(h('small', '', row.kind === 'start' ? '出発' : row.kind === 'rest' ? '休憩' : '到着'));
     const body = h('div');
     body.append(h('div', 'name', row.kind === 'rest' ? `休憩 ${fmtMin(row.restMs! / 60_000)}` : row.name));
+    const p = state.shown!.points[row.index];
+    const wx = row.kind === 'rest' ? null : wxLine([p.lng, p.lat], row.t);
+    if (wx) body.append(wx);
     const l = row.leg;
     body.append(
       h(
@@ -112,6 +140,8 @@ export function renderCard(nav: Nav | null) {
     if (nav.pace && nav.pace.evidenceMin > 10) sub.append(h('span', '', `実績ペース 標準の${nav.pace.overall.toFixed(2)}倍`));
     else sub.append(h('span', '', `ペース「${PACE_PRESETS[settings.pace].label}」`));
     sub.append(h('span', '', `休憩込み`));
+    const pop = maxPop(nav);
+    if (pop != null) sub.append(h('span', pop >= 50 ? 'warn' : '', `降水確率 最大${Math.round(pop)}%`));
     if (nav.sunset) {
       const late = dest ? isLate(dest, nav.sunset) : false;
       sub.append(h('span', late ? 'warn' : '', `日没 ${fmtClock(nav.sunset)}${late ? '（要注意）' : ''}`));
@@ -163,6 +193,8 @@ export function renderBody(nav: Nav | null) {
       time.append(h('small', '', row.mark.kind === 'start' ? '出発' : row.passed ? (row.time ? '到着' : '通過') : '予想'));
       const body = h('div');
       body.append(h('div', 'name', row.mark.name));
+      const wx = row.time ? wxLine(row.mark.lngLat, row.time) : null;
+      if (wx) body.append(wx);
       if (row.leg) {
         const l = row.leg;
         body.append(
