@@ -13,6 +13,7 @@ import type { TrackRecorder } from './track/recorder';
 import { settings } from './settings';
 import { $ } from './ui/dom';
 import { addOverlayLayers, map, updateDaylight } from './app/mapView';
+import './app/install';
 import './app/mapTap';
 import { PRESETS } from './app/menu';
 import { updateNav, type Nav } from './app/nav';

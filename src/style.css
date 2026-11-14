@@ -181,6 +181,7 @@ button,
 .field.depart[hidden],
 .view-actions[hidden],
 .rec-btn[hidden],
+.btn[hidden],
 .replay[hidden] {
   display: none;
 }
