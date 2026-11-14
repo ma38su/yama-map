@@ -31,3 +31,35 @@ export function sunTimes(date: Date, lat: number, lng: number): SunTimes {
     sunset: new Date(julianToMs(jTransit + w / 360)),
   };
 }
+
+export interface SunPosition {
+  /** 高度（度）。地平線が0、大気差は含めない */
+  altitude: number;
+  /** 方位（度）。北0・東90 の時計回り */
+  azimuth: number;
+}
+
+/** その時刻・地点の太陽の高度と方位（NOAA General Solar Position の簡易式。誤差は0.1°程度） */
+export function sunPosition(date: Date, lat: number, lng: number): SunPosition {
+  const year = date.getUTCFullYear();
+  const yearStart = Date.UTC(year, 0, 1);
+  const days = (Date.UTC(year + 1, 0, 1) - yearStart) / 86_400_000;
+  const utcHours = (date.getTime() - Date.UTC(year, date.getUTCMonth(), date.getUTCDate())) / 3_600_000;
+  const doy = Math.floor((date.getTime() - yearStart) / 86_400_000) + 1;
+  const g = ((2 * Math.PI) / days) * (doy - 1 + (utcHours - 12) / 24);
+  const eqTime =
+    229.18 *
+    (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
+  const decl =
+    0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g) +
+    0.000907 * Math.sin(2 * g) - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+  const hourAngle = ((utcHours * 60 + eqTime + 4 * lng) / 4 - 180) * RAD;
+  const phi = lat * RAD;
+  const up = Math.sin(phi) * Math.sin(decl) + Math.cos(phi) * Math.cos(decl) * Math.cos(hourAngle);
+  const east = -Math.cos(decl) * Math.sin(hourAngle);
+  const north = Math.cos(phi) * Math.sin(decl) - Math.sin(phi) * Math.cos(decl) * Math.cos(hourAngle);
+  return {
+    altitude: Math.asin(Math.max(-1, Math.min(1, up))) / RAD,
+    azimuth: (Math.atan2(east, north) / RAD + 360) % 360,
+  };
+}

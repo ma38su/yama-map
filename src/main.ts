@@ -53,7 +53,8 @@ import {
   type RouteOption,
   trailShare,
 } from './nav/plan';
-import { sunTimes } from './nav/sun';
+import { sunPosition, sunTimes } from './nav/sun';
+import { applyDaylight, skyAt } from './map/daylight';
 import {
   MAX_TILES,
   clearTileCache,
@@ -124,10 +125,14 @@ const fmtHM = (min: number) => {
 // ---------- 地図 ----------
 const dem = new DemSampler(96);
 const elevation = (lng: number, lat: number) => dem.elevation(lng, lat);
+const initialCenter: LngLat = settings.view?.center ?? [139.4165, 36.8705]; // 初期表示：奥鬼怒
+// 読み込み中に昼の空が一瞬見えないよう、最初から今の空にしておく
+const initialStyle = createStyle(settings.base, settings.hillshade);
+initialStyle.sky = skyAt(sunPosition(new Date(), initialCenter[1], initialCenter[0]).altitude);
 const map = new MlMap({
   container: 'map',
-  style: createStyle(settings.base, settings.hillshade),
-  center: settings.view?.center ?? [139.4165, 36.8705], // 初期表示：奥鬼怒
+  style: initialStyle,
+  center: initialCenter,
   zoom: settings.view?.zoom ?? 13.3,
   pitch: settings.view?.pitch ?? 0,
   bearing: settings.view?.bearing ?? 0,
@@ -147,6 +152,7 @@ class Terrain3DControl implements IControl {
       settings.terrain = !settings.terrain;
       saveSettings();
       set3D(map, settings.terrain);
+      updateDaylight();
       this.update();
     });
     this.container.append(this.button);
@@ -217,11 +223,19 @@ map.on('load', () => {
     paint: { 'circle-radius': 8, 'circle-color': '#1f2933', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 },
   });
   if (settings.terrain) map.setTerrain({ source: 'dem-terrain', exaggeration: TERRAIN_EXAGGERATION });
+  updateDaylight();
+  setInterval(updateDaylight, 60_000);
   renderRoute();
   renderTrack();
   updateNav();
   void checkUnfinished();
 });
+
+/** 今の時刻・地図の中心での太陽に、空の色と陰影を合わせる */
+function updateDaylight() {
+  const c = map.getCenter();
+  applyDaylight(map, sunPosition(new Date(), c.lat, c.lng), settings.terrain);
+}
 
 map.on('moveend', () => {
   const c = map.getCenter();
