@@ -6,6 +6,7 @@ export class ElevationProfile {
   private eles: (number | null)[] = [];
   private hover: number | null = null;
   private marker: number | null = null;
+  private ticks: { d: number; kind: string; label: string }[] = [];
   private readonly ctx: CanvasRenderingContext2D;
 
   constructor(
@@ -49,6 +50,12 @@ export class ElevationProfile {
     this.dists = dists;
     this.eles = eles;
     if (this.hover != null && this.hover >= dists.length) this.hover = null;
+    this.draw();
+  }
+
+  /** 経由地・目的地の位置（距離 m）を縦線で示す */
+  setTicks(ticks: { d: number; kind: string; label: string }[]): void {
+    this.ticks = ticks;
     this.draw();
   }
 
@@ -141,6 +148,31 @@ export class ElevationProfile {
     ctx.lineWidth = 2;
     ctx.lineJoin = 'round';
     ctx.stroke(path);
+
+    // 経由地・目的地
+    ctx.font = 'bold 10px system-ui, sans-serif';
+    ctx.textBaseline = 'top';
+    let lastLabelX = -Infinity;
+    for (const t of this.ticks) {
+      if (t.d < 0 || t.d > total) continue;
+      const x = Math.round(sx(t.d)) + 0.5;
+      const color = t.kind === 'dest' ? '#d6334a' : t.kind === 'start' ? '#16805c' : '#2563eb';
+      ctx.strokeStyle = color;
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, pad.top + ph);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 近すぎる地点の名前は重なるので省く（縦線は残す）
+      if (x - lastLabelX < 64) continue;
+      lastLabelX = x;
+      ctx.fillStyle = color;
+      ctx.textAlign = x > w - 60 ? 'right' : x < pad.left + 20 ? 'left' : 'center';
+      ctx.fillText(t.label.slice(0, 8), x, pad.top + 1);
+    }
+    ctx.textBaseline = 'alphabetic';
 
     // 現在地
     if (this.marker != null && this.marker < this.dists.length) {

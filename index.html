@@ -2,13 +2,13 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#16805c" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="やまマップ" />
-    <meta name="description" content="GPSで現在地・軌跡を記録できる山歩き用の地図（国土地理院タイル・3D地形）" />
+    <meta name="description" content="GPSで現在地・軌跡を記録し、到着予想時刻を出せる山歩き用の地図（国土地理院タイル・3D地形）" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
@@ -17,20 +17,34 @@
   <body>
     <div id="map" role="application" aria-label="地図"></div>
 
-    <div id="status" class="chip" hidden></div>
+    <div id="status" class="chip" role="status" aria-live="polite" hidden></div>
 
-    <section id="panel" aria-label="記録">
-      <div id="stats" hidden>
-        <div><span class="label">時間</span><span id="s-time" class="value">0:00</span></div>
-        <div><span class="label">距離</span><span id="s-dist" class="value">0 m</span></div>
-        <div><span class="label">登り</span><span id="s-up" class="value">0 m</span></div>
-        <div><span class="label">下り</span><span id="s-down" class="value">0 m</span></div>
-        <div><span class="label">標高</span><span id="s-ele" class="value">–</span></div>
+    <section id="sheet" aria-label="行程と記録">
+      <button id="sheet-handle" type="button" aria-label="詳細を開く" aria-expanded="false"><span></span></button>
+      <div id="card"></div>
+      <div id="sheet-body" hidden>
+        <section id="sec-plan">
+          <h3>行程</h3>
+          <ol id="timeline" class="timeline"></ol>
+          <div class="row" id="plan-actions"></div>
+        </section>
+        <section id="sec-profile">
+          <h3>標高グラフ</h3>
+          <canvas id="profile"></canvas>
+        </section>
+        <section id="sec-pace">
+          <h3>これまでのペース</h3>
+          <div id="pace-grid" class="tiles"></div>
+          <p class="note" id="pace-note"></p>
+          <div class="field">
+            <span class="field-label">記録が少ないときのペース</span>
+            <div class="segmented" id="pace-preset" role="radiogroup" aria-label="ペース設定"></div>
+          </div>
+        </section>
       </div>
-      <canvas id="profile" hidden></canvas>
       <div id="actions">
-        <button id="btn-profile" class="icon-btn" type="button" aria-label="標高グラフ" title="標高グラフ" hidden>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20h18M3 17l5-7 4 4 3-5 6 8" /></svg>
+        <button id="btn-fit" class="icon-btn" type="button" aria-label="ルート全体を表示" title="ルート全体を表示">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
         </button>
         <button id="btn-rec" class="rec-btn" type="button">
           <span class="dot" aria-hidden="true"></span><span class="text">記録開始</span>
@@ -42,11 +56,20 @@
     </section>
 
     <dialog id="menu" aria-label="メニュー">
-      <form method="dialog" class="sheet">
+      <form method="dialog" class="dlg">
         <header>
           <h2>やまマップ</h2>
           <button class="close" value="close" aria-label="閉じる">✕</button>
         </header>
+
+        <section>
+          <h3>ルート</h3>
+          <div class="stack" id="preset-routes"></div>
+          <div class="row">
+            <label class="btn"><input type="file" id="gpx-file" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden />GPXを読み込む</label>
+          </div>
+          <p class="note">地図をタップして「目的地」を選ぶと、国土地理院の道・徒歩道データから自動でルートを作ります。</p>
+        </section>
 
         <section>
           <h3>地図</h3>
@@ -57,19 +80,8 @@
         <section>
           <h3>記録</h3>
           <label class="toggle"><input type="checkbox" id="opt-wakelock" /> 記録中は画面を点けたままにする</label>
-          <p class="note">
-            Web版は画面を消すと測位が止まります。ポケットに入れたまま記録するにはアプリ版が必要です（README参照）。
-          </p>
+          <p class="note">Web版は画面を消すと測位が止まります。ポケットに入れたまま記録するにはアプリ版が必要です。</p>
           <ul id="track-list" class="list"></ul>
-        </section>
-
-        <section>
-          <h3>ルート（GPX）</h3>
-          <div class="row">
-            <label class="btn"><input type="file" id="gpx-file" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden />GPXを読み込む</label>
-            <button type="button" class="btn" id="btn-route-clear" disabled>ルートを消す</button>
-          </div>
-          <p class="note" id="route-info"></p>
         </section>
 
         <section>
@@ -78,16 +90,16 @@
             <button type="button" class="btn" id="btn-offline">表示中の範囲を保存</button>
             <button type="button" class="btn" id="btn-cache-clear">保存した地図を削除</button>
           </div>
-          <p class="note" id="offline-info">山では電波が届かないことが多いので、出発前に保存しておくと安心です。</p>
+          <p class="note" id="offline-info">山では電波が届かないことが多いので、出発前に保存しておくと安心です（ルート検索用の道データも保存します）。</p>
           <progress id="offline-progress" hidden></progress>
           <p class="note" id="storage-info"></p>
         </section>
 
         <section class="about">
           <p>
-            地図・標高データ: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（地理院タイル）</a>
+            地図・標高・道データ: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（地理院タイル）</a>
           </p>
-          <p class="note">この地図は登山計画の参考です。紙の地図とコンパス、登山届の提出もお忘れなく。</p>
+          <p class="note">到着予想は目安です。道の状況・天候・体調で大きく変わります。紙の地図とコンパス、登山届の提出もお忘れなく。</p>
         </section>
       </form>
     </dialog>

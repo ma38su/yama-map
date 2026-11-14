@@ -24,6 +24,8 @@ export function downloadLayers(baseTemplate: string, maxZoom = 16): LayerPlan[] 
     { template: `${GSI}/dem_png/{z}/{x}/{y}.png`, minZoom: 8, maxZoom: 14 },
     // 記録時の標高計算用 (DEM5A)
     { template: `${GSI}/dem5a_png/{z}/{x}/{y}.png`, minZoom: 15, maxZoom: 15 },
+    // ルート検索・地名用の道路・注記データ（ベクトルタイル）
+    { template: `${GSI}/optimal_bvmap-v1/{z}/{x}/{y}.pbf`, minZoom: 16, maxZoom: 16 },
   ];
 }
 

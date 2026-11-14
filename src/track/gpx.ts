@@ -84,7 +84,13 @@ export function parseGpx(xml: string): GpxData {
 const esc = (s: string) =>
   s.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]!);
 
-export function toGpx(name: string, points: GpxPoint[]): string {
+export function toGpx(name: string, points: GpxPoint[], waypoints: GpxWaypoint[] = []): string {
+  const wpts = waypoints
+    .map((w) => {
+      const ele = w.ele != null ? `<ele>${w.ele.toFixed(1)}</ele>` : '';
+      return `  <wpt lat="${w.lat.toFixed(7)}" lon="${w.lng.toFixed(7)}">${ele}<name>${esc(w.name ?? '')}</name></wpt>\n`;
+    })
+    .join('');
   const pts = points
     .map((p) => {
       const ele = p.ele != null ? `<ele>${p.ele.toFixed(1)}</ele>` : '';
@@ -95,7 +101,7 @@ export function toGpx(name: string, points: GpxPoint[]): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="yama-map" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata><name>${esc(name)}</name></metadata>
-  <trk>
+${wpts}  <trk>
     <name>${esc(name)}</name>
     <trkseg>
 ${pts}
