@@ -54,7 +54,7 @@ import {
   trailShare,
 } from './nav/plan';
 import { sunPosition, sunTimes } from './nav/sun';
-import { applyDaylight, skyAt } from './map/daylight';
+import { applyDaylight, toneStyle } from './map/daylight';
 import {
   MAX_TILES,
   clearTileCache,
@@ -78,13 +78,15 @@ registerGsiDemProtocol();
 interface Settings {
   base: BaseLayerId;
   hillshade: boolean;
+  /** 空と地図の色を時刻に合わせる（夜は暗め） */
+  dayTone: boolean;
   terrain: boolean;
   wakeLock: boolean;
   pace: PacePreset;
   view?: { center: LngLat; zoom: number; pitch: number; bearing: number };
 }
 const SETTINGS_KEY = 'yama-map:settings';
-const settings: Settings = { base: 'std', hillshade: true, terrain: false, wakeLock: true, pace: 'normal' };
+const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, wakeLock: true, pace: 'normal' };
 try {
   Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}'));
 } catch {
@@ -98,6 +100,14 @@ function saveSettings() {
   } catch {
     /* noop */
   }
+}
+
+/** 空や地図の色を決める時刻。URL に ?time=18:30 を付けると、その時刻の見え方を確かめられる */
+const timeOverride = /^(\d{1,2}):(\d{2})$/.exec(new URLSearchParams(location.search).get('time') ?? '');
+function daylightTime(): Date {
+  const now = new Date();
+  if (timeOverride) now.setHours(Number(timeOverride[1]), Number(timeOverride[2]), 0, 0);
+  return now;
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -126,9 +136,8 @@ const fmtHM = (min: number) => {
 const dem = new DemSampler(96);
 const elevation = (lng: number, lat: number) => dem.elevation(lng, lat);
 const initialCenter: LngLat = settings.view?.center ?? [139.4165, 36.8705]; // 初期表示：奥鬼怒
-// 読み込み中に昼の空が一瞬見えないよう、最初から今の空にしておく
-const initialStyle = createStyle(settings.base, settings.hillshade);
-initialStyle.sky = skyAt(sunPosition(new Date(), initialCenter[1], initialCenter[0]).altitude);
+const initialSun = sunPosition(daylightTime(), initialCenter[1], initialCenter[0]);
+const initialStyle = toneStyle(createStyle(settings.base, settings.hillshade), settings.dayTone ? initialSun.altitude : 90);
 const map = new MlMap({
   container: 'map',
   style: initialStyle,
@@ -231,10 +240,10 @@ map.on('load', () => {
   void checkUnfinished();
 });
 
-/** 今の時刻・地図の中心での太陽に、空の色と陰影を合わせる */
+/** 今の時刻・地図の中心での太陽に、空・地図の色と陰影を合わせる */
 function updateDaylight() {
   const c = map.getCenter();
-  applyDaylight(map, sunPosition(new Date(), c.lat, c.lng), settings.terrain);
+  applyDaylight(map, sunPosition(daylightTime(), c.lat, c.lng), { terrain: settings.terrain, tone: settings.dayTone });
 }
 
 map.on('moveend', () => {
@@ -1081,6 +1090,12 @@ hillshadeOpt.addEventListener('change', () => {
   saveSettings();
   setHillshade(map, settings.hillshade);
 });
+const dayToneOpt = $<HTMLInputElement>('opt-daytone');
+dayToneOpt.addEventListener('change', () => {
+  settings.dayTone = dayToneOpt.checked;
+  saveSettings();
+  updateDaylight();
+});
 const wakeOpt = $<HTMLInputElement>('opt-wakelock');
 wakeOpt.addEventListener('change', () => {
   settings.wakeLock = wakeOpt.checked;
@@ -1090,6 +1105,7 @@ wakeOpt.addEventListener('change', () => {
 function syncMenu() {
   for (const b of baseWrap.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.id === settings.base));
   hillshadeOpt.checked = settings.hillshade;
+  dayToneOpt.checked = settings.dayTone;
   wakeOpt.checked = settings.wakeLock;
 }
 syncMenu();

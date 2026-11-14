@@ -39,6 +39,8 @@ export const BASE_LAYERS: Record<BaseLayerId, BaseLayerDef> = {
 };
 
 export const TERRAIN_EXAGGERATION = 1.3;
+/** 時刻に合わせて地図全体に重ねる色（夜の青み・夕方の暖色）。ルートや現在地より下に置く */
+export const TINT_LAYER = 'daylight-tint';
 
 export function createStyle(base: BaseLayerId, hillshade: boolean): StyleSpecification {
   const sources: StyleSpecification['sources'] = {};
@@ -63,6 +65,14 @@ export function createStyle(base: BaseLayerId, hillshade: boolean): StyleSpecifi
   };
   sources['dem-terrain'] = dem;
   sources['dem-hillshade'] = { ...dem };
+  sources[TINT_LAYER] = {
+    type: 'geojson',
+    data: {
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'Polygon', coordinates: [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]] },
+    },
+  };
 
   return {
     version: 8,
@@ -87,6 +97,12 @@ export function createStyle(base: BaseLayerId, hillshade: boolean): StyleSpecifi
           'hillshade-highlight-color': '#ffffff',
           'hillshade-accent-color': '#3d3526',
         },
+      },
+      {
+        id: TINT_LAYER,
+        type: 'fill',
+        source: TINT_LAYER,
+        paint: { 'fill-color': '#ffffff', 'fill-opacity': 0, 'fill-antialias': false },
       },
     ],
     sky: {

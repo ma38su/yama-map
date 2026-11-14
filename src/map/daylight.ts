@@ -1,14 +1,16 @@
-import type { Map as MlMap, SkySpecification } from 'maplibre-gl';
+import type { Map as MlMap, SkySpecification, StyleSpecification } from 'maplibre-gl';
 import type { SunPosition } from '../nav/sun';
+import { TINT_LAYER } from './style';
 
 type SkyColors = Pick<SkySpecification, 'sky-color' | 'horizon-color' | 'fog-color'>;
+type Stops<T> = readonly (readonly [number, T])[];
 
 /**
  * 太陽高度（度）ごとの空の色。間は線形に補間する。
  * 区切りは夜（航海薄明の終わり）・市民薄明・地平線の夕焼け・低い朝日・昼。
- * 地図タイル自体は昼の色のままなので、遠景をぼかす霧は夜でも暗くしすぎない。
+ * 地図は夜でも読めるように明るさを残すので、遠景をぼかす霧も暗くしすぎない。
  */
-const SKY_STOPS: readonly (readonly [number, SkyColors])[] = [
+const SKY_STOPS: Stops<SkyColors> = [
   [-12, { 'sky-color': '#0c1630', 'horizon-color': '#2a3552', 'fog-color': '#6b7489' }],
   [-4, { 'sky-color': '#2b3f6e', 'horizon-color': '#d98f6e', 'fog-color': '#a9a3ab' }],
   [1, { 'sky-color': '#5d84c4', 'horizon-color': '#ffb27a', 'fog-color': '#e9d8c8' }],
@@ -23,6 +25,29 @@ const SKY_BLEND = {
   'atmosphere-blend': 0,
 } as const;
 
+/** 地図の色合い。タイルの明るさ・彩度と、地図全体に重ねる色 */
+export interface MapTone {
+  /** raster-brightness-max（1 でそのまま） */
+  brightness: number;
+  /** raster-saturation（0 でそのまま、−1 で白黒） */
+  saturation: number;
+  tint: string;
+  tintOpacity: number;
+}
+
+/**
+ * 太陽高度ごとの地図の色合い。夜は暗く青みがかり、夕方は暖色に寄せる。
+ * 夜道で地図を読む必要があるので、夜でも文字と登山道が読める明るさで止める。
+ */
+const TONE_STOPS: Stops<MapTone> = [
+  [-10, { brightness: 0.62, saturation: -0.3, tint: '#0f2a78', tintOpacity: 0.25 }],
+  [-3, { brightness: 0.82, saturation: -0.2, tint: '#3b3f7d', tintOpacity: 0.14 }],
+  [2, { brightness: 0.96, saturation: 0.05, tint: '#ff9447', tintOpacity: 0.1 }],
+  [10, { brightness: 1, saturation: 0, tint: '#ffb36b', tintOpacity: 0 }],
+];
+
+export const DAY_TONE: MapTone = TONE_STOPS[TONE_STOPS.length - 1][1];
+
 const toRgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
 const toHex = (rgb: number[]) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
 const mix = (a: string, b: string, t: number) => {
@@ -30,15 +55,30 @@ const mix = (a: string, b: string, t: number) => {
   return toHex(x.map((v, i) => v + (y[i] - v) * t));
 };
 
+/** 区切りの間を線形に補間する（色は #rrggbb、ほかは数値） */
+function interpolate<T extends object>(stops: Stops<T>, altitude: number): T {
+  const i = stops.findIndex(([a]) => altitude < a);
+  if (i === 0) return { ...stops[0][1] };
+  if (i < 0) return { ...stops[stops.length - 1][1] };
+  const [a0, from] = stops[i - 1];
+  const [a1, to] = stops[i];
+  const t = (altitude - a0) / (a1 - a0);
+  const out: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(from)) {
+    const w = (to as Record<string, unknown>)[key];
+    out[key] = typeof v === 'number' ? v + ((w as number) - v) * t : mix(v as string, w as string, t);
+  }
+  return out as T;
+}
+
 /** 太陽高度に合わせた空 */
 export function skyAt(altitude: number): SkySpecification {
-  const i = SKY_STOPS.findIndex(([a]) => altitude < a);
-  if (i === 0 || i < 0) return { ...SKY_STOPS[i === 0 ? 0 : SKY_STOPS.length - 1][1], ...SKY_BLEND };
-  const [a0, from] = SKY_STOPS[i - 1];
-  const [a1, to] = SKY_STOPS[i];
-  const t = (altitude - a0) / (a1 - a0);
-  const color = (key: keyof SkyColors) => mix(from[key] as string, to[key] as string, t);
-  return { 'sky-color': color('sky-color'), 'horizon-color': color('horizon-color'), 'fog-color': color('fog-color'), ...SKY_BLEND };
+  return { ...interpolate(SKY_STOPS, altitude), ...SKY_BLEND };
+}
+
+/** 太陽高度に合わせた地図の色合い */
+export function toneAt(altitude: number): MapTone {
+  return interpolate(TONE_STOPS, altitude);
 }
 
 export interface HillshadeLight {
@@ -72,9 +112,41 @@ export function sunHillshadeLight(sun: SunPosition): HillshadeLight {
   };
 }
 
-/** 空の色と陰影の光を太陽に合わせる。実際の日差しの陰影は 3D のときだけ（2D は慣習の陰影） */
-export function applyDaylight(map: MlMap, sun: SunPosition, terrain: boolean): void {
-  map.setSky(skyAt(sun.altitude));
+/** 読み込み前のスタイルを、最初から今の空と地図の色にしておく（昼の色が一瞬見えないように） */
+export function toneStyle(style: StyleSpecification, altitude: number): StyleSpecification {
+  const t = toneAt(altitude);
+  style.sky = skyAt(altitude);
+  for (const layer of style.layers) {
+    if (layer.type === 'raster') {
+      layer.paint = { ...layer.paint, 'raster-brightness-max': t.brightness, 'raster-saturation': t.saturation };
+    } else if (layer.id === TINT_LAYER && layer.type === 'fill') {
+      layer.paint = { ...layer.paint, 'fill-color': t.tint, 'fill-opacity': t.tintOpacity };
+    }
+  }
+  return style;
+}
+
+export interface DaylightOptions {
+  /** 3D 表示中か。実際の日差しの陰影は 3D のときだけ（2D は慣習の陰影） */
+  terrain: boolean;
+  /** 空と地図の色を時刻に合わせるか。オフなら昼の色のまま */
+  tone: boolean;
+}
+
+/** 空・地図の色と陰影の光を太陽に合わせる */
+export function applyDaylight(map: MlMap, sun: SunPosition, { terrain, tone }: DaylightOptions): void {
+  const colorAltitude = tone ? sun.altitude : 90;
+  map.setSky(skyAt(colorAltitude));
+  const t = toneAt(colorAltitude);
+  for (const layer of map.getStyle().layers) {
+    if (layer.type !== 'raster') continue;
+    map.setPaintProperty(layer.id, 'raster-brightness-max', t.brightness);
+    map.setPaintProperty(layer.id, 'raster-saturation', t.saturation);
+  }
+  if (map.getLayer(TINT_LAYER)) {
+    map.setPaintProperty(TINT_LAYER, 'fill-color', t.tint);
+    map.setPaintProperty(TINT_LAYER, 'fill-opacity', t.tintOpacity);
+  }
   if (!map.getLayer('hillshade')) return;
   const light = terrain ? sunHillshadeLight(sun) : DEFAULT_HILLSHADE_LIGHT;
   map.setPaintProperty('hillshade', 'hillshade-method', light.method);

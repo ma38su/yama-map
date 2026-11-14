@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_HILLSHADE_LIGHT, skyAt, sunHillshadeLight } from '../src/map/daylight';
+import { DAY_TONE, DEFAULT_HILLSHADE_LIGHT, skyAt, sunHillshadeLight, toneAt, toneStyle } from '../src/map/daylight';
+import { TINT_LAYER, createStyle } from '../src/map/style';
 import { sunPosition, sunTimes } from '../src/nav/sun';
 
 const TOKYO = { lat: 35.68, lng: 139.77 };
@@ -54,5 +55,33 @@ describe('sunHillshadeLight', () => {
   it('低い太陽は下限で止め、夜は慣習の陰影に戻す', () => {
     expect(sunHillshadeLight({ altitude: 2, azimuth: 250 }).altitude).toBe(8);
     expect(sunHillshadeLight({ altitude: -5, azimuth: 250 })).toBe(DEFAULT_HILLSHADE_LIGHT);
+  });
+});
+
+describe('toneAt', () => {
+  it('昼はタイルをそのまま、夜は暗く青みがかるが読める明るさで止める', () => {
+    expect(toneAt(40)).toEqual(DAY_TONE);
+    expect(DAY_TONE.tintOpacity).toBe(0);
+    const night = toneAt(-30);
+    expect(night.brightness).toBeGreaterThanOrEqual(0.6);
+    expect(night.tintOpacity).toBeLessThanOrEqual(0.25);
+  });
+  it('区切りの間は数値も色も補間する', () => {
+    const t = toneAt(6);
+    expect(t.brightness).toBeCloseTo(0.98);
+    expect(t.tintOpacity).toBeCloseTo(0.05);
+    expect(t.tint).toBe('#ffa459');
+  });
+});
+
+describe('toneStyle', () => {
+  it('読み込み前のスタイルの空・タイル・重ねる色を、その時刻のものにする', () => {
+    const style = toneStyle(createStyle('std', true), -30);
+    const night = toneAt(-30);
+    expect(style.sky?.['sky-color']).toBe('#0c1630');
+    const base = style.layers.find((l) => l.id === 'base-std');
+    expect(base?.type === 'raster' && base.paint?.['raster-brightness-max']).toBe(night.brightness);
+    const tint = style.layers.find((l) => l.id === TINT_LAYER);
+    expect(tint?.type === 'fill' && tint.paint?.['fill-opacity']).toBe(night.tintOpacity);
   });
 });
