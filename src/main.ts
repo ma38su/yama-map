@@ -173,8 +173,11 @@ class Terrain3DControl implements IControl {
     this.button.addEventListener('click', () => {
       settings.terrain = !settings.terrain;
       saveSettings();
-      set3D(map, settings.terrain);
-      updateDaylight();
+      // 読み込み中は地図の load で反映する（読み込み前に地形を切り替えるとエラーになる）
+      if (map.isStyleLoaded()) {
+        set3D(map, settings.terrain);
+        updateDaylight();
+      }
       this.update();
     });
     this.container.append(this.button);
@@ -651,7 +654,7 @@ function computeNav(): Nav | null {
     return {
       mark: m,
       passed,
-      time: remain ? now + remain.totalMin * 60_000 : passed ? arrivalTime(m) : now,
+      time: remain ? now + remain.totalMin * 60_000 : arrivalTime(m),
       remainM: Math.max(0, m.along - fromAlong),
       remain,
       leg: i > 0 ? { dist: m.along - prev, up: g.ascent, down: g.descent, est: estimate(tl, prev, m.along, factors) } : null,
@@ -956,21 +959,23 @@ function updateProfile(nav: Nav | null) {
       eles: track.map((p) => p.ele),
       times: track.map((p) => p.t),
       pace: cachedPace(track),
-    });
+    }, `track:${track[0].trackId}`);
     profile.setMarker(null);
   } else if (route && timeline) {
     profileCoords = route.coords;
-    // 時刻の軸：出発地を出る時刻から、このペースでの到着予想
+    // 時刻の軸：このペースでの到着予想。歩いている途中なら、今いる位置が今の時刻になるように
     const span = routeSpan(route);
     const factors = nav?.factors ?? defaultFactors(settings.pace);
-    const start = nav?.rows[0]?.time ?? departureTime();
     const tl = timeline;
+    const start = nav?.onRoute
+      ? Date.now() - estimate(tl, span.from, nav.fromAlong, factors).totalMin * 60_000
+      : departureTime();
     profile.setSeries({
       dists: route.dists,
       eles: route.eles,
       times: route.dists.map((d) => start + estimate(tl, span.from, Math.max(span.from, d), factors).totalMin * 60_000),
       ticks: route.marks.map((m) => ({ d: m.along, kind: m.kind, label: m.name })),
-    });
+    }, `route:${route.name}:${route.label}:${route.dists.length}`);
     if (nav?.onRoute) {
       let i = 0;
       while (i < route.dists.length - 1 && route.dists[i] < nav.fromAlong) i++;

@@ -12,6 +12,8 @@ const HALF_TOP_GAP = 210;
 
 export class BottomSheet {
   private state: SheetState = 'closed';
+  /** ノッチ・ステータスバーの高さ。画面の向きが変わったら測り直す */
+  private safeTopPx: number | null = null;
   private drag: { y0: number; h0: number; t0: number; moved: boolean; id: number } | null = null;
 
   constructor(
@@ -27,6 +29,7 @@ export class BottomSheet {
       el.addEventListener('pointercancel', (e) => this.end(e));
     }
     window.addEventListener('resize', () => {
+      this.safeTopPx = null;
       if (this.state !== 'closed') this.body.style.height = `${this.heightOf(this.state)}px`;
     });
   }
@@ -43,11 +46,13 @@ export class BottomSheet {
 
   /** ノッチ・ステータスバーの高さ（env(safe-area-inset-top) は JS から直接読めないので、要素に当てて測る） */
   private safeTop(): number {
+    if (this.safeTopPx != null) return this.safeTopPx;
     const probe = document.createElement('div');
     probe.style.cssText = 'position:fixed;top:0;height:env(safe-area-inset-top);visibility:hidden;pointer-events:none';
     document.body.append(probe);
     const h = probe.getBoundingClientRect().height;
     probe.remove();
+    this.safeTopPx = h;
     return h;
   }
 

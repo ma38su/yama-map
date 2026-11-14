@@ -55,6 +55,7 @@ const clock = (ms: number) => {
 
 export class ElevationProfile {
   private s: ProfileSeries = { dists: [], eles: [] };
+  private key = '';
   private axis: ProfileAxis = 'dist';
   private view: ProfileView = { from: 0, to: 1 };
   private hover: number | null = null;
@@ -96,24 +97,35 @@ export class ElevationProfile {
       'wheel',
       (e) => {
         if (this.s.dists.length < 2) return;
-        e.preventDefault();
-        if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey) {
-          const span = this.view.to - this.view.from;
+        const span = this.view.to - this.view.from;
+        const sideways = Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey;
+        // 拡大はトラックパッドのピンチ（ctrlKey 付きで届く）か Ctrl/⌘+ホイール。
+        // 普通の縦ホイールはシートのスクロールに使う
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          this.zoom(Math.exp(-e.deltaY * 0.01), this.ratioAt(e.clientX));
+        } else if (sideways && span < 1) {
+          e.preventDefault();
           this.setPosition(this.view.from + ((e.deltaX || e.deltaY) / this.plotWidth()) * span);
-        } else this.zoom(Math.exp(-e.deltaY * 0.002), this.ratioAt(e.clientX));
+        }
       },
       { passive: false },
     );
     new ResizeObserver(() => this.draw()).observe(canvas);
   }
 
-  setSeries(s: ProfileSeries): void {
-    const lengthChanged = s.dists.length !== this.s.dists.length;
+  /**
+   * グラフにするデータを差し替える。key が変わったとき（別のルート・記録になったとき）だけ拡大を戻す。
+   * 記録中に点が増えても、拡大したところはそのまま
+   */
+  setSeries(s: ProfileSeries, key: string): void {
     this.s = s;
     if (this.axis === 'time' && !this.hasTime) this.axis = 'dist';
     if (this.hover != null && this.hover >= s.dists.length) this.hover = null;
-    if (lengthChanged) this.resetView();
-    this.draw();
+    if (key !== this.key) {
+      this.key = key;
+      this.resetView();
+    } else this.draw();
   }
 
   get hasTime(): boolean {

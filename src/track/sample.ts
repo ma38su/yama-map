@@ -71,10 +71,10 @@ export function generateSampleTrack(
   let walked = 0; // 前の休憩からの歩行時間（分）
   let pace = 1;
   let distanceSum = 0;
-  for (let s = 0; ; s = Math.min(total, s + STEP_M)) {
+  for (let s = 0, lastS = 0; ; lastS = s, s = Math.min(total, s + STEP_M)) {
     if (s > 0) {
-      if (Math.floor(s / PACE_SPAN_M) !== Math.floor((s - STEP_M) / PACE_SPAN_M)) pace = 1 + (rand() * 2 - 1) * PACE_JITTER;
-      const min = timeline.between(s - STEP_M, s).total * pace;
+      if (Math.floor(s / PACE_SPAN_M) !== Math.floor(lastS / PACE_SPAN_M)) pace = 1 + (rand() * 2 - 1) * PACE_JITTER;
+      const min = timeline.between(lastS, s).total * pace;
       t += min * 60_000;
       walked += min;
       // 歩行30分ごとに休憩（ゴールの直前では休まない）
