@@ -44,7 +44,7 @@ PWA版では代わりに、記録中は **Screen Wake Lock で画面を点けた
   - OpenStreetMap（[OpenFreeMap](https://openfreemap.org) が配信する OpenMapTiles 形式、API キー不要）。`path` を登山道、`track` を林道として扱う
   - 「登山道優先」では車道を林道の1.6倍・一般車道の2.5倍の距離とみなして避ける。2つのデータで同じ経路になれば、候補に「OpenStreetMapでも同じ経路」と表示
   - 登山道の有無・通行可否は保証されないので、現地や宿・自治体の最新情報を確認してください
-- おすすめルート `public/routes/okukinu-teshirosawa.gpx` は、このルート検索で作成したものです
+- おすすめルート `public/routes/okukinu-teshirosawa.gpx`・`okukinu-nikkozawa.gpx` は、このルート検索で作成したものです
 
 補足：
 

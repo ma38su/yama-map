@@ -52,6 +52,11 @@ export const PRESETS = [
     title: '女夫渕 → 手白澤温泉',
     desc: '奥鬼怒歩道・八丁の湯・加仁湯経由 約6km',
   },
+  {
+    file: 'routes/okukinu-nikkozawa.gpx',
+    title: '女夫渕 → 日光澤温泉',
+    desc: '奥鬼怒歩道・八丁の湯・加仁湯経由 約5km',
+  },
 ];
 const presetWrap = $('preset-routes');
 for (const p of PRESETS) {
