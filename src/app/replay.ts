@@ -5,7 +5,7 @@
 import { distance, type LngLat } from '../geo';
 import type { TrackPoint } from '../track/db';
 import { $, fmtClock } from '../ui/dom';
-import { lineFC, map, pointFC, setTerrain, src } from './mapView';
+import { lineFC, map, pointFC, setTerrain, src, updateDaylight } from './mapView';
 import { profile } from './profileView';
 import { updateRecButton } from './recording';
 import { state } from './state';
@@ -15,6 +15,8 @@ const SPEEDS = [100, 300, 1000] as const;
 /** 休憩とみなす点の間隔 (ms) と、そこを送る倍率 */
 const REST_GAP_MS = 90_000;
 const REST_BOOST = 10;
+/** 空と地図の色を合わせ直す間隔（再生中の時刻で） */
+const DAYLIGHT_STEP_MS = 2 * 60_000;
 /** カメラの向きを合わせる先：何m先の点の方を向くか */
 const LOOK_AHEAD_M = 120;
 
@@ -90,6 +92,11 @@ function render(follow: boolean) {
     }
     map.jumpTo({ center: here, bearing });
   }
+  // 空と地図の色は再生中の時刻に合わせる（毎フレームだと重いので、時刻が2分動いたら）
+  if (state.daylightAt == null || Math.abs(t - state.daylightAt) >= DAYLIGHT_STEP_MS) {
+    state.daylightAt = t;
+    updateDaylight();
+  }
   if (i !== lastIndex) {
     lastIndex = i;
     profile.setMarker(i);
@@ -159,6 +166,8 @@ export function stopReplay() {
   pause();
   bar.hidden = true;
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
+  state.daylightAt = null;
+  updateDaylight();
   src('replay')?.setData(pointFC(null));
   src('replay-done')?.setData(lineFC([]));
   lastIndex = -1;

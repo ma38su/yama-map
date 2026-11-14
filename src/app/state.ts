@@ -27,6 +27,8 @@ export const state = {
   lastFix: null as { coords: LngLat; acc: number; t: number } | null,
   /** 現在地の標高 */
   currentEle: null as number | null,
+  /** 空や地図の色をこの時刻 (ms) に合わせる（リプレイ中）。null なら今の時刻 */
+  daylightAt: null as number | null,
   /** 読み込み中などの進み具合の表示（あれば状態表示に優先して出す） */
   progressMsg: '',
 };

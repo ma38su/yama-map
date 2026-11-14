@@ -19,6 +19,7 @@ import { sunPosition } from '../nav/sun';
 import { OSM_ATTRIBUTION } from '../route/roadTiles';
 import { daylightTime, saveSettings, settings } from '../settings';
 import { $, h } from '../ui/dom';
+import { state } from './state';
 
 // 地図を作る前に、ワーカーと標高タイルの読み込み方を登録しておく
 setWorkerUrl(workerUrl);
@@ -100,10 +101,11 @@ export const pointFC = (c: LngLat | null): FeatureCollection =>
   c ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: c } }] } : emptyFC;
 export const src = (id: string) => map.getSource(id) as GeoJSONSource | undefined;
 
-/** 今の時刻・地図の中心での太陽に、空・地図の色と陰影を合わせる */
+/** 今の時刻（リプレイ中は再生中の時刻）・地図の中心での太陽に、空・地図の色と陰影を合わせる */
 export function updateDaylight() {
   const c = map.getCenter();
-  applyDaylight(map, sunPosition(daylightTime(), c.lat, c.lng), { terrain: settings.terrain, tone: settings.dayTone });
+  const when = state.daylightAt != null ? new Date(state.daylightAt) : daylightTime();
+  applyDaylight(map, sunPosition(when, c.lat, c.lng), { terrain: settings.terrain, tone: settings.dayTone });
 }
 
 map.on('moveend', () => {
