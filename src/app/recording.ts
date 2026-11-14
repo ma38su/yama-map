@@ -7,6 +7,9 @@ import { saveSettings, settings } from '../settings';
 import { $, fmtM } from '../ui/dom';
 import { dem, geolocate, lineFC, src } from './mapView';
 import { refreshTrackList } from './menu';
+import { setProfileSource } from './profileView';
+import { replayActive, startReplay, stopReplay } from './replay';
+import { sheet } from './sheetView';
 import { updateNav } from './nav';
 import { state } from './state';
 import { status } from './status';
@@ -48,6 +51,13 @@ export function hereLngLat(): LngLat | null {
 /** 現在地の追従をオンにする（trigger() はオン/オフの切り替えなので、オフのときだけ押す） */
 function startGeolocate() {
   if (geolocate._watchState === 'OFF') geolocate.trigger();
+}
+
+/** 現在地の表示をやめる（追従を外して背景になっているときに押すと現在地へ戻ってしまうので、追従中の扱いにしてから押す） */
+export function stopGeolocate() {
+  if (geolocate._watchState === 'OFF') return;
+  if (geolocate._watchState === 'BACKGROUND') geolocate._watchState = 'ACTIVE_LOCK';
+  geolocate.trigger();
 }
 
 /**
@@ -101,7 +111,11 @@ recBtn.addEventListener('click', async () => {
   } else {
     if (!confirm('記録を終了しますか？')) return;
     const t = await recorder.stop();
-    if (t) status(`記録を保存しました：${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}`);
+    if (t) {
+      // 歩き終えた記録をそのまま開いて、実績を見られるように
+      stopGeolocate();
+      status(`記録を保存しました：${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}`);
+    }
   }
   void refreshTrackList();
 });
@@ -110,7 +124,38 @@ export function updateRecButton() {
   const rec = recorder.recording;
   recBtn.classList.toggle('recording', rec);
   recBtn.querySelector('.text')!.textContent = rec ? '記録終了' : '記録開始';
+  // 保存した記録を開いているあいだは記録できない（リプレイと閉じるボタンにする）
+  const viewing = viewingTrack();
+  recBtn.hidden = viewing;
+  $('view-actions').hidden = !viewing;
+  const replay = $('btn-replay');
+  replay.querySelector('span:first-child')!.textContent = replayActive() ? '■' : '▶';
+  replay.querySelector('span:last-child')!.textContent = replayActive() ? '終了' : 'リプレイ';
 }
+
+/** 保存した記録（または歩き終えた記録）を開いているか */
+export const viewingTrack = () => !recorder.recording && !!state.shown;
+
+/** 開いている記録を閉じる */
+export function closeTrack() {
+  stopReplay();
+  recorder.clear();
+  state.shown = null;
+  setProfileSource('route');
+  renderTrack();
+  updateRecButton();
+  updateNav();
+}
+$('btn-close-track').addEventListener('click', closeTrack);
+$('btn-replay').addEventListener('click', () => {
+  if (replayActive()) stopReplay();
+  else {
+    // 地図が見えるように、シートは半分まで下げる
+    if (sheet.isOpen) sheet.setState('half');
+    startReplay();
+  }
+  updateRecButton();
+});
 
 export function renderTrack() {
   src('track')?.setData(lineFC((state.shown?.points ?? []).map((p): LngLat => [p.lng, p.lat])));

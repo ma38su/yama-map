@@ -51,16 +51,7 @@ class Terrain3DControl implements IControl {
     this.button = h('button', 'ctrl-3d', '3D');
     this.button.type = 'button';
     this.button.title = '2D / 3D 切り替え';
-    this.button.addEventListener('click', () => {
-      settings.terrain = !settings.terrain;
-      saveSettings();
-      // 読み込み中は地図の load で反映する（読み込み前に地形を切り替えるとエラーになる）
-      if (map.isStyleLoaded()) {
-        set3D(map, settings.terrain);
-        updateDaylight();
-      }
-      this.update();
-    });
+    this.button.addEventListener('click', () => setTerrain(!settings.terrain));
     this.container.append(this.button);
     this.update();
     return this.container;
@@ -83,7 +74,21 @@ export const geolocate = new GeolocateControl({
 // スマホではピンチで拡大縮小するので +/- ボタンは出さない（方位だけ）
 map.addControl(new NavigationControl({ showZoom: false, visualizePitch: true }), 'top-right');
 map.addControl(geolocate, 'top-right');
-map.addControl(new Terrain3DControl(), 'top-right');
+const terrainControl = new Terrain3DControl();
+map.addControl(terrainControl, 'top-right');
+
+/** 2D / 3D を切り替える */
+export function setTerrain(on: boolean) {
+  if (settings.terrain === on) return;
+  settings.terrain = on;
+  saveSettings();
+  // 読み込み中は地図の load で反映する（読み込み前に地形を切り替えるとエラーになる）
+  if (map.isStyleLoaded()) {
+    set3D(map, on);
+    updateDaylight();
+  }
+  terrainControl.update();
+}
 map.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-left');
 
 export const emptyFC: FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -129,7 +134,7 @@ export function fitTo(coords: LngLat[]) {
 
 /** ルート・記録・グラフのカーソルを描く層（地図の読み込み後に一度だけ） */
 export function addOverlayLayers() {
-  for (const id of ['route', 'route-done', 'track', 'cursor']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  for (const id of ['route', 'route-done', 'track', 'replay-done', 'cursor', 'replay']) map.addSource(id, { type: 'geojson', data: emptyFC });
   // OpenStreetMap 由来のルートを表示しているときだけ出典を出すためのソース
   map.addSource('osm-credit', { type: 'geojson', data: emptyFC, attribution: OSM_ATTRIBUTION });
   const casing = { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 };
@@ -140,6 +145,13 @@ export function addOverlayLayers() {
   map.addLayer({ id: 'route-done', type: 'line', source: 'route-done', layout: round, paint: { 'line-color': '#93a3b8', 'line-width': 5 } });
   map.addLayer({ id: 'track-casing', type: 'line', source: 'track', layout: round, paint: { ...casing, 'line-width': 6 } });
   map.addLayer({ id: 'track-line', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#d6334a', 'line-width': 3.5 } });
+  map.addLayer({ id: 'replay-done', type: 'line', source: 'replay-done', layout: round, paint: { 'line-color': '#7a1424', 'line-width': 4.5 } });
+  map.addLayer({
+    id: 'replay',
+    type: 'circle',
+    source: 'replay',
+    paint: { 'circle-radius': 9, 'circle-color': '#d6334a', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3, 'circle-pitch-alignment': 'map' },
+  });
   map.addLayer({
     id: 'cursor',
     type: 'circle',

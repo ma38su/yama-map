@@ -13,7 +13,8 @@ import { elevation, fitTo, map, updateDaylight } from './mapView';
 import { updateNav } from './nav';
 import { refreshStorage } from './offline';
 import { setProfileSource } from './profileView';
-import { recorder, renderTrack } from './recording';
+import { closeTrack, recorder, renderTrack, stopGeolocate, updateRecButton } from './recording';
+import { stopReplay } from './replay';
 import { applyRoutePref, loadGpxText, rebuild, setRoute } from './route';
 import { openSheet, setTab } from './sheetView';
 import { state } from './state';
@@ -219,12 +220,7 @@ export async function refreshTrackList() {
         async () => {
           if (!confirm(`「${t.name}」を削除しますか？`)) return;
           await deleteTrack(t.id);
-          if (state.shown?.track.id === t.id) {
-            recorder.clear();
-            state.shown = null;
-            renderTrack();
-            updateNav();
-          }
+          if (state.shown?.track.id === t.id) closeTrack();
           await refreshTrackList();
         },
         'danger',
@@ -237,11 +233,14 @@ export async function refreshTrackList() {
 
 async function showSavedTrack(t: Track) {
   if (recorder.recording) return;
+  stopReplay();
   recorder.clear();
   const points = await getPoints(t.id);
   state.shown = { track: t, points };
   setProfileSource('track');
+  stopGeolocate();
   renderTrack();
+  updateRecButton();
   menu.close();
   setTab('profile');
   fitTo(points.map((p) => [p.lng, p.lat]));

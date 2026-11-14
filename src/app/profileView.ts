@@ -9,6 +9,7 @@ import { ElevationProfile, type ProfileAxis } from '../ui/profile';
 import { pointFC, src } from './mapView';
 import { departureTime, type Nav } from './nav';
 import { recorder } from './recording';
+import { replayIndex } from './replay';
 import { state } from './state';
 
 // ---------- 標高グラフ ----------
@@ -77,7 +78,7 @@ export function updateProfile(nav: Nav | null) {
       times: track.map((p) => p.t),
       pace: cachedPace(track),
     }, `track:${track[0].trackId}`);
-    profile.setMarker(null);
+    profile.setMarker(replayIndex());
   } else if (state.route && state.timeline) {
     profileCoords = state.route.coords;
     // 時刻の軸：このペースでの到着予想。歩いている途中なら、今いる位置が今の時刻になるように

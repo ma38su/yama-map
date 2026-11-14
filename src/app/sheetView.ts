@@ -1,14 +1,15 @@
 /** 下から出るシート：カード（到着予想の要約）と、詳細のタブ（行程／標高・ペース） */
-import { formatDistance, formatDuration } from '../geo';
+import { formatDistance, formatDuration, type LngLat } from '../geo';
 import { PACE_PRESETS, analyzePace, estimate } from '../nav/eta';
 import { routeSpan } from '../nav/plan';
 import { saveSettings, settings } from '../settings';
 import { $, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
 import { BottomSheet } from '../ui/sheet';
+import { actualRows, type ActualRow } from '../track/actual';
 import { emptyFC, fitTo, src } from './mapView';
 import { isLate, updateNav, type Nav, type Row } from './nav';
 import { profile, updateProfile } from './profileView';
-import { recorder } from './recording';
+import { recorder, viewingTrack } from './recording';
 import { clearRoute, exportRoute, removeMark, searchAlternativesForGpx } from './route';
 import { state } from './state';
 
@@ -29,9 +30,75 @@ function navRow(label: string, row: Row, primary: boolean, sunset: number | null
   return el;
 }
 
+/** 実績の一行：出発・目的地の時刻 */
+function actualRow(label: string, row: ActualRow, remain: string, primary: boolean): HTMLElement {
+  const el = h('div', `nav-row${primary ? ' primary' : ''}`);
+  const lab = h('div', 'nav-label');
+  lab.append(`${label} · `, h('b', '', row.name));
+  const clock = h('div', 'nav-clock');
+  clock.append(fmtClock(row.t), h('small', '', row.kind === 'start' ? '発' : '着'));
+  el.append(lab, h('div', 'nav-remain', remain), clock);
+  return el;
+}
+
+/** 開いている記録の実績（ルートの地点を通った時刻など）。点が増えたときだけ計算し直す */
+let actualCache: { key: string; rows: ActualRow[] } | null = null;
+function shownActual(): ActualRow[] {
+  const shown = state.shown!;
+  const key = `${shown.track.id}:${shown.points.length}:${state.route?.name ?? ''}:${state.route?.marks.length ?? 0}`;
+  if (actualCache?.key !== key) actualCache = { key, rows: actualRows(shown.points, state.route?.marks) };
+  return actualCache.rows;
+}
+
+/** 開いている記録のカード：出発と目的地（到着）の実績 */
+function renderActualCard(card: HTMLElement) {
+  const { track, points } = state.shown!;
+  const rows = shownActual();
+  const first = rows[0];
+  const last = rows.at(-1);
+  const title = h('div', 'nav-title');
+  title.append(h('b', '', track.name), h('span', '', ` · ${new Date(track.startedAt).toLocaleDateString('ja-JP')}の記録`));
+  card.append(title);
+  if (first && last) {
+    card.append(actualRow('出発', first, '', false));
+    card.append(actualRow('目的地', last, `所要 ${fmtHM((last.t - first.t) / 60_000)} · ${formatDistance(track.distance)}`, true));
+  }
+  const p = points.length > 1 ? analyzePace(points, settings.pace, points[points.length - 1].t) : null;
+  const sub = h('div', 'nav-sub');
+  if (p) sub.append(h('span', '', `歩行 ${fmtHM(p.movingMs / 60_000)}`), h('span', '', `休憩 ${fmtHM(p.restMs / 60_000)}`));
+  sub.append(h('span', '', `登り ${fmtM(track.ascent)} · 下り ${fmtM(track.descent)}`));
+  if (p && p.evidenceMin > 10) sub.append(h('span', '', `標準の${p.overall.toFixed(2)}倍`));
+  card.append(sub);
+}
+
+/** 開いている記録の行程：出発・通った地点・休憩・到着の実績 */
+function renderActualTimeline(tl: HTMLElement) {
+  for (const row of shownActual()) {
+    const li = h('li', row.kind);
+    const time = h('div', 'time', fmtClock(row.t));
+    time.append(h('small', '', row.kind === 'start' ? '出発' : row.kind === 'rest' ? '休憩' : '到着'));
+    const body = h('div');
+    body.append(h('div', 'name', row.kind === 'rest' ? `休憩 ${fmtMin(row.restMs! / 60_000)}` : row.name));
+    const l = row.leg;
+    body.append(
+      h(
+        'div',
+        'leg',
+        l ? `${formatDistance(l.dist)} · ↑${Math.round(l.up)}m ↓${Math.round(l.down)}m · 所要 ${fmtHM(l.ms / 60_000)}${l.restMs >= 60_000 ? `（休憩 ${fmtHM(l.restMs / 60_000)}）` : ''}` : '',
+      ),
+    );
+    li.append(time, h('div', 'dot'), body, h('div'));
+    tl.append(li);
+  }
+}
+
 export function renderCard(nav: Nav | null) {
   const card = $('card');
   card.replaceChildren();
+  if (viewingTrack()) {
+    renderActualCard(card);
+    return;
+  }
   if (nav && state.route) {
     const span = routeSpan(state.route);
     const title = h('div', 'nav-title');
@@ -83,9 +150,12 @@ export function renderBody(nav: Nav | null) {
   tl.replaceChildren();
   const actions = $('plan-actions');
   actions.replaceChildren();
-  $('sec-plan').hidden = !state.route;
-  $('plan-empty').hidden = !!state.route;
-  if (nav && state.route && state.timeline) {
+  const viewing = viewingTrack();
+  $('sec-plan').hidden = !state.route && !viewing;
+  $('plan-empty').hidden = !!state.route || viewing;
+  $('depart-field').hidden = viewing;
+  if (viewing) renderActualTimeline(tl);
+  else if (nav && state.route && state.timeline) {
     const items: { time: number | null; passed: boolean; el: HTMLElement }[] = [];
     for (const row of nav.rows) {
       const li = h('li', `${row.mark.kind}${row.passed ? ' passed' : ''}${isLate(row, nav.sunset) ? ' late' : ''}`);
@@ -225,7 +295,10 @@ export const sheet = new BottomSheet($('sheet-handle'), [$('card')], $('sheet-bo
 export function openSheet() {
   if (!sheet.isOpen) sheet.setOpen(true);
 }
-$('btn-fit').addEventListener('click', () => state.route && fitTo(state.route.coords));
+$('btn-fit').addEventListener('click', () => {
+  if (viewingTrack()) fitTo(state.shown!.points.map((p): LngLat => [p.lng, p.lat]));
+  else if (state.route) fitTo(state.route.coords);
+});
 $('depart-now').addEventListener('click', () => {
   // 外すときは、時刻欄に出ている時刻を出発時刻にする
   settings.departAt = settings.departAt ? null : $<HTMLInputElement>('depart-time').value || hhmm(new Date());

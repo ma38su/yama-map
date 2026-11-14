@@ -20,6 +20,13 @@
     <div id="status" class="chip" role="status" aria-live="polite" hidden></div>
 
     <section id="sheet" aria-label="行程と記録">
+      <div id="replay" class="replay" hidden>
+        <button id="replay-play" class="icon-btn small" type="button" aria-label="再生">▶</button>
+        <input id="replay-seek" type="range" min="0" max="1000" value="0" aria-label="再生位置" />
+        <span id="replay-clock" class="replay-clock"></span>
+        <button id="replay-speed" class="btn small" type="button" aria-label="再生の速さ">×300</button>
+        <button id="replay-close" class="icon-btn small" type="button" aria-label="リプレイを終える">✕</button>
+      </div>
       <button id="sheet-handle" type="button" aria-label="詳細を開く" aria-expanded="false"><span></span></button>
       <div id="card"></div>
       <div id="sheet-body" hidden>
@@ -29,7 +36,7 @@
         </div>
         <div id="panel-plan" role="tabpanel" aria-labelledby="tab-plan">
           <section id="sec-plan">
-            <div class="field depart">
+            <div class="field depart" id="depart-field">
               <span class="field-label">出発</span>
               <button type="button" class="depart-now" id="depart-now" aria-pressed="true">今すぐ</button>
               <input type="time" id="depart-time" aria-label="出発時刻" />
@@ -73,6 +80,10 @@
         <button id="btn-rec" class="rec-btn" type="button">
           <span class="dot" aria-hidden="true"></span><span class="text">記録開始</span>
         </button>
+        <div id="view-actions" class="view-actions" hidden>
+          <button id="btn-replay" class="rec-btn" type="button"><span aria-hidden="true">▶</span><span>リプレイ</span></button>
+          <button id="btn-close-track" class="btn" type="button" aria-label="記録を閉じる">✕ 閉じる</button>
+        </div>
         <button id="btn-menu" class="icon-btn" type="button" aria-label="メニュー" title="メニュー">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
