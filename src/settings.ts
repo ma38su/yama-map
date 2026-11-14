@@ -29,6 +29,8 @@ export interface Settings {
   view?: { center: LngLat; zoom: number; pitch: number; bearing: number };
   /** 最初から入れている「予定」の記録を入れ終えたか（消したあとに戻さないため） */
   builtinPlan?: boolean;
+  /** 電池の最適化から外すか、記録を始めたときに一度聞いたか（アプリ版） */
+  batteryAsked?: boolean;
 }
 const SETTINGS_KEY = 'yama-map:settings';
 export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, terrainExaggeration: TERRAIN_EXAGGERATION, weather: true, weatherFx: true, wakeLock: !backgroundCapable, offRouteAlert: true, pace: 'normal', routePref: 'trail', departAt: null };

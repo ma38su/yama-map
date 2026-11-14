@@ -1099,3 +1099,112 @@ dialog.photo-view {
 .photo-actions .btn {
   min-width: 48px;
 }
+
+/* ---------- ポケット表示（app/pocket.ts） ---------- */
+/* 有機ELの画面で電気を使わないよう真っ黒にし、文字も明るすぎない灰色にする */
+.pocket {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: calc(env(safe-area-inset-top) + 24px) 20px calc(env(safe-area-inset-bottom) + 20px);
+  background: #000;
+  color: #8f98a3;
+  overflow-y: auto;
+  font-variant-numeric: tabular-nums;
+}
+.pocket[hidden] {
+  display: none;
+}
+/* 隠れている地図とシートは描かない */
+.pocket-on #map,
+.pocket-on #sheet,
+.pocket-on #status {
+  visibility: hidden;
+}
+.pocket-clock {
+  font-size: 64px;
+  font-weight: 300;
+  line-height: 1;
+  color: #b9c0c8;
+  text-align: center;
+}
+.pocket-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+.pocket-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pocket-stat .label,
+.pocket-row .label {
+  font-size: 14px;
+}
+.pocket-stat .value {
+  font-size: 30px;
+  color: #b9c0c8;
+}
+.pocket-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pocket-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pocket-row .time {
+  font-size: 34px;
+  color: #b9c0c8;
+}
+.pocket-row .time small {
+  display: block;
+  font-size: 15px;
+  color: #8f98a3;
+}
+.pocket-sun {
+  font-size: 18px;
+}
+.pocket-row.late .time,
+.pocket-sun.late,
+.pocket-warn {
+  color: #c98a6b;
+}
+.pocket-warn {
+  margin: 0;
+  font-size: 17px;
+}
+.pocket-exit {
+  position: relative;
+  overflow: hidden;
+  margin-top: auto;
+  min-height: 56px;
+  border: 1px solid #2c3238;
+  border-radius: 999px;
+  background: #000;
+  color: #8f98a3;
+  font-size: 16px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.pocket-exit span:last-child {
+  position: relative;
+}
+/* 長押しのあいだ、左から塗っていく（1秒で端まで） */
+.pocket-exit .fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: #1d2a24;
+}
+.pocket-exit.holding .fill {
+  width: 100%;
+  transition: width 1s linear;
+}

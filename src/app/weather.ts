@@ -366,7 +366,8 @@ map.on('move', () => {
 const RAIN_FRAME_MS = 33;
 let rainLast = 0;
 function rainFrame(now: number) {
-  rainRaf = drops.length && document.visibilityState === 'visible' ? requestAnimationFrame(rainFrame) : 0;
+  // 裏に回っているとき・ポケット表示のあいだは止める（戻ったら updateWeatherLayers で再開する）
+  rainRaf = drops.length && document.visibilityState === 'visible' && !document.body.classList.contains('pocket-on') ? requestAnimationFrame(rainFrame) : 0;
   if (now - rainLast < RAIN_FRAME_MS) return;
   const step = Math.min(3, (now - rainLast) / 16.7);
   rainLast = now;

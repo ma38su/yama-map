@@ -1,7 +1,13 @@
 package io.github.ma38su.yamamap;
 
 import android.Manifest;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.PowerManager;
+import android.provider.Settings;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -100,6 +106,38 @@ public class TrackingPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("fixes", TrackingStore.get(getContext()).list(track, afterId, limit));
         call.resolve(ret);
+    }
+
+    /**
+     * 電池の最適化の対象から外れているか。対象のままだと、画面を消して長く記録しているあいだに
+     * Android の省電力機能で記録が止められることがある
+     */
+    @PluginMethod
+    public void batteryOptimization(PluginCall call) {
+        PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+        JSObject ret = new JSObject();
+        ret.put("ignoring", pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName()));
+        call.resolve(ret);
+    }
+
+    /**
+     * 電池の最適化から外す画面を開く（このアプリだけを聞くダイアログ）。開けなければ、アプリの一覧の設定画面。
+     * Play ストアで配るときは、このダイアログを出すのは審査の対象になる（docs/android-plan.md）
+     */
+    @PluginMethod
+    public void openBatterySettings(PluginCall call) {
+        String pkg = getContext().getPackageName();
+        try {
+            getActivity().startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + pkg)));
+        } catch (ActivityNotFoundException e) {
+            try {
+                getActivity().startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (ActivityNotFoundException e2) {
+                call.reject("設定画面を開けませんでした");
+                return;
+            }
+        }
+        call.resolve();
     }
 
     /** 取り込み終えた記録の測位を消す（通知の「停止」の印も消す） */

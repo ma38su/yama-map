@@ -81,6 +81,9 @@
         <button id="btn-search" class="icon-btn" type="button" aria-label="地名で探す" title="地名で探す">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" /><path d="M15 15l5 5" /></svg>
         </button>
+        <button id="btn-pocket" class="icon-btn" type="button" aria-label="ポケット表示（黒い画面で電池を節約）" title="ポケット表示" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z" /></svg>
+        </button>
         <button id="btn-rec" class="rec-btn" type="button">
           <span class="dot" aria-hidden="true"></span><span class="text">記録開始</span>
         </button>
@@ -96,6 +99,14 @@
         </button>
       </div>
     </section>
+
+    <div id="pocket" class="pocket" role="dialog" aria-modal="true" aria-label="ポケット表示" hidden>
+      <div class="pocket-clock" id="pocket-clock"></div>
+      <div class="pocket-stats" id="pocket-stats"></div>
+      <div class="pocket-rows" id="pocket-rows"></div>
+      <p class="pocket-warn" id="pocket-warn" role="status" hidden></p>
+      <button type="button" class="pocket-exit" id="pocket-exit"><span class="fill" aria-hidden="true"></span><span>長押しで地図に戻る</span></button>
+    </div>
 
     <dialog id="menu" aria-label="メニュー">
       <form method="dialog" class="dlg">
@@ -146,6 +157,10 @@
           <label class="toggle"><input type="checkbox" id="opt-offroute" /> ルートから離れたら振動と通知で知らせる</label>
           <label class="toggle"><input type="checkbox" id="opt-wakelock" /> 記録中は画面を点けたままにする</label>
           <p class="note" id="wakelock-note">Web版は画面を消すと測位が止まります。ポケットに入れたまま記録するにはアプリ版が必要です。</p>
+          <div id="battery" hidden>
+            <p class="note" id="battery-note"></p>
+            <div class="row"><button type="button" class="btn" id="btn-battery">電池の最適化の設定を開く</button></div>
+          </div>
           <ul id="track-list" class="list"></ul>
           <p class="note">「予定」はおすすめルートをゆっくりのペースで歩き、30分ごとに5分休む想定の記録です。記録の見え方（軌跡・標高グラフ・ペースの分析・リプレイ）を試せます。</p>
         </section>

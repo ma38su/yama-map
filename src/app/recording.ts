@@ -11,6 +11,8 @@ import { setProfileSource } from './profileView';
 import { replayActive, startReplay, stopReplay } from './replay';
 import { sheet } from './sheetView';
 import { markTrackStale, refreshNow, updateNav } from './nav';
+import { suggestBatteryExemption } from './battery';
+import { exitPocket } from './pocket';
 import { checkOffRoute } from './offRouteAlert';
 import { renderPhotos } from './photos';
 import { state } from './state';
@@ -124,6 +126,7 @@ export const recorder = new TrackRecorder(dem, (s) => {
 
 /** 記録を終えたら、その記録を開いたまま実績を見られるようにする */
 function onRecordingEnded(t: Track) {
+  exitPocket();
   stopGeolocate();
   status(`記録を保存しました：${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}`);
   void fillShownElevations();
@@ -149,6 +152,7 @@ recBtn.addEventListener('click', async () => {
     }
     startGeolocate();
     status('記録を開始しました。歩いた実績から到着予想を調整します');
+    void suggestBatteryExemption();
   } else {
     if (!confirm('記録を終了しますか？')) return;
     await recorder.stop();
@@ -166,6 +170,8 @@ export function updateRecButton() {
   $('view-actions').hidden = !viewing;
   // 記録中・記録を開いているときは写真、それ以外（計画）は地名の検索を同じ場所に出す
   $('btn-photo').hidden = !rec && !viewing;
+  // ポケット表示は記録中だけ
+  $('btn-pocket').hidden = !rec;
   $('btn-search').hidden = rec || viewing;
   const replay = $('btn-replay');
   replay.querySelector('span:first-child')!.textContent = replayActive() ? '■' : '▶';

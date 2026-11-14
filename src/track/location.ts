@@ -72,6 +72,8 @@ interface TrackingPlugin {
   requestPermissions(o?: { permissions: 'location'[] }): Promise<{ location: PermissionState }>;
   /** fixes: 測位を保存した / stopped: 通知の「停止」で止めた */
   addListener(event: 'fixes' | 'stopped', fn: () => void): Promise<PluginListenerHandle>;
+  batteryOptimization(): Promise<{ ignoring: boolean }>;
+  openBatterySettings(): Promise<void>;
 }
 const Tracking = registerPlugin<TrackingPlugin>('Tracking');
 
@@ -206,6 +208,19 @@ export async function readRecordedFixes(trackId: string, since: number, onFix: (
 /** IndexedDB に保存し終えた記録の測位を、端末から消す（Web では何もしない） */
 export async function clearRecordedFixes(trackId: string): Promise<void> {
   if (backgroundCapable) await Tracking.clearFixes({ trackId }).catch((e) => console.error(e));
+}
+
+/** 電池の最適化の対象か（アプリ版だけ。Web・分からないときは null） */
+export async function batteryOptimized(): Promise<boolean | null> {
+  if (!backgroundCapable) return null;
+  return Tracking.batteryOptimization()
+    .then((r) => !r.ignoring)
+    .catch(() => null);
+}
+
+/** 電池の最適化から外す画面を開く（アプリ版だけ） */
+export async function openBatterySettings(): Promise<void> {
+  if (backgroundCapable) await Tracking.openBatterySettings().catch((e) => console.error(e));
 }
 
 /** Android 13+ では記録中の通知を出すのに通知の許可が要る（拒否されても測位自体は続く） */

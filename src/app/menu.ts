@@ -15,6 +15,7 @@ import { refreshStorage } from './offline';
 import { setProfileSource } from './profileView';
 import { closeTrack, fillShownElevations, recorder, renderTrack, stopGeolocate, updateRecButton } from './recording';
 import { stopReplay } from './replay';
+import { refreshBattery } from './battery';
 import { applyRoutePref, loadGpxText, rebuild, setRoute } from './route';
 import { openSheet, setTab } from './sheetView';
 import { state } from './state';
@@ -32,6 +33,7 @@ export const menu = $<HTMLDialogElement>('menu');
 $('btn-menu').addEventListener('click', () => {
   void refreshTrackList();
   void refreshStorage();
+  void refreshBattery();
   menu.showModal();
 });
 menu.addEventListener('click', (e) => {

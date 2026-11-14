@@ -21,6 +21,7 @@ import './app/search';
 import { ensureBuiltinPlan } from './app/menu';
 import { updateNav, type Nav } from './app/nav';
 import './app/offline';
+import { pocketActive } from './app/pocket';
 import { checkUnfinished, recorder, renderTrack, updateRecButton } from './app/recording';
 import { renderRoute } from './app/route';
 import './app/sheetView';
@@ -34,7 +35,8 @@ map.on('load', () => {
   if (settings.terrain) map.setTerrain({ source: 'dem-terrain', exaggeration: settings.terrainExaggeration });
   updateDaylight();
   // 空の色は1分ごと。裏に回っている間は止め、戻ったらすぐ合わせる
-  whileVisible(60_000, updateDaylight);
+  // ポケット表示のあいだは地図を描かないので止める（戻ったら合わせる）
+  whileVisible(60_000, () => !pocketActive() && updateDaylight());
   renderRoute();
   renderTrack();
   updateNav();

@@ -26,6 +26,8 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 | GPX・動画の書き出し（`ui/dom.ts` の `download`） | `<a download>` | キャッシュフォルダに書き出し、共有シートを開く（`@capacitor/filesystem`・`@capacitor/share`）。動画は3MBずつ書き足す |
 | メニューの「ホーム画面に追加」（`app/install.ts`） | 出す | 出さない |
 | Service Worker（`src/sw.js`） | アプリ本体と地図タイルをキャッシュ | 地図タイルだけ（`./sw.js?native=1` で登録）。アプリ本体は APK に入っている |
+| 電池の最適化（`app/battery.ts`） | なし | 記録を始めたときに、最適化の対象なら一度だけ外すか聞く（`settings.batteryAsked`）。メニューの「記録」に状態と設定を開くボタン |
+| ポケット表示（`app/pocket.ts`） | 黒い画面にする | さらに上下のシステムバーも隠して画面全体を黒にする（`SystemBars.hide`）。戻るボタンでも地図に戻る |
 
 ### なぜこうしているか
 
@@ -66,10 +68,11 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 |---|---|
 | `TrackingService.java` | 軌跡の記録（位置情報タイプのフォアグラウンドサービス）。測位は `play-services-location` の FusedLocationProviderClient。気圧計があれば気圧も点に付ける。通知の経過時間・距離・停止ボタン |
 | `TrackingStore.java` | 記録中の測位を入れておく SQLite（`tracking.db`） |
-| `TrackingPlugin.java` | JS（`src/track/location.ts`）から使う `Tracking`。`start`・`stop`・`status`・`getFixes`・`clearFixes` と、位置情報の許可 |
+| `TrackingPlugin.java` | JS（`src/track/location.ts`）から使う `Tracking`。`start`・`stop`・`status`・`getFixes`・`clearFixes`、位置情報の許可、電池の最適化（`batteryOptimization`・`openBatterySettings`） |
 | `BarometerPlugin.java` | 気圧計（`src/track/barometer.ts`）。記録中の今の標高を気圧から求める |
 
-アプリが求める主な権限は、位置情報（精密・おおよそ）、フォアグラウンドサービス（位置情報）、通知、インターネット、振動です。
+アプリが求める主な権限は、位置情報（精密・おおよそ）、フォアグラウンドサービス（位置情報）、通知、インターネット、振動、電池の最適化から外す画面を開く（`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）です。
+`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` は、Play ストアで配るときは使い方が審査されます（APK を直接配るなら問題ありません）。
 通知の許可（`POST_NOTIFICATIONS`）は `@capacitor/local-notifications` のマニフェストから入り、ほかは `AndroidManifest.xml` に書いています。
 記録のサービスは `exported="false"` で、ほかのアプリからは使えません。
 
@@ -237,7 +240,17 @@ APK ファイルをそのまま送ります（LINE・メール・Google ドラ�
 - 「記録終了」で記録が締まり、端末側の点が消えること
 - 点に気圧が付くこと
 
-戻るボタン・バックアップの除外・リリース版の署名は、エミュレータ・実機ではまだ確かめていません。
+同じ日に、次のことも確認しました。
+
+- 記録を始めると、電池の最適化から外すか一度だけ聞き、OK で Android の確認画面が出ること。許可すると対象外になり、メニューの表示も変わること
+- ポケット表示で上下のシステムバーが隠れ、戻るボタンで地図に戻ること（記録は続く）。初めて全画面にしたときは Android の「全画面表示」の説明が一度出て、そのときの戻るボタンは説明を閉じるのに使われる
+- アプリを入れ直して記録のサービスが止まったときは、次に開いたときに「続きを記録しますか」と聞くこと
+- 何も開いていないときの戻るボタンで、アプリが終了せず裏に回ること（開き直すと、そのままの画面に戻る）
+
+ポケット表示で、WebView が 140 より古い端末（このエミュレータは 133）は、上の切り欠きの帯が白いまま残ります（Capacitor がその帯を WebView の外の余白にするため）。
+新しい WebView では、WebView が画面の端まで広がるので、帯も黒くなります。
+
+バックアップの除外・リリース版の署名は、エミュレータ・実機ではまだ確かめていません。
 
 残っていること（詳しくは [常駐アプリとしての改善計画](android-plan.md)）：
 
