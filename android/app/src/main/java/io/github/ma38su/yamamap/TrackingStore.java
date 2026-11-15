@@ -30,7 +30,12 @@ class TrackingStore extends SQLiteOpenHelper {
     private static final String TAG = "YamaTracking";
     /** ログに残す行数（「動作の記録」はこの行数まで読む：src/track/location.ts） */
     private static final int LOG_KEEP = 2000;
-    /** 1歩で進める長さの上限と、歩数で説明できない動きを数える誤差の倍率（src/track/recorder.ts と同じ） */
+    /**
+     * 記録の距離に数える決まり（src/track/recorder.ts と同じ値）：誤差 MAX_ACCURACY_M 以内で、MIN_STEP_M 以上・誤差の半分以上動いたとき。
+     * 歩数（1歩 MAX_STRIDE_M まで）で説明できない動きは、誤差の和の UNEXPLAINED_ACCURACY_FACTOR 倍を超えたときだけ
+     */
+    static final float MAX_ACCURACY_M = 40;
+    private static final float MIN_STEP_M = 8;
     private static final float MAX_STRIDE_M = 1.2f;
     static final float UNEXPLAINED_ACCURACY_FACTOR = 2;
 
@@ -39,8 +44,8 @@ class TrackingStore extends SQLiteOpenHelper {
      * 歩数（1歩 MAX_STRIDE_M まで）で説明できる動きはふだんどおり数え、説明できない分（屋内・山小屋の GPS のぶれ）は
      * 誤差の和の UNEXPLAINED_ACCURACY_FACTOR 倍を超えたときだけ数える（乗り物は数える）。steps はそのあいだの歩数（歩数計がなければ null）
      */
-    static boolean countsAsMove(float d, float lastAcc, float acc, Long steps, float minStep) {
-        if (d < Math.max(minStep, acc / 2)) return false;
+    static boolean countsAsMove(float d, float lastAcc, float acc, Long steps) {
+        if (d < Math.max(MIN_STEP_M, acc / 2)) return false;
         if (steps == null) return true;
         float walked = steps * MAX_STRIDE_M;
         return d <= walked || d - walked >= UNEXPLAINED_ACCURACY_FACTOR * (lastAcc + acc);
@@ -151,9 +156,9 @@ class TrackingStore extends SQLiteOpenHelper {
 
     /**
      * 記録の距離 (m) を、残っている測位から数え直す（サービスが再起動したとき、通知の距離を続きから出すため）。
-     * 数え方は TrackingService と同じ（誤差 maxAccuracy 以内で、countsAsMove で動いたとみなしたとき）
+     * 数え方は TrackingService と同じ（誤差 MAX_ACCURACY_M 以内で、countsAsMove で動いたとみなしたとき）
      */
-    double distance(String track, float maxAccuracy, float minStep) {
+    double distance(String track) {
         double total = 0;
         double lastLat = Double.NaN;
         double lastLng = Double.NaN;
@@ -163,13 +168,13 @@ class TrackingStore extends SQLiteOpenHelper {
         try (Cursor c = getReadableDatabase().query("fixes", new String[] { "lat", "lng", "acc", "steps" }, "track = ?", new String[] { track }, null, null, "id")) {
             while (c.moveToNext()) {
                 float acc = c.getFloat(2);
-                if (acc > maxAccuracy) continue;
+                if (acc > MAX_ACCURACY_M) continue;
                 double lat = c.getDouble(0);
                 double lng = c.getDouble(1);
                 Long steps = c.isNull(3) ? null : c.getLong(3);
                 if (!Double.isNaN(lastLat)) {
                     Location.distanceBetween(lastLat, lastLng, lat, lng, d);
-                    if (!countsAsMove(d[0], lastAcc, acc, stepsBetween(lastSteps, steps), minStep)) continue;
+                    if (!countsAsMove(d[0], lastAcc, acc, stepsBetween(lastSteps, steps))) continue;
                     total += d[0];
                 }
                 lastLat = lat;

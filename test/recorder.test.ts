@@ -47,6 +47,16 @@ const fix = (i: number, more = false): Fix => ({
   more,
 });
 
+/** i 回目の測位（15秒おき）。位置・誤差・歩数を決めて作る */
+const fixAt = (i: number, lat: number, lng: number, accuracy: number, steps: number): Fix => ({
+  lng,
+  lat,
+  accuracy,
+  altitude: null,
+  timestamp: 1_000_000 + i * 15_000,
+  steps,
+});
+
 /** 順番待ちの処理が終わるまで待つ */
 const settle = async () => {
   for (let i = 0; i < 50; i++) await Promise.resolve();
@@ -115,6 +125,19 @@ describe('記録の保存', () => {
     expect(rec.state.saveFailed).toBe(false);
     expect(states.at(-1)!.saveFailed).toBe(false);
   });
+
+  it('歩数が増えないあいだのぶれは点にせず、歩き出したら・乗り物で大きく動いたら点にする', async () => {
+    // 誤差 25m で、止まったまま 20〜35m ずつ行ったり来たりする（今までの決まりなら毎回点になる）
+    for (let i = 0; i < 10; i++) loc.onFix!(fixAt(i, 36.85 + (i % 2) * 0.00025, 139.4 + (i % 3) * 0.0002, 25, 100));
+    await settle();
+    expect(db.saved).toHaveLength(1);
+    // 30歩で北へ 20m
+    loc.onFix!(fixAt(10, 36.85018, 139.4, 5, 130));
+    // 歩数が増えないまま北へ 150m（バスなど）
+    loc.onFix!(fixAt(11, 36.85153, 139.4, 10, 130));
+    await settle();
+    expect(db.saved).toHaveLength(3);
+  });
 });
 
 describe('動いたとみなす決まり', () => {
@@ -143,48 +166,5 @@ describe('動いたとみなす決まり', () => {
 
   it('乗り物は歩数が増えなくても誤差よりずっと大きく動くので数える', () => {
     expect(countsAsMove(60, 8, 8, 0)).toBe(true);
-  });
-});
-
-describe('屋内の GPS のぶれ', () => {
-  let rec: InstanceType<typeof TrackRecorder>;
-  beforeEach(async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal('document', { addEventListener: () => undefined, visibilityState: 'visible' });
-    vi.stubGlobal('navigator', {});
-    vi.stubGlobal('window', { setTimeout, clearTimeout });
-    db.fail = false;
-    db.saved = [];
-    db.calls = 0;
-    rec = new TrackRecorder({ elevation: async () => 500 } as never, () => undefined);
-    await rec.start();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-  });
-
-  /** i 回目の測位（15秒おき） */
-  const at = (i: number, lat: number, lng: number, accuracy: number, steps: number): Fix => ({
-    lng,
-    lat,
-    accuracy,
-    altitude: null,
-    timestamp: 1_000_000 + i * 15_000,
-    steps,
-  });
-
-  it('歩数が増えないあいだのぶれは点にせず、歩き出したら・乗り物で大きく動いたら点にする', async () => {
-    // 誤差 25m で、止まったまま 20〜35m ずつ行ったり来たりする（今までの決まりなら毎回点になる）
-    for (let i = 0; i < 10; i++) loc.onFix!(at(i, 36.85 + (i % 2) * 0.00025, 139.4 + (i % 3) * 0.0002, 25, 100));
-    await settle();
-    expect(db.saved).toHaveLength(1);
-    // 30歩で北へ 20m
-    loc.onFix!(at(10, 36.85018, 139.4, 5, 130));
-    // 歩数が増えないまま北へ 150m（バスなど）
-    loc.onFix!(at(11, 36.85153, 139.4, 10, 130));
-    await settle();
-    expect(db.saved).toHaveLength(3);
   });
 });

@@ -84,9 +84,6 @@ public class TrackingService extends Service implements SensorEventListener {
     private static final long INTERVAL_MS = 1000;
     private static final float MIN_DISTANCE_M = 5;
     private static final long MAX_DELAY_MS = 20_000;
-    /** 通知の距離に数える測位（JS の記録と同じく、誤差40m以内で、8m以上・誤差の半分以上動いたとき。歩数で説明できない動きは TrackingStore.countsAsMove） */
-    private static final float COUNT_ACCURACY_M = 40;
-    private static final float COUNT_STEP_M = 8;
     /** これより古い気圧は点に付けない */
     private static final long PRESSURE_STALE_MS = 2 * 60_000;
     /** 歩数が増えず、GPS でも動いていない時間がこれだけ続いたら、止まっているとみなして測位を間引く */
@@ -225,14 +222,12 @@ public class TrackingService extends Service implements SensorEventListener {
                 received++;
                 if (!loc.hasAccuracy()) continue;
                 accuracies.add(loc.getAccuracy());
-                if (loc.getAccuracy() > COUNT_ACCURACY_M) continue;
+                // 通知の距離は、JS の記録と同じ決まりで数える（TrackingStore.countsAsMove）
+                if (loc.getAccuracy() > TrackingStore.MAX_ACCURACY_M) continue;
                 trackMovement(loc);
-                if (counted == null) {
-                    counted = loc;
-                    countedSteps = stepCounts[i];
-                } else if (TrackingStore.countsAsMove(loc.distanceTo(counted), counted.getAccuracy(), loc.getAccuracy(),
-                    TrackingStore.stepsBetween(countedSteps, stepCounts[i]), COUNT_STEP_M)) {
-                    distance += loc.distanceTo(counted);
+                float d = counted != null ? loc.distanceTo(counted) : 0;
+                if (counted == null || TrackingStore.countsAsMove(d, counted.getAccuracy(), loc.getAccuracy(), TrackingStore.stepsBetween(countedSteps, stepCounts[i]))) {
+                    distance += d;
                     counted = loc;
                     countedSteps = stepCounts[i];
                 }
@@ -338,7 +333,7 @@ public class TrackingService extends Service implements SensorEventListener {
         final String startTrack = id;
         handler.post(() -> {
             // 続きなら、ここまでの距離を残っている測位から数え直して、通知に出す
-            distance = fresh ? 0 : TrackingStore.get(this).distance(startTrack, COUNT_ACCURACY_M, COUNT_STEP_M);
+            distance = fresh ? 0 : TrackingStore.get(this).distance(startTrack);
             counted = null;
             countedSteps = null;
             if (!fresh) notifyProgress();
@@ -406,7 +401,7 @@ public class TrackingService extends Service implements SensorEventListener {
                 .apply();
         }
         scheduleSummary();
-        TrackingStore.log(this, "計測 開始 " + deviceState());
+        TrackingStore.log(this, "計測 開始 " + deviceState(summarizedMah));
     }
 
     /**
@@ -457,7 +452,7 @@ public class TrackingService extends Service implements SensorEventListener {
             "計測 区間=%d分 測位=%d件 受信=%d回 精度(中央/最大)=%s 測位なし=%d回 画面オン=%.1f分 距離=%.0fm 歩数=%s 間引き=%.1f分 気圧=%s 消費=%s %s",
             Math.round((now - summarizedAt) / 60_000.0), received, deliveries, acc, unavailableCount, screen / 60_000.0, distance,
             steps >= 0 ? String.valueOf(steps) : "なし", stillNow / 60_000.0,
-            !Double.isNaN(hPa) ? String.format(Locale.JAPAN, "%.1fhPa", hPa) : "なし", usage(summarizedMah, mah, now - summarizedAt), deviceState()));
+            !Double.isNaN(hPa) ? String.format(Locale.JAPAN, "%.1fhPa", hPa) : "なし", usage(summarizedMah, mah, now - summarizedAt), deviceState(mah)));
         summarizedAt = now;
         summarizedMah = mah;
         received = 0;
@@ -470,14 +465,13 @@ public class TrackingService extends Service implements SensorEventListener {
         scheduleSummary();
     }
 
-    /** 電池残量（% と mAh）・温度・充電・発熱・省電力モード */
-    private String deviceState() {
+    /** 電池残量（% と mAh。mAh は呼ぶ側で読んだ batteryMah() の値）・温度・充電・発熱・省電力モード */
+    private String deviceState(int mah) {
         Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         float temp = b != null ? b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10f : Float.NaN;
         boolean plugged = b != null && b.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         String thermal = pm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? String.valueOf(pm.getCurrentThermalStatus()) : "-";
-        int mah = batteryMah();
         return String.format(Locale.JAPAN, "電池=%d%% 残量=%s 温度=%.1f℃ 充電=%s 発熱=%s 省電力=%s",
             batteryPercent(), mah >= 0 ? mah + "mAh" : "なし", temp, plugged ? "中" : "なし", thermal, pm != null && pm.isPowerSaveMode() ? "オン" : "オフ");
     }
