@@ -7,7 +7,8 @@ import { map } from './mapView';
 
 /** 動画の長いほうの辺 (px) */
 const MAX_SIDE = 1280;
-const FPS = 30;
+/** 動画のコマ数（1秒あたり） */
+export const CAPTURE_FPS = 30;
 
 let rec: { recorder: MediaRecorder; chunks: Blob[]; canvas: HTMLCanvasElement; off: () => void; name: string } | null = null;
 
@@ -24,13 +25,13 @@ function pickType(): { mime: string; ext: string } {
 
 /**
  * 録画を始める。caption は字幕（記録の名前と再生中の時刻など）を返す関数。
- * visibleHeight は地図のうちシートに隠れていない高さ (CSS px)。
+ * sheet は下のシート（地図のうち、シートの上端より上を写す）。
  * overlay は画面の真ん中に大きく出すタイトル（経路名と日時）と、その濃さ（0〜1）。出していなければ null
  */
 export function startCapture(
   name: string,
   caption: () => string[],
-  visibleHeight: () => number,
+  sheet: HTMLElement,
   overlay: () => { lines: string[]; alpha: number } | null = () => null,
 ) {
   if (rec || !captureSupported()) return;
@@ -38,9 +39,19 @@ export function startCapture(
   const rain = map.getContainer().querySelector<HTMLCanvasElement>('canvas.rain');
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d')!;
+  // 地図の canvas の幅と、地図のうちシートに隠れていない高さ (CSS px)。毎コマ読むと、直前に書き換えた画面（時計の文字など）の
+  // レイアウトをその場でやり直させるので、大きさが変わったときに読んで覚えておく
+  let cssW = src.clientWidth;
+  let visibleH = sheet.getBoundingClientRect().top;
+  const watch = new ResizeObserver(() => {
+    cssW = src.clientWidth;
+    visibleH = sheet.getBoundingClientRect().top;
+  });
+  watch.observe(src);
+  watch.observe(sheet);
   const size = () => {
-    const dpr = src.width / src.clientWidth;
-    const sh = Math.min(src.height, Math.round(visibleHeight() * dpr));
+    const dpr = src.width / cssW;
+    const sh = Math.min(src.height, Math.round(visibleH * dpr));
     const scale = Math.min(1, MAX_SIDE / Math.max(src.width, sh));
     // 動画の縦横は偶数にする
     const w = Math.round((src.width * scale) / 2) * 2;
@@ -50,8 +61,14 @@ export function startCapture(
     return { sh, w, h };
   };
   size();
-  // 地図の canvas は描いた直後でないと中身を読めないので、render のたびに写す
+  // 地図の canvas は描いた直後でないと中身を読めないので、render のたびに写す。
+  // ただし動画のコマより速くは写さない（タイトルのあいだなどは地図が60コマ描かれる）。時刻はそのコマの時刻（毎コマちょうどの間隔）で比べる
+  let drawnAt = -Infinity;
   const draw = () => {
+    const ft = document.timeline.currentTime;
+    const now = typeof ft === 'number' ? ft : performance.now();
+    if (now - drawnAt < 1000 / CAPTURE_FPS - 4) return;
+    drawnAt = now;
     const { sh, w, h } = size();
     ctx.drawImage(src, 0, 0, src.width, sh, 0, 0, w, h);
     if (rain && !rain.hidden && rain.width) ctx.drawImage(rain, 0, 0, rain.width, (rain.width / src.width) * sh, 0, 0, w, h);
@@ -74,12 +91,16 @@ export function startCapture(
     if (recorder.state === 'inactive') recorder.start(1000);
   };
   const { mime, ext } = pickType();
-  const recorder = new MediaRecorder(canvas.captureStream(FPS), mime ? { mimeType: mime, videoBitsPerSecond: 6_000_000 } : undefined);
+  const recorder = new MediaRecorder(canvas.captureStream(CAPTURE_FPS), mime ? { mimeType: mime, videoBitsPerSecond: 6_000_000 } : undefined);
   const chunks: Blob[] = [];
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   map.on('render', draw);
   map.triggerRepaint();
-  rec = { recorder, chunks, canvas, off: () => map.off('render', draw), name: `${name}.${ext}` };
+  const off = () => {
+    map.off('render', draw);
+    watch.disconnect();
+  };
+  rec = { recorder, chunks, canvas, off, name: `${name}.${ext}` };
 }
 
 /** 始めのタイトル：画面の真ん中に、暗い帯と大きな経路名・日時（alpha で消していく） */
@@ -102,12 +123,23 @@ function drawTitle(ctx: CanvasRenderingContext2D, lines: string[], alpha: number
   ctx.restore();
 }
 
+/** 切り詰めた字幕（字体・幅・文字ごと）。字幕は毎コマ描くが、変わるのは時刻くらいなので、同じものは測り直さない */
+const fitted = new Map<string, string>();
 /** 幅に収まらない字幕は末尾を「…」にする */
 function fit(ctx: CanvasRenderingContext2D, text: string, maxW: number): string {
-  if (ctx.measureText(text).width <= maxW) return text;
-  let s = text;
-  while (s.length > 1 && ctx.measureText(`${s}…`).width > maxW) s = s.slice(0, -1);
-  return `${s}…`;
+  const key = `${ctx.font}|${maxW}|${text}`;
+  let out = fitted.get(key);
+  if (out == null) {
+    out = text;
+    if (ctx.measureText(text).width > maxW) {
+      let s = text;
+      while (s.length > 1 && ctx.measureText(`${s}…`).width > maxW) s = s.slice(0, -1);
+      out = `${s}…`;
+    }
+    if (fitted.size >= 200) fitted.clear();
+    fitted.set(key, out);
+  }
+  return out;
 }
 
 /** 録画を止めて保存する（save が false なら捨てる） */

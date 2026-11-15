@@ -4,11 +4,11 @@
  */
 import { Marker } from 'maplibre-gl';
 import type { FeatureCollection } from 'geojson';
-import { formatDistance, type LngLat } from '../geo';
+import { bisect, formatDistance, type LngLat } from '../geo';
 import { putTrack, type Track, type TrackPoint } from '../track/db';
 import { applyTrim, detectIdle, shownOf, suggestedRange, summarize, trackTimes, type IdleSuggestion, type TrimRange } from '../track/trim';
-import { $, fmtClock, fmtM, fmtMin, h } from '../ui/dom';
-import { emptyFC, lineFC, map, src } from './mapView';
+import { $, fmtClock, fmtM, fmtMin, h, setText } from '../ui/dom';
+import { emptyFC, lineFC, map, setSourceData } from './mapView';
 import { refreshTrackList } from './tracks';
 import { updateNav } from './nav';
 import { recorder, renderTrack, updateRecButton, viewingTrack } from './recording';
@@ -21,11 +21,16 @@ let draft: { key: string; start: number; end: number; idle: IdleSuggestion | nul
 
 const keyOf = (t: Track, all: TrackPoint[]) => `${t.id}:${all.length}:${t.trim?.start ?? ''}:${t.trim?.end ?? ''}`;
 
-/** 保存した範囲の、全部の点の番号 */
+/** 保存した範囲の、全部の点の番号（始めは範囲の始めの時刻から後の最初の点、終わりは範囲の終わりの時刻までの最後の点） */
 function savedIndices(t: Track, all: TrackPoint[]): { start: number; end: number } {
-  const start = t.trim?.start != null ? Math.max(0, all.findIndex((p) => p.t >= t.trim!.start!)) : 0;
-  let end = all.length - 1;
-  if (t.trim?.end != null) while (end > 0 && all[end].t > t.trim.end) end--;
+  const time = (i: number) => all[i].t;
+  let start = 0;
+  if (t.trim?.start != null) {
+    // 時刻はミリ秒の整数なので、「始めの時刻より前の最後の点」の次が、始めの時刻から後の最初の点
+    const i = bisect(all.length, time, t.trim.start - 1) + 1;
+    start = i < all.length ? i : 0;
+  }
+  const end = t.trim?.end != null ? Math.max(0, bisect(all.length, time, t.trim.end)) : all.length - 1;
   return { start, end: Math.max(start, end) };
 }
 
@@ -49,12 +54,32 @@ function currentDraft() {
 }
 
 // ---------- 地図 ----------
-let markers: Marker[] = [];
-function endMarker(kind: 'start' | 'end', p: TrackPoint): Marker {
+/** 範囲の始めと終わりの印。作り直さずに持ち続け、位置と札の時刻だけ変える（つまみを動かすあいだは何度も動かすため） */
+interface EndMarker {
+  kind: 'start' | 'end';
+  marker: Marker;
+  tag: HTMLElement;
+  onMap: boolean;
+}
+function endMarker(kind: 'start' | 'end'): EndMarker {
   const el = h('div', `trk-end ${kind}`);
-  el.append(h('div', 'pin'), h('div', 'tag', `${kind === 'start' ? '開始' : '終了'} ${fmtClock(p.t)}`));
+  const tag = h('div', 'tag');
+  el.append(h('div', 'pin'), tag);
   // 札は印の右に（ルートの出発地・目的地の札は印の下なので、重ならないように）
-  return new Marker({ element: el, anchor: 'left', offset: [-7, 0] }).setLngLat([p.lng, p.lat]).addTo(map);
+  return { kind, marker: new Marker({ element: el, anchor: 'left', offset: [-7, 0] }), tag, onMap: false };
+}
+const ends = [endMarker('start'), endMarker('end')] as const;
+/** 印を点 p に置く（null なら外す） */
+function placeEnd(m: EndMarker, p: TrackPoint | null) {
+  if (!p) {
+    if (m.onMap) m.marker.remove();
+    m.onMap = false;
+    return;
+  }
+  m.marker.setLngLat([p.lng, p.lat]);
+  setText(m.tag, `${m.kind === 'start' ? '開始' : '終了'} ${fmtClock(p.t)}`);
+  if (!m.onMap) m.marker.addTo(map);
+  m.onMap = true;
 }
 
 const coordsOf = (pts: TrackPoint[]) => pts.map((p): LngLat => [p.lng, p.lat]);
@@ -64,22 +89,23 @@ const coordsOf = (pts: TrackPoint[]) => pts.map((p): LngLat => [p.lng, p.lat]);
  * 記録中は全部の点を赤い線に
  */
 export function drawTrackLine() {
-  for (const m of markers) m.remove();
-  markers = [];
   const cur = currentDraft();
   if (!cur) {
-    src('track')?.setData(lineFC(coordsOf(state.shown?.points ?? [])));
-    src('track-out')?.setData(emptyFC);
+    for (const m of ends) placeEnd(m, null);
+    setSourceData('track', lineFC(coordsOf(state.shown?.points ?? [])));
+    // 範囲の外の線は、ふだん空のまま（記録中に30秒ごとに空を入れ直さないよう、setSourceData で）
+    setSourceData('track-out', emptyFC);
     return;
   }
   const { all, d } = cur;
-  src('track')?.setData(lineFC(coordsOf(all.slice(d.start, d.end + 1))));
+  setSourceData('track', lineFC(coordsOf(all.slice(d.start, d.end + 1))));
   const outside = [all.slice(0, d.start + 1), all.slice(d.end)].filter((s) => s.length > 1).map(coordsOf);
   const fc: FeatureCollection = outside.length
     ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: outside } }] }
     : emptyFC;
-  src('track-out')?.setData(fc);
-  markers = [endMarker('start', all[d.start]), endMarker('end', all[d.end])];
+  setSourceData('track-out', fc);
+  placeEnd(ends[0], all[d.start]);
+  placeEnd(ends[1], all[d.end]);
 }
 
 // ---------- 行程タブの欄 ----------
@@ -134,15 +160,23 @@ export function renderTrimEditor() {
   saveBtn.disabled = !changed;
 }
 
-/** 調整中の範囲を動かして、地図と欄に出す（まだ保存しない） */
+/** 範囲を動かしたあと、地図と欄に出すのを待っている requestAnimationFrame */
+let moveRaf = 0;
+/**
+ * 調整中の範囲を動かして、地図と欄に出す（まだ保存しない）。つまみを動かすと input は1コマに何度も来るので、
+ * 地図の線（setData）と欄の要約（範囲の点を数え直す）は1コマに1回だけ
+ */
 function moveDraft(start: number, end: number) {
   const cur = currentDraft();
   if (!cur) return;
   const last = cur.all.length - 1;
   cur.d.start = Math.max(0, Math.min(start, last - 1));
   cur.d.end = Math.max(cur.d.start + 1, Math.min(end, last));
-  drawTrackLine();
-  renderTrimEditor();
+  moveRaf ||= requestAnimationFrame(() => {
+    moveRaf = 0;
+    drawTrackLine();
+    renderTrimEditor();
+  });
 }
 
 startInput.addEventListener('input', () => {
@@ -207,7 +241,8 @@ export function offerTrim(track: Track) {
   const shown = state.shown;
   if (!shown || shown.track.id !== track.id) return;
   const all = shown.all;
-  const idle = detectIdle(all, track.startedAt, track.endedAt);
+  // 止まっていた時間は、範囲の欄（調整中の範囲）を作ったときに求めてある
+  const idle = currentDraft()?.d.idle;
   if (!idle) return;
   const range = suggestedRange(all, idle);
   const times = trackTimes({ ...track, trim: range });

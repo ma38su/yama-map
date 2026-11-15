@@ -6,8 +6,8 @@
  *  - 空の様子（晴れ・曇り）と雲の量：歩いたマス目の1時間ごとの天気（Open-Meteo の解析値。予報モデルの計算）
  * リプレイの雲・雨・雪と、行程・リプレイの天気の表示に使う（リプレイのときには取りに行かない）
  */
-import { distance, type LngLat } from '../geo';
-import { cellCenter, unpackWeather, weatherAt, type HourlyWeather, type StoredWeather, type WeatherAt } from '../nav/weather';
+import { bisect, distance, type LngLat } from '../geo';
+import { cellCenter, cellKey, unpackWeather, weatherAt, type HourlyWeather, type StoredWeather, type WeatherAt } from '../nav/weather';
 import type { TrackPoint } from './db';
 
 /** 歩いた場所の、その時刻までの1時間の雨（解析雨量の階級） */
@@ -58,15 +58,12 @@ export function sliceHourly(h: HourlyWeather, from: number, to: number): HourlyW
 export function positionAt(points: TrackPoint[], t: number): LngLat | null {
   if (!points.length) return null;
   if (t <= points[0].t) return [points[0].lng, points[0].lat];
-  for (let i = 1; i < points.length; i++) {
-    const b = points[i];
-    if (b.t < t) continue;
-    const a = points[i - 1];
-    const f = b.t > a.t ? (t - a.t) / (b.t - a.t) : 0;
-    return [a.lng + (b.lng - a.lng) * f, a.lat + (b.lat - a.lat) * f];
-  }
-  const last = points[points.length - 1];
-  return [last.lng, last.lat];
+  const i = bisect(points.length, (k) => points[k].t, t);
+  const a = points[i];
+  const b = points[i + 1];
+  if (!b) return [a.lng, a.lat];
+  const f = b.t > a.t ? (t - a.t) / (b.t - a.t) : 0;
+  return [a.lng + (b.lng - a.lng) * f, a.lat + (b.lat - a.lat) * f];
 }
 
 // ---------- 解析雨量 ----------
@@ -255,15 +252,24 @@ const isWetCode = (c: number | null) => c != null && c >= 51;
 
 export function recordedWeather(rec: TrackWeather): RecordedWeather {
   const cells = Object.entries(rec.analysis?.cells ?? {})
-    .map(([k, s]) => ({ center: cellCenter(k), h: unpackWeather(s) }))
-    .filter((c): c is { center: LngLat; h: HourlyWeather } => c.h != null);
+    .map(([k, s]) => ({ key: k, center: cellCenter(k), h: unpackWeather(s) }))
+    .filter((c): c is { key: string; center: LngLat; h: HourlyWeather } => c.h != null);
+  const byKey = new Map(cells.map((c) => [c.key, c]));
   const obs = rec.amedas?.obs ?? [];
   const station = rec.amedas?.station ?? null;
   const rain = rec.rain?.samples ?? [];
+  /** 地点の解析値：その地点のマス目のもの（歩いた所にはある）。なければ一番近いマス目のもの */
   const analyzed = (lngLat: LngLat, t: number) => {
     if (!cells.length) return null;
-    const near = cells.reduce((a, b) => (distance(lngLat, b.center) < distance(lngLat, a.center) ? b : a));
-    return weatherAt(near.h, t);
+    let near = byKey.get(cellKey(lngLat));
+    if (!near) {
+      let best = Infinity;
+      for (const c of cells) {
+        const d = distance(lngLat, c.center);
+        if (d < best) [best, near] = [d, c];
+      }
+    }
+    return weatherAt(near!.h, t);
   };
   const observed = (t: number) => nearestInTime(obs, t, 10 * 60_000);
   /** 時刻 t の雨：t を含む1時間の解析雨量（t のあと1時間以内で一番近い時刻のもの） */
@@ -274,7 +280,8 @@ export function recordedWeather(rec: TrackWeather): RecordedWeather {
   };
   /** アメダスの気温を、歩いた場所の標高に補正する */
   const correct = (temp: number, ele?: number | null) => (ele == null || !station ? temp : temp - (ele - station.alt) * LAPSE_RATE);
-  const actual = (lngLat: LngLat, t: number, ele?: number | null): ActualWeather | null => {
+  /** 実際の天気と、それを決めるのに使った解析値・アメダスの値（at() でも使うので、引き直さずに返す） */
+  const combine = (lngLat: LngLat, t: number, ele?: number | null) => {
     const a = analyzed(lngLat, t);
     const r = rainAt(t);
     const o = observed(t);
@@ -287,13 +294,14 @@ export function recordedWeather(rec: TrackWeather): RecordedWeather {
     if (r && r.cls === 0 && isWetCode(code)) code = 3;
     if (r && r.cls > 0 && !isWetCode(code)) code = 61;
     if (snow) code = 71;
-    return { code, rainCls: r ? r.cls : null, snow, temp, wind: o?.wind ?? a?.wind ?? null };
+    const x: ActualWeather = { code, rainCls: r ? r.cls : null, snow, temp, wind: o?.wind ?? a?.wind ?? null };
+    return { x, a, o };
   };
   return {
     at(lngLat, t, ele) {
-      const x = actual(lngLat, t, ele);
-      if (!x) return null;
-      const a = analyzed(lngLat, t);
+      const c = combine(lngLat, t, ele);
+      if (!c) return null;
+      const { x, a, o } = c;
       const wet = x.rainCls != null ? x.rainCls > 0 : isWetCode(x.code);
       return {
         pop: null,
@@ -302,10 +310,10 @@ export function recordedWeather(rec: TrackWeather): RecordedWeather {
         cloud: a?.cloud ?? (wet ? 95 : 0),
         temp: x.temp,
         wind: x.wind,
-        dir: observed(t)?.dir ?? a?.dir ?? null,
+        dir: o?.dir ?? a?.dir ?? null,
       };
     },
-    actual,
+    actual: (lngLat, t, ele) => combine(lngLat, t, ele)?.x ?? null,
     station,
     summary(from, to, ele) {
       const inRain = rain.filter((s) => s.t > from && s.t <= to + 3_600_000);

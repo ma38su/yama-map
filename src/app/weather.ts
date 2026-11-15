@@ -64,6 +64,7 @@ document.addEventListener('visibilitychange', () => {
 function persist() {
   clearTimeout(persistTimer);
   persistTimer = 0;
+  nearestCached.clear();
   const now = Date.now();
   for (const [k, v] of cache) if (now - v.at > KEEP_MS) cache.delete(k);
   if (cache.size > KEEP_CELLS) {
@@ -109,6 +110,7 @@ async function flush() {
   try {
     const list = await fetchForecast(keys.map(cellCenter), AbortSignal.timeout(15_000));
     keys.forEach((k, i) => list[i] && cache.set(k, { h: list[i], at: Date.now() }));
+    nearestCached.clear();
     failStreak = 0;
     schedulePersist();
     updateNav();
@@ -153,18 +155,28 @@ export function weatherFor(lngLat: LngLat, time: number): WeatherAt | null {
   return h ? weatherAt(h, time) : null;
 }
 
+/**
+ * 計画のリプレイで、端末に予報のないマス目の代わりに使う予報（マス目ごと。null は20km以内にもない）。
+ * 雲や雨を描くたびに何十マスも引くので、そのたびに全部の予報を見直さないように覚えておき、予報が変わったら捨てる
+ */
+const nearestCached = new Map<string, HourlyWeather | null>();
+
 /** 計画のリプレイの天気：端末に残っている予報だけを使う（なければ一番近い（20km以内）マス目の予報。取りには行かない） */
 export const cachedForecastSource: WeatherSource = (lngLat, time) => {
-  let hit = cache.get(cellKey(lngLat));
-  if (!hit) {
-    let best = Infinity;
+  const key = cellKey(lngLat);
+  let h = cache.get(key)?.h ?? nearestCached.get(key);
+  if (h === undefined) {
+    const [x0, y0] = cellCenter(key);
+    let best = 0.2;
+    h = null;
     for (const [k, v] of cache) {
       const [x, y] = cellCenter(k);
-      const d = Math.hypot(x - lngLat[0], y - lngLat[1]);
-      if (d < best && d < 0.2) [best, hit] = [d, v];
+      const d = Math.hypot(x - x0, y - y0);
+      if (d < best) [best, h] = [d, v.h];
     }
+    nearestCached.set(key, h);
   }
-  return hit ? weatherAt(hit.h, time) : null;
+  return h ? weatherAt(h, time) : null;
 };
 
 /** 空や雲・雨を合わせる時刻：今、リプレイ中は再生中の時刻 */
@@ -181,8 +193,11 @@ export function centerWeather(): WeatherAt | null {
 const GRID_R = 4;
 const GRID_N = GRID_R * 2 + 1;
 const IMG = 192;
-/** 雲の模様（タイル状につながる値ノイズ）。雲量に合わせてこの模様を切り取る */
-const noise = makeNoise(IMG, 7);
+/**
+ * 雲の模様（タイル状につながる値ノイズ）。雲量に合わせてこの模様を切り取る。
+ * 作るのに15万回ほど計算するので、使うとき（リプレイで初めて雲を描くとき）に作る
+ */
+let noise: Float32Array | null = null;
 /** 描いてある雲：中心のマス目・再生中の時刻・描いた時刻（実時間） */
 let cloudDrawn: { key: string; t: number; at: number } | null = null;
 /**
@@ -230,10 +245,10 @@ const smooth = (e0: number, e1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
-/** 格子の値の双線形補間 */
+/** 格子の値の双線形補間（雲の画像のピクセルごとに呼ぶ） */
 function bilinear(v: number[], ix: number, iy: number, fx: number, fy: number): number {
-  const at = (x: number, y: number) => v[y * GRID_N + x];
-  return (at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) + (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy;
+  const o = iy * GRID_N + ix;
+  return (v[o] * (1 - fx) + v[o + 1] * fx) * (1 - fy) + (v[o + GRID_N] * (1 - fx) + v[o + GRID_N + 1] * fx) * fy;
 }
 
 /**
@@ -262,6 +277,7 @@ function drawClouds(center: [number, number], t: number): { image: ImageData; co
   cloudFlow = { t, ox, oy };
   const cloudGrid = grid.map((w) => w.cloud);
   const precipGrid = grid.map((w) => w.precip);
+  const pattern = (noise ??= makeNoise(IMG, 7));
   const img = new ImageData(IMG, IMG);
   for (let y = 0; y < IMG; y++) {
     const gy = Math.max(0, Math.min(GRID_N - 1.001, (y / IMG) * GRID_N - 0.5));
@@ -274,7 +290,7 @@ function drawClouds(center: [number, number], t: number): { image: ImageData; co
       const c = bilinear(cloudGrid, ix, iy, fx, fy) / 100;
       const nx = (((Math.round(x - ox) % IMG) + IMG) % IMG);
       const ny = (((Math.round(y - oy) % IMG) + IMG) % IMG);
-      const n = noise[ny * IMG + nx];
+      const n = pattern[ny * IMG + nx];
       // 雲量が多いほど模様の多くを雲にする
       const density = smooth(1 - c - 0.12, 1 - c + 0.18, n);
       const grey = 250 - Math.min(1, bilinear(precipGrid, ix, iy, fx, fy) / 3) * 90;
@@ -335,15 +351,24 @@ let cloudTimer = 0;
 
 export function updateWeatherLayers(force = false) {
   const show = fxOn();
-  const layerOn = !!map.getLayer('weather-cloud');
-  if (layerOn && show !== cloudShown) {
-    cloudShown = show;
-    map.setLayoutProperty('weather-cloud', 'visibility', show ? 'visible' : 'none');
-  }
   if (!show) updateRain(false);
   else if (force) recountRain();
   else scheduleRain();
-  if (!show || !layerOn) return;
+  if (!map.getLayer('weather-cloud')) return;
+  if (!show) {
+    if (cloudShown) {
+      cloudShown = false;
+      cloudDrawn = null;
+      map.setLayoutProperty('weather-cloud', 'visibility', 'none');
+    }
+    return;
+  }
+  // 地図が動いている途中（リプレイを始めて出発地へ動くあいだ・視点を変えるあいだ・指で動かしているあいだ）は描かない。
+  // 動き終えたとき（moveend）に描く。リプレイが追いかける jumpTo は「動いている途中」にならないので、再生中は描ける
+  if (map.isMoving()) {
+    if (force) cloudDrawn = null;
+    return;
+  }
   const c = map.getCenter();
   const center: [number, number] = [Math.round(c.lng / WEATHER_CELL_DEG), Math.round(c.lat / WEATHER_CELL_DEG)];
   const key = center.join(',');
@@ -367,6 +392,11 @@ export function updateWeatherLayers(force = false) {
   (map.getSource('weather-cloud') as import('maplibre-gl').ImageSource | undefined)?.updateImage(
     drawn ? { image: drawn.image, coordinates: drawn.coords } : { image: new ImageData(1, 1) },
   );
+  // 出すのは描いてから（前のリプレイで描いた、別の場所・時刻の雲を見せないため）
+  if (!cloudShown) {
+    cloudShown = true;
+    map.setLayoutProperty('weather-cloud', 'visibility', 'visible');
+  }
 }
 // リプレイが追いかけるための jumpTo（毎コマ）の moveend では数え直さない（雨は下の 'move' でまとめて数え直す）
 map.on('moveend', (e) => {
@@ -384,8 +414,8 @@ map.getContainer().append(rainCanvas);
 /** 画面を区切るマスの数。マスごとに、その場所の予報で降るかどうかを決める */
 const FIELD_X = 6;
 const FIELD_Y = 10;
-/** 画面のマスごとの降水量 (mm/h) と雪かどうか */
-let field: { precip: number; snow: boolean }[] = [];
+/** 画面のマスごとの降水量 (mm/h)・雪かどうか・粒のうち描く割合（粒ごとに求めないように、数え直したときに求めておく） */
+let field: { precip: number; snow: boolean; share: number }[] = [];
 let rainRaf = 0;
 let drops: { x: number; y: number; v: number; len: number; r: number }[] = [];
 let slant = 0;
@@ -401,16 +431,15 @@ const dropsFor = (precip: number) => (precip < 0.1 ? 0 : Math.min(500, 40 + prec
 function updateRain(show: boolean) {
   field = [];
   let max = 0;
-  // 大きさは出すときだけ読む（読むと、直前に書き換えた画面のレイアウトをその場でやり直させるため）
-  const w0 = show ? rainCanvas.clientWidth || window.innerWidth : 0;
-  const h0 = show ? rainCanvas.clientHeight || window.innerHeight : 0;
+  const w0 = show ? rainSize.w || window.innerWidth : 0;
+  const h0 = show ? rainSize.h || window.innerHeight : 0;
   if (show) {
     const t = weatherTime();
     for (let gy = 0; gy < FIELD_Y; gy++) {
       for (let gx = 0; gx < FIELD_X; gx++) {
         const p = map.unproject([((gx + 0.5) / FIELD_X) * w0, ((gy + 0.5) / FIELD_Y) * h0]);
         const w = weatherFor([p.lng, p.lat], t);
-        const cell = { precip: w?.precip ?? 0, snow: !!w && isSnow(w) };
+        const cell = { precip: w?.precip ?? 0, snow: !!w && isSnow(w), share: 0 };
         field.push(cell);
         max = Math.max(max, cell.precip);
       }
@@ -424,6 +453,7 @@ function updateRain(show: boolean) {
     rainCanvas.hidden = true;
     return;
   }
+  for (const cell of field) cell.share = dropsFor(cell.precip) / maxCount;
   // 風で斜めに降る（画面の向きに合わせる）
   const w = centerWeather();
   const windDir = (((w?.dir ?? 0) + 180 - map.getBearing()) * Math.PI) / 180;
@@ -433,7 +463,7 @@ function updateRain(show: boolean) {
     drops.push({ x: Math.random() * w0, y: Math.random() * h0, v: 0.6 + Math.random() * 0.6, len: 8 + Math.random() * 10, r: Math.random() });
   }
   drops.length = maxCount;
-  if (!rainRaf) rainRaf = requestAnimationFrame(rainFrame);
+  resumeRain();
 }
 /**
  * 画面のどこで降っているかの数え直し（マスごとに unproject と天気を引く。3D では地形との交わりを求めるので重い）は、
@@ -458,20 +488,35 @@ map.on('move', () => fxOn() && scheduleRain());
 /** 雨は30コマ/秒で十分なので、それより速くは描かない */
 const RAIN_FRAME_MS = 33;
 let rainLast = 0;
+/**
+ * 雨の canvas の大きさ (CSS px)。毎コマ読むと、直前に書き換えた画面（時計の文字など）のレイアウトを
+ * その場でやり直させるので、変わったときに覚えておく
+ */
+let rainSize = { w: 0, h: 0 };
+new ResizeObserver(([e]) => {
+  rainSize = { w: e.contentRect.width, h: e.contentRect.height };
+}).observe(rainCanvas);
+let rainCtx: CanvasRenderingContext2D | null = null;
+/** 雨を描かないとき：裏に回っている・ポケット表示・シートを全画面に広げている（地図が見えない） */
+const rainPaused = () =>
+  document.visibilityState !== 'visible' || document.body.classList.contains('pocket-on') || document.body.classList.contains('sheet-full');
+/** 降らせるものがあって、止める理由がなければ、雨のループを回す */
+function resumeRain() {
+  if (drops.length && !rainRaf && !rainPaused()) rainRaf = requestAnimationFrame(rainFrame);
+}
 function rainFrame(now: number) {
-  // 裏に回っているとき・ポケット表示のあいだは止める（戻ったら updateWeatherLayers で再開する）
-  rainRaf = drops.length && document.visibilityState === 'visible' && !document.body.classList.contains('pocket-on') ? requestAnimationFrame(rainFrame) : 0;
-  if (now - rainLast < RAIN_FRAME_MS) return;
+  // 描かないあいだはループごと止める（戻ったら、下の見張りで再開する）
+  rainRaf = drops.length && !rainPaused() ? requestAnimationFrame(rainFrame) : 0;
+  if (!rainRaf || now - rainLast < RAIN_FRAME_MS) return;
   const step = Math.min(3, (now - rainLast) / 16.7);
   rainLast = now;
-  // シートを全画面に広げて地図が見えないあいだは描かない
-  if (document.body.classList.contains('sheet-full')) return;
-  const dpr = window.devicePixelRatio || 1;
-  const w = rainCanvas.clientWidth;
-  const h = rainCanvas.clientHeight;
+  const { w, h } = rainSize;
+  if (!w || !h) return;
+  // 細かい雨粒なので、画面の解像度は2倍までで十分（3倍の画面では canvas が倍以上の大きさになるため）
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
   if (rainCanvas.width !== Math.round(w * dpr)) rainCanvas.width = Math.round(w * dpr);
   if (rainCanvas.height !== Math.round(h * dpr)) rainCanvas.height = Math.round(h * dpr);
-  const ctx = rainCanvas.getContext('2d')!;
+  const ctx = (rainCtx ??= rainCanvas.getContext('2d')!);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   ctx.strokeStyle = 'rgba(215, 228, 245, 0.75)';
@@ -491,7 +536,7 @@ function rainFrame(now: number) {
     if (d.x > w) d.x -= w;
     if (d.x < 0) d.x += w;
     // そのマスの降水量に見合う割合の粒だけ描く（降っていないマスでは描かない）
-    if (!cell || d.r >= dropsFor(cell.precip) / maxCount) continue;
+    if (!cell || d.r >= cell.share) continue;
     if (cell.snow) {
       snow.moveTo(d.x + 2, d.y);
       snow.arc(d.x, d.y, 2, 0, Math.PI * 2);
@@ -503,6 +548,6 @@ function rainFrame(now: number) {
   ctx.stroke(rain);
   ctx.fill(snow);
 }
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && drops.length && !rainRaf) rainRaf = requestAnimationFrame(rainFrame);
-});
+// 表に戻った・ポケット表示やシートの全画面をやめたら再開する
+document.addEventListener('visibilitychange', resumeRain);
+new MutationObserver(resumeRain).observe(document.body, { attributes: true, attributeFilter: ['class'] });

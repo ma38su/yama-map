@@ -2,7 +2,7 @@
  * 天気予報（Open-Meteo の1時間ごとの予報。日本付近は気象庁のモデルなどを使う。API キー不要、CC BY 4.0）。
  * 予報は約5kmのマス目（WEATHER_CELL_DEG）ごとに取り、同じマスの地点は同じ予報を使う。
  */
-import type { LngLat } from '../geo';
+import { bisect, type LngLat } from '../geo';
 
 /** 予報を取るマス目の大きさ（度）。予報モデルの細かさ（約5km）に合わせる */
 export const WEATHER_CELL_DEG = 0.05;
@@ -131,8 +131,8 @@ export async function fetchForecast(points: LngLat[], signal?: AbortSignal): Pro
 export function weatherAt(h: HourlyWeather, time: number): WeatherAt | null {
   const n = h.t.length;
   if (!n || time < h.t[0] - 3_600_000 || time > h.t[n - 1] + 3_600_000) return null;
-  let i = 0;
-  while (i < n - 2 && h.t[i + 1] <= time) i++;
+  // 前の時刻（数百本あり、雲や雨を描くたびにマス目ごとに引くので二分探索で）。最後の時刻より後なら、最後の2本のあいだ
+  const i = Math.max(0, Math.min(n - 2, bisect(n, (k) => h.t[k], time)));
   const span = h.t[i + 1] - h.t[i] || 1;
   const f = n > 1 ? Math.max(0, Math.min(1, (time - h.t[i]) / span)) : 0;
   const j = Math.min(n - 1, i + 1);

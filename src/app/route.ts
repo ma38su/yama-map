@@ -54,9 +54,14 @@ export function applyRoutePref() {
   status(`「${state.route.label}」のルートに切り替えました：${formatDistance(span.to - span.from)}`);
 }
 
-export function renderRoute() {
+/** ルートの線と出典（地図の層。地図を読み込む前は何もしないので、読み込んだら main.ts がもう一度呼ぶ） */
+export function renderRouteLine() {
   src('route')?.setData(lineFC(state.route?.coords ?? []));
   if (map.getLayer('osm-credit')) map.setLayoutProperty('osm-credit', 'visibility', state.route?.source === 'osm' ? 'visible' : 'none');
+}
+
+export function renderRoute() {
+  renderRouteLine();
   for (const m of markers) m.remove();
   const list: (PlanPoint | Mark)[] = state.route ? state.route.marks : state.pending;
   let viaNo = 0;

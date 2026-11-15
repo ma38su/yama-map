@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LngLat } from '../src/geo';
 import type { Mark } from '../src/nav/plan';
+import { splitMoving } from '../src/nav/eta';
 import { actualRows } from '../src/track/actual';
 import { generateSampleTrack } from '../src/track/sample';
 
@@ -30,6 +31,25 @@ describe('actualRows', () => {
     const restSum = stops.reduce((s, r) => s + (r.leg?.restMs ?? 0), 0);
     expect(restSum).toBeCloseTo(restRows.reduce((s, r) => s + r.restMs!, 0), -4);
     expect(stops[1].leg!.up).toBeGreaterThan(250);
+  });
+
+  it('区間ごとの休憩と途中の休憩の行は、休憩を区間ごとに全部見るやり方と同じ', () => {
+    // 地点を細かく置いて区間を増やし、区間の境をまたぐ休憩も作る
+    const many = [mark('start', '登山口', 0), ...[15, 30, 45, 60, 75, 90, 105].map((i) => mark('via', `地点${i}`, i)), mark('dest', '下山口', 120)];
+    const got = actualRows(points, many);
+    const { rests } = splitMoving(points);
+    const stopsOf = got.filter((r) => r.kind !== 'rest');
+    for (let k = 1; k < stopsOf.length; k++) {
+      const t0 = points[stopsOf[k - 1].index].t;
+      const t1 = points[stopsOf[k].index].t;
+      const want = rests.reduce((sum, r) => sum + Math.max(0, Math.min(r.t1, t1) - Math.max(r.t0, t0)), 0);
+      expect(stopsOf[k].leg!.restMs).toBe(want);
+    }
+    for (const r of got.filter((x) => x.kind === 'rest')) {
+      let index = 0;
+      while (index < points.length - 1 && points[index + 1].t <= r.t) index++;
+      expect(r.index).toBe(index);
+    }
   });
 
   it('ルートの地点から離れていれば「出発地」「到着地」', () => {

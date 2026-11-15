@@ -3,7 +3,7 @@
  * 歩行30分ごとに休んだ想定の軌跡を作る（最初から入っている「予定」の記録に使う）。
  * 実際の記録が手元になくても、記録の見え方（軌跡・標高グラフ・ペースの分析・リプレイ）を確かめられる。
  */
-import { GainCounter, cumulativeDistances, distance, type LngLat } from '../geo';
+import { GainCounter, bisect, cumulativeDistances, distance, type LngLat } from '../geo';
 import { RouteTimeline, fillElevations, interp } from '../nav/eta';
 import type { Track, TrackPoint } from './db';
 
@@ -11,6 +11,8 @@ export interface SampleOptions {
   /** 歩き始めの時刻 (ms) */
   startMs: number;
   name: string;
+  /** 記録の id（なければ sample-歩き始めの時刻） */
+  id?: string;
   /** 乱数の種。同じ種なら同じ軌跡になる */
   seed?: number;
   /** 何分歩くごとに休むか */
@@ -41,10 +43,9 @@ function random(seed: number): () => number {
   };
 }
 
-/** 経路上の距離 s (m) の地点 */
+/** 経路上の距離 s (m) の地点（区間は二分探索で） */
 function pointAt(coords: LngLat[], dists: number[], s: number): LngLat {
-  let i = 1;
-  while (i < dists.length - 1 && dists[i] < s) i++;
+  const i = Math.max(1, Math.min(dists.length - 1, bisect(dists.length, (k) => dists[k], s) + 1));
   const span = dists[i] - dists[i - 1];
   const f = span > 0 ? Math.max(0, Math.min(1, (s - dists[i - 1]) / span)) : 0;
   const [a, b] = [coords[i - 1], coords[i]];
@@ -63,7 +64,7 @@ export function generateSampleTrack(
   const filled = fillElevations(eles);
   const timeline = new RouteTimeline(dists, eles);
   const total = dists[dists.length - 1];
-  const id = `sample-${opts.startMs}`;
+  const id = opts.id ?? `sample-${opts.startMs}`;
   const mPerDegLat = 110_574;
   const mPerDegLng = 111_320 * Math.cos((coords[0][1] * Math.PI) / 180);
 

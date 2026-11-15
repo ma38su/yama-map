@@ -7,7 +7,7 @@
  *    記録が少ないうちは、設定したペース（ゆっくり/ふつう/速め）に寄せて推定する。
  * 3. 休憩: 記録の中の立ち止まり時間から「歩行1時間あたりの休憩」を求め、残りの行程に上乗せする。
  */
-import { GainCounter, distance, type LngLat } from '../geo';
+import { GainCounter, bisect, distance, type LngLat } from '../geo';
 
 /** Tobler 関数への係数。日本の登山道・荷物ありの一般的なコースタイムに合わせた値 */
 export const STD_FACTOR = 0.8;
@@ -144,9 +144,28 @@ export class RouteTimeline {
     const hi = Math.min(this.length, Math.max(a, b));
     const g = new GainCounter(3);
     g.push(interp(this.d, this.e, lo));
-    for (let k = 0; k < this.d.length; k++) if (this.d[k] > lo && this.d[k] < hi) g.push(this.e[k]);
+    // 区切りは STEP_M おきなので、範囲の中の区切りの番号は割り算で出る（全区間は見ない）
+    const last = this.d.length - 1;
+    for (let k = Math.floor(lo / STEP_M) + 1; k < last && this.d[k] < hi; k++) g.push(this.e[k]);
     g.push(interp(this.d, this.e, hi));
     return { ascent: g.ascent, descent: g.descent };
+  }
+
+  /**
+   * ペース係数 f で、始点から距離 x (m) までの歩行時間（分）を返す関数。estimate(a, b) の歩行時間は、これの b と a の差と同じ。
+   * ルートの全点の到着予想（グラフの時刻・計画のリプレイ）を、点ごとに between（二分探索6回）を呼ばずに出すため、
+   * 係数をかけた累積を1回だけ作る（区切りは STEP_M おきなので、添字は割り算で出る）
+   */
+  movingMinutes(f: PaceFactors): (x: number) => number {
+    const n = this.d.length;
+    const cum = new Float64Array(n);
+    for (let k = 0; k < n; k++) cum[k] = this.up[k] * f.up + this.flat[k] * f.flat + this.down[k] * f.down;
+    return (x) => {
+      const s = Math.max(0, Math.min(this.length, x));
+      const k = Math.min(n - 2, Math.floor(s / STEP_M));
+      const span = this.d[k + 1] - this.d[k];
+      return cum[k] + (span > 0 ? ((cum[k + 1] - cum[k]) * (s - this.d[k])) / span : 0);
+    };
   }
 }
 
@@ -220,8 +239,18 @@ export interface RestSpan {
   t1: number;
 }
 
-/** 点ごとの累積距離 (m) と累積の歩行時間 (s)、休憩の区間 */
-export function splitMoving(points: TrackSample[]): { cumD: Float64Array; cumMove: Float64Array; rests: RestSpan[] } {
+/** 記録の点ごとの累積距離 (m) と累積の歩行時間 (s)、休憩の区間（splitMoving の結果） */
+export interface Moving {
+  cumD: Float64Array;
+  cumMove: Float64Array;
+  rests: RestSpan[];
+}
+
+/**
+ * 点ごとの累積距離 (m) と累積の歩行時間 (s)、休憩の区間。全部の点の距離を求めるので、同じ記録に何度も使うときは
+ * 1回だけ求めて、analyzePace・paceSegments・actualRows に渡す
+ */
+export function splitMoving(points: TrackSample[]): Moving {
   const cumD = new Float64Array(points.length);
   const cumMove = new Float64Array(points.length);
   const rests: RestSpan[] = [];
@@ -259,9 +288,13 @@ export interface PaceSegment {
  * 記録を一定の距離ごとに区切って、区間ごとのペース（標準時間の何倍で歩いたか）を求める。
  * 区間の長さは、全体を40区間ほどに分ける長さ（100m〜500m）。休憩は歩行時間に含めない。
  */
-export function paceSegments(points: TrackSample[], segmentM?: number): { segments: PaceSegment[]; rests: RestSpan[] } {
+export function paceSegments(
+  points: TrackSample[],
+  segmentM?: number,
+  moving: Moving = splitMoving(points),
+): { segments: PaceSegment[]; rests: RestSpan[] } {
   if (points.length < 2) return { segments: [], rests: [] };
-  const { cumD, cumMove, rests } = splitMoving(points);
+  const { cumD, cumMove, rests } = moving;
   const total = cumD[points.length - 1];
   const step = segmentM ?? Math.max(100, Math.min(500, Math.round(total / 40 / 50) * 50));
   const timeline = new RouteTimeline(Array.from(cumD), points.map((p) => p.ele));
@@ -285,7 +318,8 @@ export function paceSegments(points: TrackSample[], segmentM?: number): { segmen
   return { segments, rests };
 }
 
-export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal', now = Date.now()): PaceStats {
+/** moving は splitMoving(points) の結果（求めてあれば渡す） */
+export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal', now = Date.now(), moving?: Moving): PaceStats {
   const prior = PACE_PRESETS[preset].factor;
   const empty: PaceStats = {
     factors: defaultFactors(preset),
@@ -301,14 +335,9 @@ export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal'
   };
   if (points.length < 2) return empty;
 
-  // 1) 生の点列から歩行時間と休憩時間を分ける
-  const { cumD, cumMove, rests } = splitMoving(points);
-  let restS = rests.reduce((sum, r) => sum + (r.t1 - r.t0) / 1000, 0);
-  const last = points[points.length - 1];
-  const sinceLast = Math.max(0, (now - last.t) / 1000);
-  // 最後の測位から3分以上動いていなければ今は休憩中。表示には含めるが、休憩率の推定には使わない
-  const restDoneS = restS;
-  if (sinceLast > 180) restS += sinceLast;
+  // 1) 生の点列から歩行時間と休憩時間を分ける（今の休憩は、最後に paceNow が足す）
+  const { cumD, cumMove, rests } = moving ?? splitMoving(points);
+  const restDoneS = rests.reduce((sum, r) => sum + (r.t1 - r.t0) / 1000, 0);
   const total = cumD[points.length - 1];
   const movingS = cumMove[points.length - 1];
 
@@ -343,18 +372,35 @@ export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal'
   const movingMin = movingS / 60;
   const rest = (restDoneS / 60 + PRIOR_REST_PER_MIN * REST_PRIOR_MOVING_MIN) / (movingMin + REST_PRIOR_MOVING_MIN);
 
-  return {
-    factors: { up: cls('up'), flat: cls('flat'), down: cls('down'), rest: clamp(rest, 0, 1) },
-    overall,
-    elapsedMs: Math.max(0, now - points[0].t),
-    movingMs: movingS * 1000,
-    restMs: restS * 1000,
-    stoppedForMs: sinceLast * 1000,
-    distance: total,
-    movingKmh: movingS > 60 ? total / 1000 / (movingS / 3600) : null,
-    climbRate: climbMin > 5 ? (climbM / climbMin) * 60 : null,
-    evidenceMin: sumS,
-  };
+  // 点で決まる分（最後の点の時刻で締めたもの）に、今の時刻の分を足す
+  return paceNow(
+    {
+      factors: { up: cls('up'), flat: cls('flat'), down: cls('down'), rest: clamp(rest, 0, 1) },
+      overall,
+      elapsedMs: 0,
+      movingMs: movingS * 1000,
+      restMs: restDoneS * 1000,
+      stoppedForMs: 0,
+      distance: total,
+      movingKmh: movingS > 60 ? total / 1000 / (movingS / 3600) : null,
+      climbRate: climbMin > 5 ? (climbM / climbMin) * 60 : null,
+      evidenceMin: sumS,
+    },
+    points,
+    now,
+  );
+}
+
+/**
+ * 最後の点の時刻で締めたペース（analyzePace の now を最後の点の時刻にしたもの）を、時刻 now に進める：経過時間と、
+ * 最後の測位から3分以上動いていなければ今は休憩中としてその時間を足す（表示には含めるが、休憩率の推定には使わない）。
+ * 点が増えていなければ、analyzePace をやり直さずにこれだけで今に合わせられる
+ */
+export function paceNow(p: PaceStats, points: TrackSample[], now: number): PaceStats {
+  if (!points.length) return p;
+  const sinceLast = Math.max(0, now - points[points.length - 1].t);
+  const resting = points.length > 1 && sinceLast > 180_000;
+  return { ...p, elapsedMs: Math.max(0, now - points[0].t), restMs: p.restMs + (resting ? sinceLast : 0), stoppedForMs: sinceLast };
 }
 
 export interface LegEstimate {
@@ -391,7 +437,6 @@ export function addEstimates(a: LegEstimate, b: LegEstimate): LegEstimate {
 export interface RoutePosition {
   along: number;
   offset: number;
-  index: number;
 }
 
 /**
@@ -416,19 +461,14 @@ export function projectOnRoute(coords: LngLat[], dists: number[], p: LngLat, hin
       const len2 = dx * dx + dy * dy;
       const t = len2 > 0 ? clamp(-(ax * dx + ay * dy) / len2, 0, 1) : 0;
       const off = Math.hypot(ax + dx * t, ay + dy * t);
-      if (!best || off < best.offset) {
-        best = { along: dists[i - 1] + (dists[i] - dists[i - 1]) * t, offset: off, index: t < 0.5 ? i - 1 : i };
-      }
+      if (!best || off < best.offset) best = { along: dists[i - 1] + (dists[i] - dists[i - 1]) * t, offset: off };
     }
     return best;
   };
   if (hint != null) {
-    // hint の前後 ±600m の範囲を先に探す
-    let lo = 0;
-    let hi = coords.length - 1;
-    while (lo < coords.length - 1 && dists[lo] < hint - 600) lo++;
-    while (hi > 0 && dists[hi] > hint + 600) hi--;
-    const near = search(lo, hi);
+    // hint の前後 ±600m の範囲を先に探す（範囲の端は二分探索で）
+    const at = (i: number) => dists[i];
+    const near = search(Math.max(0, bisect(dists.length, at, hint - 600)), Math.max(0, bisect(dists.length, at, hint + 600)));
     if (near && near.offset < 60) return near;
   }
   return search(1, coords.length - 1);

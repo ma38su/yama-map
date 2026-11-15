@@ -19,7 +19,7 @@ export class BottomSheet {
   private state: SheetState = 'closed';
   /** ノッチ・ステータスバーの高さ。画面の向きが変わったら測り直す */
   private safeTopPx: number | null = null;
-  private drag: { y0: number; h0: number; t0: number; moved: boolean; id: number } | null = null;
+  private drag: { y0: number; h0: number; max: number; t0: number; moved: boolean; id: number } | null = null;
   /** 閉じきったら中身を非表示にするタイマー */
   private hideTimer = 0;
 
@@ -28,6 +28,8 @@ export class BottomSheet {
     grips: HTMLElement[],
     private readonly body: HTMLElement,
     private readonly onChange: (open: boolean) => void,
+    /** 全画面になった・やめたとき（全画面では地図が見えない） */
+    private readonly onFull: (full: boolean) => void = () => undefined,
   ) {
     for (const el of [handle, ...grips]) {
       el.addEventListener('pointerdown', (e) => this.start(e, el));
@@ -76,6 +78,7 @@ export class BottomSheet {
 
   setState(state: SheetState): void {
     const wasOpen = this.isOpen;
+    const wasFull = this.state === 'full';
     this.state = state;
     const open = this.isOpen;
     this.body.hidden = false;
@@ -93,7 +96,9 @@ export class BottomSheet {
         if (!this.isOpen) this.body.hidden = true;
       }, 400);
     }
-    if (open || wasOpen) this.onChange(open);
+    // 開いた・閉じたときだけ（半分⇄全画面では中身は同じなので、作り直させない）
+    if (open !== wasOpen) this.onChange(open);
+    if ((state === 'full') !== wasFull) this.onFull(state === 'full');
   }
 
   /** タップしたとき：最小なら元に戻し、閉じていれば開き、開いていれば閉じる */
@@ -106,7 +111,8 @@ export class BottomSheet {
     if ((e.target as HTMLElement).closest('button:not(#sheet-handle), a, input')) return;
     el.setPointerCapture(e.pointerId);
     this.body.hidden = false;
-    this.drag = { y0: e.clientY, h0: this.body.getBoundingClientRect().height, t0: performance.now(), moved: false, id: e.pointerId };
+    // 全画面の高さはドラッグの始めに1回だけ求める（動かすたびに求めると、直前に変えた高さのレイアウトを毎回やり直させるため）
+    this.drag = { y0: e.clientY, h0: this.body.getBoundingClientRect().height, max: this.heightOf('full'), t0: performance.now(), moved: false, id: e.pointerId };
   }
 
   private move(e: PointerEvent) {
@@ -116,7 +122,7 @@ export class BottomSheet {
     if (!d.moved && Math.abs(dy) < 6) return;
     d.moved = true;
     this.body.classList.add('dragging');
-    this.body.style.height = `${Math.max(0, Math.min(this.heightOf('full'), d.h0 - dy))}px`;
+    this.body.style.height = `${Math.max(0, Math.min(d.max, d.h0 - dy))}px`;
   }
 
   private end(e: PointerEvent) {

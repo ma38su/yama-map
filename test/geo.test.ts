@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   arrowPolygon,
   bbox,
+  bisect,
   bearing,
   cumulativeDistances,
   densify,
@@ -106,6 +107,20 @@ describe('densify', () => {
     // 全長はほぼ変わらない
     const total = (c: [number, number][]) => cumulativeDistances(c).at(-1)!;
     expect(total(out)).toBeCloseTo(total(src), 3);
+  });
+});
+
+describe('bisect', () => {
+  const xs = [0, 10, 10, 20, 35];
+  const at = (i: number) => xs[i];
+  it('x 以下で一番後ろの番号（なければ -1）', () => {
+    expect(bisect(xs.length, at, -1)).toBe(-1);
+    expect(bisect(xs.length, at, 0)).toBe(0);
+    expect(bisect(xs.length, at, 5)).toBe(0);
+    expect(bisect(xs.length, at, 10)).toBe(2);
+    expect(bisect(xs.length, at, 34.9)).toBe(3);
+    expect(bisect(xs.length, at, 99)).toBe(4);
+    expect(bisect(0, at, 1)).toBe(-1);
   });
 });
 

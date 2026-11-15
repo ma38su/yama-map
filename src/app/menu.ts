@@ -219,6 +219,7 @@ export async function ensureBuiltinPlan() {
     start.setHours(BUILTIN_PLAN.start[0], BUILTIN_PLAN.start[1], 0, 0);
     const pace = PACE_PRESETS[BUILTIN_PLAN.pace];
     const { track, points } = generateSampleTrack(r.coords, r.eles, {
+      id: BUILTIN_PLAN.id,
       startMs: start.getTime(),
       name: `予定：${preset.title}（${pace.label}・${BUILTIN_PLAN.restEveryMin}分ごとに${BUILTIN_PLAN.restMin}分休憩）`,
       seed: 1130,
@@ -226,7 +227,7 @@ export async function ensureBuiltinPlan() {
       restEveryMin: BUILTIN_PLAN.restEveryMin,
       restMin: [BUILTIN_PLAN.restMin, BUILTIN_PLAN.restMin],
     });
-    await appendPoints({ ...track, id: BUILTIN_PLAN.id, route: preset.title }, points.map((p) => ({ ...p, trackId: BUILTIN_PLAN.id })));
+    await appendPoints({ ...track, route: preset.title }, points);
     for (const t of tracks) if (t.id.startsWith('sample-')) await deleteTrack(t.id).catch(() => {}); // ロックしていれば残す
     settings.builtinPlan = true;
     saveSettings();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cumulativeDistances, type LngLat } from '../src/geo';
+import { GainCounter, cumulativeDistances, type LngLat } from '../src/geo';
 import {
   RouteTimeline,
   addEstimates,
@@ -8,7 +8,10 @@ import {
   estimateFlat,
   fillElevations,
   interp,
+  paceNow,
+  paceSegments,
   projectOnRoute,
+  splitMoving,
   segmentStdMinutes,
   stdSpeedKmh,
   type PaceFactors,
@@ -63,6 +66,29 @@ describe('RouteTimeline / estimate', () => {
     expect(withRest.totalMin).toBeCloseTo(base.movingMin * (7 / 6), 6);
     expect(base.stdMin).toBeCloseTo(base.movingMin, 6);
   });
+  it('movingMinutes の差は estimate の歩行時間と同じ', () => {
+    const f: PaceFactors = { up: 1.3, flat: 0.9, down: 1.1, rest: 0.2 };
+    const at = tl.movingMinutes(f);
+    for (const [a, b] of [[0, tl.length], [120, 1730], [1499.5, 1500.5], [0, 49], [tl.length - 10, tl.length + 500], [-50, 800]]) {
+      expect(at(b) - at(a)).toBeCloseTo(estimate(tl, Math.max(0, a), b, f).movingMin, 9);
+    }
+  });
+  it('gain は、範囲の中の区切りだけ見ても全部見たときと同じ', () => {
+    // 元のやり方：50m ごとの区切りを全部調べ、範囲の中のものだけ数える
+    const t = tl as unknown as { d: Float64Array; e: Float64Array };
+    const brute = (a: number, b: number) => {
+      const lo = Math.max(0, Math.min(a, b));
+      const hi = Math.min(tl.length, Math.max(a, b));
+      const g = new GainCounter(3);
+      g.push(interp(t.d, t.e, lo));
+      for (let k = 0; k < t.d.length; k++) if (t.d[k] > lo && t.d[k] < hi) g.push(t.e[k]);
+      g.push(interp(t.d, t.e, hi));
+      return { ascent: g.ascent, descent: g.descent };
+    };
+    for (const [a, b] of [[0, tl.length], [100, 1700], [100, 150], [149.9, 150.1], [1600, 200], [0, 0]]) {
+      expect(tl.gain(a, b)).toEqual(brute(a, b));
+    }
+  });
 });
 
 /** line 上を一定速度で歩いた記録を作る。restAt(m) で休憩を入れる */
@@ -107,6 +133,20 @@ describe('analyzePace', () => {
     const p = analyzePace(pts, 'normal', pts[pts.length - 1].t + 10 * 60_000);
     expect(p.stoppedForMs).toBe(10 * 60_000);
     expect(p.restMs).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+  it('最後の点の時刻で締めたペースを paceNow で進めると、その時刻で求めたのと同じ', () => {
+    const pts = walk(1.1, 0.6, 1500, 15);
+    const settled = analyzePace(pts, 'normal', pts[pts.length - 1].t);
+    for (const later of [0, 60_000, 3 * 60_000 + 1, 30 * 60_000]) {
+      const now = pts[pts.length - 1].t + later;
+      expect(paceNow(settled, pts, now)).toEqual(analyzePace(pts, 'normal', now));
+    }
+    // 求めてある splitMoving を渡しても同じ
+    const moving = splitMoving(pts);
+    expect(analyzePace(pts, 'normal', pts[pts.length - 1].t, moving)).toEqual(settled);
+    expect(paceSegments(pts, undefined, moving)).toEqual(paceSegments(pts));
+    // 点が1つ・0個のとき
+    expect(paceNow(analyzePace(pts.slice(0, 1), 'normal', pts[0].t), pts.slice(0, 1), pts[0].t + 5000)).toEqual(analyzePace(pts.slice(0, 1), 'normal', pts[0].t + 5000));
   });
 });
 

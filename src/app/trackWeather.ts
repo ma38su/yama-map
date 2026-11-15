@@ -6,7 +6,7 @@
  *  - 記録を開いたとき・リプレイのときには取りに行かない。開いている記録の天気を、行程・リプレイの表示と雲・雨・雪に渡す
  */
 import type { LngLat } from '../geo';
-import { lngLatToTile } from '../geo';
+import { bisect, lngLatToTile } from '../geo';
 import { log } from '../log';
 import { analysisUrl, cellCenter, cellKey, packWeather, parseForecast, weatherLabel } from '../nav/weather';
 import { getPoints, getTrackWeather, listTracks, putTrackWeather, type Track, type TrackPoint } from '../track/db';
@@ -196,7 +196,7 @@ function collect(track: Track, all: TrackPoint[], final: boolean): Promise<boole
     await putTrackWeather(rec);
     log(`記録したときの天気を残した（${track.id.slice(0, 8)}・${got.join('・')}）`);
     if (shown?.id === track.id) shown = null; // 開いている記録なら読み直す
-    state.revision++;
+    // 描き直すだけ（revision は上げない：点で決まるペース・実績・グラフの覚えは、天気を使わないので捨てさせない）
     updateNav();
     return true;
   });
@@ -260,7 +260,7 @@ export function shownWeather(): RecordedWeather | null {
       .then((r) => {
         if (shown !== entry || !r) return;
         entry.rec = recordedWeather(r);
-        state.revision++;
+        // 描き直すだけ（点で決まる覚えは天気を使わないので、revision は上げない）
         updateNav();
       });
   }
@@ -271,9 +271,11 @@ export function shownWeather(): RecordedWeather | null {
 export function shownEleAt(t: number): number | null {
   const pts = state.shown?.points;
   if (!pts?.length) return null;
-  let best = pts[0];
-  for (const p of pts) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
-  return best.ele;
+  // 時刻の近い前後の点のうち近いほう（リプレイ中は時刻が変わるたびに引くので、全点は見ない）
+  const i = bisect(pts.length, (k) => pts[k].t, t);
+  if (i < 0) return pts[0].ele;
+  const next = pts[i + 1];
+  return next && next.t - t < t - pts[i].t ? next.ele : pts[i].ele;
 }
 
 /** リプレイの雲・雨・雪に渡す、記録したときの天気（標高は時刻ごとに一度だけ引く） */

@@ -5,8 +5,11 @@ import {
   defaultFactors,
   estimate,
   estimateFlat,
+  paceNow,
   projectOnRoute,
+  splitMoving,
   type LegEstimate,
+  type Moving,
   type PaceStats,
   type RoutePosition,
 } from '../nav/eta';
@@ -16,7 +19,7 @@ import type { Track, TrackPoint } from '../track/db';
 import { summarize } from '../track/trim';
 import { sunTimes } from '../nav/sun';
 import { settings } from '../settings';
-import { lineFC, emptyFC, src } from './mapView';
+import { emptyFC, lineFC, map, routeDoneGradient, setSourceData } from './mapView';
 import { hereLngLat, recorder, renderTrack, updateCurrentEle } from './recording';
 import { pocketActive } from './pocket';
 import { markPassed } from './route';
@@ -99,19 +102,33 @@ export function departureTime(): number {
 }
 
 /**
- * 記録のペース分析（analyzePace）を覚えておく。点が増えたとき・設定が変わったときだけ計算し直す。
- * 記録中は経過時間が進むので15秒ごとにも計算し直す。finished なら最後の点の時刻で締める
+ * 記録の点の、歩行と休憩の分け方（累積距離・累積の歩行時間・休憩）。ペース・区間ごとのペース・実績・グラフで
+ * 同じ記録に使うので、同じ点の並び（配列）で、点の数と revision（標高を埋めたなど）が同じなら使い回す
  */
-const paceMemo = new Map<string, PaceStats>();
+const movingMemo = new WeakMap<TrackPoint[], { key: string; value: Moving }>();
+export function movingOf(points: TrackPoint[]): Moving {
+  const key = `${points.length}:${state.revision}`;
+  const hit = movingMemo.get(points);
+  if (hit?.key === key) return hit.value;
+  const value = splitMoving(points);
+  movingMemo.set(points, { key, value });
+  return value;
+}
+
+/**
+ * 記録のペース分析（analyzePace）を覚えておく。点で決まる分（最後の点の時刻で締めたもの）を、点が増えたとき・
+ * 設定が変わったときだけ計算し、今の時刻の分（経過・今の休憩）は呼ぶたびに足す。finished なら最後の点の時刻で締める
+ */
+const paceMemo = new WeakMap<TrackPoint[], { key: string; value: PaceStats }>();
 export function paceOf(points: TrackPoint[], finished = false): PaceStats {
-  const key = `${points[0]?.trackId}:${points.length}:${state.revision}:${settings.pace}:${finished ? 'end' : Math.floor(Date.now() / 15_000)}`;
-  let p = paceMemo.get(key);
+  const key = `${points.length}:${state.revision}:${settings.pace}`;
+  const hit = paceMemo.get(points);
+  let p = hit?.key === key ? hit.value : null;
   if (!p) {
-    p = analyzePace(points, settings.pace, finished && points.length ? points[points.length - 1].t : Date.now());
-    if (paceMemo.size > 8) paceMemo.clear();
-    paceMemo.set(key, p);
+    p = analyzePace(points, settings.pace, points.at(-1)?.t ?? Date.now(), points.length > 1 ? movingOf(points) : undefined);
+    paceMemo.set(points, { key, value: p });
   }
-  return p;
+  return finished ? p : paceNow(p, points, Date.now());
 }
 
 function computeNav(): Nav | null {
@@ -119,10 +136,10 @@ function computeNav(): Nav | null {
   const tl = state.timeline;
   if (!r || !tl) return null;
   const span = routeSpan(r);
-  const here = hereLngLat();
-  const pos = here ? projectOnRoute(r.coords, r.dists, here, state.lastNav?.pos?.along) : null;
-  // 出発時刻を指定しているあいだは計画の確認なので、現在地に関係なく出発地から数える
+  // 出発時刻を指定しているあいだは計画の確認なので、現在地に関係なく出発地から数える（現在地をルートに当てはめもしない）
   const planning = !recorder.recording && !!settings.departAt;
+  const here = planning ? null : hereLngLat();
+  const pos = here ? projectOnRoute(r.coords, r.dists, here, state.lastNav?.pos?.along) : null;
   const onRoute = !planning && !!pos && pos.offset < ON_ROUTE_M && pos.along >= span.from - 100 && pos.along <= span.to + 100;
   // recorder.state は呼ぶたびに作り直すので1回だけ
   const points = recorder.state.points;
@@ -187,10 +204,13 @@ export function planTrack(): { track: Track; points: TrackPoint[] } | null {
   const factors = defaultFactors(settings.pace);
   const startAt = departureTime();
   const points: TrackPoint[] = [];
+  // 各点の到着予想（休憩込み）：出発地からの歩行時間 ×（1 + 休憩の割合）。点ごとに estimate を呼ばずに、累積から引く
+  const moving = tl.movingMinutes(factors);
+  const m0 = moving(span.from);
   r.coords.forEach(([lng, lat], i) => {
     const d = r.dists[i];
     if (d < span.from - 1 || d > span.to + 1) return;
-    const min = d > span.from ? estimate(tl, span.from, d, factors).totalMin : 0;
+    const min = d > span.from ? (moving(d) - m0) * (1 + factors.rest) : 0;
     points.push({ trackId: PLAN_REPLAY_ID, t: startAt + min * 60_000, lng, lat, alt: null, acc: 0, ele: r.eles[i] ?? null });
   });
   if (points.length < 2) return null;
@@ -207,19 +227,37 @@ export function planTrack(): { track: Track; points: TrackPoint[] } | null {
   return { track, points };
 }
 
-/** 歩き終えた部分のルート（灰色の線）と、これからの部分（向きの印）として描いてあるもの。変わらなければ描き直さない（地図の描き直しが起きるため） */
-let doneDrawn: { route: ActiveRoute | null; n: number } = { route: null, n: -1 };
+/** 歩き終えた部分を塗り直すのはこれだけ進んだとき (m)。進む向きの印（これからの部分）を描き直すのはこれだけ進んだとき (m) */
+const DONE_STEP_M = 10;
+const ARROWS_STEP_M = 200;
+/** 歩き終えた部分（灰色）と、進む向きの印を描いた位置。少し進んだだけなら描き直さない（地図の描き直しが起きるため） */
+let doneDrawn: { route: ActiveRoute | null; along: number; arrowsFrom: number } = { route: null, along: -1, arrowsFrom: -1 };
 function renderDone(nav: Nav | null) {
   const r = state.route;
-  let n = 0;
-  if (r && nav?.onRoute) while (n < r.coords.length && r.dists[n] <= nav.fromAlong) n++;
-  if (r === doneDrawn.route && n === doneDrawn.n) return;
-  const done = src('route-done');
-  const ahead = src('route-ahead');
-  if (!done || !ahead) return; // 地図の読み込み前
-  done.setData(r && n ? lineFC(r.coords.slice(0, n)) : emptyFC);
-  ahead.setData(r ? lineFC(r.coords.slice(Math.max(0, n - 1))) : emptyFC);
-  doneDrawn = { route: r, n };
+  if (!map.getLayer('route-line')) return; // 地図の読み込み前
+  const along = r && nav?.onRoute ? nav.fromAlong : 0;
+  const changed = r !== doneDrawn.route;
+  // 歩き終えた部分は、ルートの線を途中まで灰色に塗る（線は作り直さない）
+  if (changed || Math.abs(along - doneDrawn.along) >= DONE_STEP_M) {
+    const total = r?.dists.at(-1) ?? 0;
+    map.setPaintProperty('route-line', 'line-gradient', routeDoneGradient(total > 0 ? along / total : 0));
+    doneDrawn.along = along;
+  }
+  // 進む向きの印は、今の位置から先の線にだけ並べる
+  if (changed || Math.abs(along - doneDrawn.arrowsFrom) >= ARROWS_STEP_M) {
+    let n = 0;
+    if (r) {
+      let hi = r.dists.length;
+      while (n < hi) {
+        const mid = (n + hi) >> 1;
+        if (r.dists[mid] <= along) n = mid + 1;
+        else hi = mid;
+      }
+    }
+    setSourceData('route-ahead', r ? lineFC(r.coords.slice(Math.max(0, n - 1))) : emptyFC);
+    doneDrawn.arrowsFrom = along;
+  }
+  doneDrawn.route = r;
 }
 
 let arrivedNotified = false;

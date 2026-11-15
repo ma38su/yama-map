@@ -47,7 +47,13 @@
             <p class="note" id="depart-note"></p>
             <ol id="timeline" class="timeline"></ol>
             <p class="note" id="plan-total"></p>
-            <div class="row" id="plan-actions"></div>
+            <div class="row" id="plan-actions">
+              <button type="button" class="btn primary" id="plan-btn-alt" hidden>道沿いのルート候補を探す</button>
+              <button type="button" class="btn" id="plan-btn-reverse">逆向き（帰り道）にする</button>
+              <button type="button" class="btn" id="plan-btn-replay">計画をリプレイ</button>
+              <button type="button" class="btn" id="plan-btn-export">GPXで保存</button>
+              <button type="button" class="btn danger" id="plan-btn-clear">ルートを消す</button>
+            </div>
           </section>
           <p class="note" id="plan-empty" hidden>目的地を設定すると、ここに行程と到着予想が出ます。</p>
           <section id="sec-trim" hidden>

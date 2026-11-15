@@ -78,8 +78,12 @@ async function addPhotos(files: File[]) {
             ? { imageOrientation: 'from-image', resizeWidth: Math.round(size.width * k), resizeHeight: Math.round(size.height * k), resizeQuality: 'medium' }
             : { imageOrientation: 'from-image' },
         );
-        [image, thumb] = await Promise.all([shrink(bmp, IMAGE_MAX, false), shrink(bmp, THUMB, true)]);
-        bmp.close();
+        try {
+          [image, thumb] = await Promise.all([shrink(bmp, IMAGE_MAX, false), shrink(bmp, THUMB, true)]);
+        } finally {
+          // 縮められなかったときも、読み込んだ画像のメモリはすぐ手放す
+          bmp.close();
+        }
       } catch {
         unreadable++; // HEIC など、ブラウザが読めない形式
         continue;
@@ -95,8 +99,7 @@ async function addPhotos(files: File[]) {
   } finally {
     setProgress('');
   }
-  loadedFor = null;
-  await renderPhotos();
+  await renderPhotos(true);
   const notes = [
     unplaced ? `${unplaced}枚は撮った時刻が記録と合わないため置けませんでした` : '',
     unreadable ? `${unreadable}枚は読めない形式でした` : '',
@@ -116,44 +119,80 @@ async function shrink(bmp: ImageBitmap, max: number, square: boolean): Promise<B
   canvas.width = Math.round(sw * k);
   canvas.height = Math.round(sh * k);
   canvas.getContext('2d')!.drawImage(bmp, (w - sw) / 2, (hgt - sh) / 2, sw, sh, 0, 0, canvas.width, canvas.height);
-  return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob'))), 'image/jpeg', square ? 0.8 : 0.85));
+  return new Promise((resolve, reject) =>
+    canvas.toBlob(
+      (b) => {
+        // 大きな canvas（1600px で約8MB）は、GC を待たずに手放す
+        canvas.width = 0;
+        canvas.height = 0;
+        if (b) resolve(b);
+        else reject(new Error('toBlob'));
+      },
+      'image/jpeg',
+      square ? 0.8 : 0.85,
+    ),
+  );
 }
 
 // ---------- 地図に出す ----------
 let photos: TrackPhoto[] = [];
-let markers: Marker[] = [];
-let urls: string[] = [];
+/** 地図に出している写真の印と、縮小画像の object URL（写真の id ごと。写真を足した・消したときは、その分だけ作り直す） */
+const shownMarks = new Map<string, { marker: Marker; url: string }>();
+/**
+ * 写真の印を地図から外しているか（リプレイのあいだ）。印は HTML の要素で、地図が動くたびに位置を計算し直すので、
+ * 毎コマ地図を動かすリプレイでは外しておく（リプレイ中は要らない。ルートの地点の印は残す）
+ */
+let marksHidden = false;
+
+/** 写真の印を地図に出す・外す（リプレイを始めたら外し、終えたら戻す） */
+export function showPhotoMarks(on: boolean) {
+  if (marksHidden !== on) return;
+  marksHidden = !on;
+  for (const { marker } of shownMarks.values()) {
+    if (on) marker.addTo(map);
+    else marker.remove();
+  }
+}
 let loadedFor: string | null = null;
 /** 読み込みを始めるたびに増やす（読み込みが重なったら、最後に始めたものだけを描く） */
 let loadSeq = 0;
 
-/** 表示中の記録の写真を地図に出す（記録が変わったときだけ読み直す） */
-export async function renderPhotos() {
+/** 表示中の記録の写真を地図に出す（記録が変わったとき・reload なら読み直す） */
+export async function renderPhotos(reload = false) {
   const id = state.shown?.track.id ?? null;
-  if (id === loadedFor) return;
+  if (id === loadedFor && !reload) return;
   loadedFor = id;
   const seq = ++loadSeq;
   const list = id ? await getPhotos(id).catch(() => [] as TrackPhoto[]) : [];
   // 読んでいるあいだに別の記録に変わった・同じ記録を読み直し始めた（写真を続けて足したときなど。古い一覧で上書きしないように）
   if (seq !== loadSeq) return;
-  for (const m of markers) m.remove();
-  for (const u of urls) URL.revokeObjectURL(u);
   photos = list;
-  urls = list.map((p) => URL.createObjectURL(p.thumb));
-  markers = list.map((p, i) => {
+  const keep = new Set(list.map((p) => p.id));
+  for (const [pid, m] of shownMarks) {
+    if (keep.has(pid)) continue;
+    m.marker.remove();
+    URL.revokeObjectURL(m.url);
+    shownMarks.delete(pid);
+  }
+  for (const p of list) {
+    if (shownMarks.has(p.id)) continue;
+    const url = URL.createObjectURL(p.thumb);
     const el = h('button', 'photo-mk');
     el.type = 'button';
     el.setAttribute('aria-label', `${fmtClock(p.t)} の写真`);
     const img = h('img');
-    img.src = urls[i];
+    img.src = url;
     img.alt = '';
     el.append(img);
     el.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      openViewer(i);
+      // 写真を足したり消したりすると並びが変わるので、押したときの並びで開く
+      openViewer(photos.findIndex((x) => x.id === p.id));
     });
-    return new Marker({ element: el, anchor: 'bottom' }).setLngLat([p.lng, p.lat]).addTo(map);
-  });
+    const marker = new Marker({ element: el, anchor: 'bottom' }).setLngLat([p.lng, p.lat]);
+    if (!marksHidden) marker.addTo(map);
+    shownMarks.set(p.id, { marker, url });
+  }
 }
 
 // ---------- 大きく見る ----------
@@ -201,8 +240,7 @@ $('photo-delete').addEventListener('click', async () => {
     return;
   }
   viewer.close();
-  loadedFor = null;
-  await renderPhotos();
+  await renderPhotos(true);
 });
 viewer.addEventListener('click', (e) => {
   if (e.target === viewer) viewer.close();

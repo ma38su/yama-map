@@ -10,6 +10,28 @@ export const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, t
   if (text != null) el.textContent = text;
   return el;
 };
+/** 文字が変わったときだけ書き換える（同じ文字でも入れ直すと、文字の節が作り直されてレイアウトのやり直しになるため） */
+export const setText = (el: HTMLElement, text: string) => {
+  if (el.textContent !== text) el.textContent = text;
+};
+
+/** renderInto で組み立てた中身の HTML（入れ物ごと） */
+const builtHtml = new WeakMap<HTMLElement, string>();
+/**
+ * el の中身を、build で組み立てたものに差し替える。前に組み立てたものと HTML が同じなら差し替えない
+ * （30秒ごとの描き直しで中身が変わっていないときに、レイアウト・描き直し・読み上げのやり直しをせず、押している最中のボタンも外さない）。
+ * el の中身はこれでだけ組み立てること（ほかで書き換えても、同じものを組み立てたときは差し替わらない）。
+ * 組み立てたものは捨てることがあるので、中のボタンのリスナーは el に1つ付けて、data 属性で見分ける。差し替えたら true
+ */
+export function renderInto(el: HTMLElement, build: (into: HTMLElement) => void): boolean {
+  const next = document.createElement('div');
+  build(next);
+  const html = next.innerHTML;
+  if (builtHtml.get(el) === html) return false;
+  builtHtml.set(el, html);
+  el.replaceChildren(...next.childNodes);
+  return true;
+}
 export const fmtM = (m: number | null | undefined) => (m == null ? '–' : `${Math.round(m).toLocaleString('ja-JP')} m`);
 export const fmtClock = (ms: number) => {
   const d = new Date(ms);

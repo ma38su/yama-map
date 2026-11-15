@@ -33,15 +33,22 @@ export function addSavedLayer(before?: string) {
   if (layerOn('saved')) void showSaved(true);
 }
 
+/**
+ * 塗る範囲を作ってあるか。作るには保存した地図のキーを全部読む（数範囲で数万件）ので、出すたびには作らず、
+ * 保存・削除したとき（refreshSaved）だけ作り直す
+ */
+let built = false;
+
 /** 保存した範囲を塗る・消す */
 export async function showSaved(on: boolean) {
   if (!map.getLayer(LAYER)) return;
   map.setLayoutProperty(LAYER, 'visibility', on ? 'visible' : 'none');
-  if (on) await refreshSaved();
+  if (on && !built) await refreshSaved();
 }
 
-/** 保存した範囲を読み直す（保存・削除したあと） */
+/** 保存した範囲を読み直す（保存・削除したあと）。出していなければ、次に出すときに作る */
 export async function refreshSaved() {
+  built = false;
   if (!map.getLayer(LAYER) || !layerOn('saved')) return;
   const keys = await (await caches.open(TILE_CACHE)).keys().catch(() => [] as readonly Request[]);
   const features: Feature<Polygon>[] = [];
@@ -70,4 +77,5 @@ export async function refreshSaved() {
     });
   }
   src(LAYER)?.setData({ type: 'FeatureCollection', features });
+  built = true;
 }

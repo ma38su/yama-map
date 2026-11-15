@@ -8,11 +8,11 @@ import { formatDistance } from '../geo';
 import { paceSegments } from '../nav/eta';
 import { log } from '../log';
 import { backgroundCapable } from '../track/location';
-import { $, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
+import { $, fmtClock, fmtHM, fmtM, fmtMin, h, renderInto, setText } from '../ui/dom';
 import { batteryNow } from './batteryLevel';
-import { geolocate, map, updateDaylight } from './mapView';
-import { isLate, paceOf, refreshNow, type Nav, type Row } from './nav';
-import { recorder } from './recording';
+import { map, updateDaylight } from './mapView';
+import { isLate, movingOf, paceOf, refreshNow, type Nav, type Row } from './nav';
+import { pauseFollow, recorder } from './recording';
 import { whileVisible } from './scheduler';
 import { state } from './state';
 import { updateWeatherLayers } from './weather';
@@ -29,8 +29,6 @@ const RECENT_MS = 20 * 60_000;
 const panel = $('pocket');
 const exitBtn = $<HTMLButtonElement>('pocket-exit');
 let active = false;
-/** ポケット表示にする前に、現在地を追いかけていたか（戻ったら追いかけ直す） */
-let wasFollowing = false;
 
 export const pocketActive = () => active;
 
@@ -39,14 +37,14 @@ export function enterPocket() {
   active = true;
   document.body.classList.add('pocket-on');
   panel.hidden = false;
-  // 現在地を追いかけていると、測位のたびに地図が動いて描き直すので、追いかけるのをやめておく（現在地の印は動く）
-  wasFollowing = geolocate._watchState === 'ACTIVE_LOCK';
-  if (wasFollowing) geolocate._watchState = 'BACKGROUND';
+  // 現在地を追いかけていると、測位のたびに地図が動いて描き直すので、追いかけるのをやめておく（現在地の印は動く。方位センサーは compass.ts が止める）
+  pauseFollow('pocket', true);
   map.stop();
   log('ポケット表示にした');
   // アプリ版は上の時計・電池と下のナビゲーションも隠して、画面全体を黒にする（端から引き出せば一時的に出る）
   if (backgroundCapable) void SystemBars.hide().catch(() => undefined);
   renderPocket();
+  pocketTick.on();
 }
 
 export function exitPocket() {
@@ -54,11 +52,12 @@ export function exitPocket() {
   active = false;
   document.body.classList.remove('pocket-on');
   panel.hidden = true;
+  pocketTick.off();
   cancelHold();
   log('ポケット表示から地図に戻った');
   if (backgroundCapable) void SystemBars.show().catch(() => undefined);
-  // 追いかけていたなら追いかけ直す（BACKGROUND で押すと、今の位置に戻って追いかける）
-  if (wasFollowing && geolocate._watchState === 'BACKGROUND') geolocate.trigger();
+  // 追いかけていたなら追いかけ直す
+  pauseFollow('pocket', false);
   // 止めていた空の色・雨と、地図を今に合わせる。描かずにいた記録の線・カード・行程もここで描く
   updateDaylight();
   updateWeatherLayers();
@@ -91,7 +90,7 @@ function paceView(): PaceView {
     // 直近20分に歩いた区間の倍率を、距離で重み付けして平均する（300m 以上歩いていれば）
     let sum = 0;
     let len = 0;
-    for (const s of paceSegments(pts).segments) {
+    for (const s of paceSegments(pts, undefined, movingOf(pts)).segments) {
       if (s.t1 < now - RECENT_MS) continue;
       sum += s.ratio * (s.d1 - s.d0);
       len += s.d1 - s.d0;
@@ -170,44 +169,47 @@ function rowLine(label: string, row: Row, sunset: number | null): HTMLElement {
   return el;
 }
 
+/** 表示を今に合わせる。組み立てたものが前と同じなら書き換えない（時刻と経過は分までなので、15秒ごとの多くは同じ） */
 function renderPocket() {
   const { track, error, saveFailed } = recorder.state;
   const now = Date.now();
-  $('pocket-clock').textContent = fmtClock(now);
+  setText($('pocket-clock'), fmtClock(now));
   const nav = state.lastNav;
-  const stats = $('pocket-stats');
-  stats.replaceChildren();
-  if (track) {
-    for (const [label, value] of [
-      ['経過', fmtHM((now - track.startedAt) / 60_000)],
-      ['距離', formatDistance(track.distance)],
-      ['登り', fmtM(track.ascent)],
-      ['標高', fmtM(state.currentEle ?? recorder.state.points.at(-1)?.ele)],
-    ]) {
-      stats.append(statTile(label, value));
+  renderInto($('pocket-stats'), (stats) => {
+    if (track) {
+      for (const [label, value] of [
+        ['経過', fmtHM((now - track.startedAt) / 60_000)],
+        ['距離', formatDistance(track.distance)],
+        ['登り', fmtM(track.ascent)],
+        ['標高', fmtM(state.currentEle ?? recorder.state.points.at(-1)?.ele)],
+      ]) {
+        stats.append(statTile(label, value));
+      }
     }
-  }
-  stats.append(...batteryStats(nav));
-  const rows = $('pocket-rows');
-  rows.replaceChildren(paceLine());
-  if (nav) {
-    if (nav.next && nav.next !== nav.dest) rows.append(rowLine('次', nav.next, nav.sunset));
-    if (nav.dest) rows.append(rowLine('目的地', nav.dest, nav.sunset));
-    if (nav.sunset) {
-      const late = !!nav.dest && isLate(nav.dest, nav.sunset);
-      rows.append(h('div', `pocket-sun${late ? ' late' : ''}`, `日没 ${fmtClock(nav.sunset)}${late ? '（到着が日没に近い）' : ''}`));
+    stats.append(...batteryStats(nav));
+  });
+  renderInto($('pocket-rows'), (rows) => {
+    rows.append(paceLine());
+    if (nav) {
+      if (nav.next && nav.next !== nav.dest) rows.append(rowLine('次', nav.next, nav.sunset));
+      if (nav.dest) rows.append(rowLine('目的地', nav.dest, nav.sunset));
+      if (nav.sunset) {
+        const late = !!nav.dest && isLate(nav.dest, nav.sunset);
+        rows.append(h('div', `pocket-sun${late ? ' late' : ''}`, `日没 ${fmtClock(nav.sunset)}${late ? '（到着が日没に近い）' : ''}`));
+      }
     }
-  }
+  });
   // 気をつけること（ルートから離れた・測位できない・保存できない）
   const warn = saveFailed
     ? '記録を端末に保存できていません'
     : error ?? (nav?.offRoute && nav.pos ? `ルートから約 ${formatDistance(nav.pos.offset)} 離れています` : '');
   const warnEl = $('pocket-warn');
   warnEl.hidden = !warn;
-  warnEl.textContent = warn;
+  setText(warnEl, warn);
 }
-// 表示しているあいだは15秒ごと（時刻と経過は分まで）
-whileVisible(TICK_MS, () => active && renderPocket());
+// 15秒ごと（時刻と経過は分まで）。動かすのはポケット表示のあいだだけ
+const pocketTick = whileVisible(TICK_MS, renderPocket);
+pocketTick.off();
 
 // ---------- 地図に戻る（長押し） ----------
 let holdTimer = 0;

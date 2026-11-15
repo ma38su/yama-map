@@ -18,7 +18,7 @@ import { exitPocket, pocketActive } from './pocket';
 import { checkOffRoute } from './offRouteAlert';
 import { renderPhotos } from './photos';
 import { state } from './state';
-import { status } from './status';
+import { renderStatus, status } from './status';
 import { nameFinishedTrack } from './trackNames';
 import { collectFinished, collectWhileRecording } from './trackWeather';
 import { drawTrackLine, offerTrim } from './trimView';
@@ -86,6 +86,27 @@ export function stopGeolocate() {
 }
 
 /**
+ * 地図が見えないあいだ（ポケット表示・シートの全画面）は、現在地を追いかけるのを一時的にやめる
+ * （追いかけていると、測位のたびに地図が動いて、見えない地図を描き直すため。現在地の印は動く）。
+ * 理由ごとに頼み、どれも残っていなくなったら、追いかけていたなら追いかけ直す（BACKGROUND で押すと、今の位置に戻って追いかける）
+ */
+const followPausedBy = new Set<string>();
+let followWasOn = false;
+export function pauseFollow(reason: string, pause: boolean) {
+  if (pause) {
+    if (followPausedBy.has(reason)) return;
+    if (!followPausedBy.size) {
+      followWasOn = geolocate._watchState === 'ACTIVE_LOCK';
+      if (followWasOn) geolocate._watchState = 'BACKGROUND';
+    }
+    followPausedBy.add(reason);
+  } else if (followPausedBy.delete(reason) && !followPausedBy.size) {
+    if (followWasOn && geolocate._watchState === 'BACKGROUND') geolocate.trigger();
+    followWasOn = false;
+  }
+}
+
+/**
  * アプリ版では、画面オフから戻ってもWebViewの位置取得が再開するまで数秒かかり、その間は現在地マークが止まる。
  * 記録中はネイティブ測位がバックグラウンドでも続いているので、WebView側が古いあいだはその位置でマークを動かす。
  */
@@ -108,9 +129,10 @@ function feedNativeFix(fix: Fix | null) {
 document.addEventListener('visibilitychange', () => feedNativeFix(recorder.state.lastFix));
 
 // ---------- 記録 ----------
-let lastRecState = '';
+/** 前に知らせを受けたときの、記録（id と状態）と、エラー・保存の失敗・画面点灯の印 */
+let lastTrackKey = '';
+let lastFlags = '';
 let lastPointCount = 0;
-let lastChecked = '';
 let wasRecording = false;
 export const recorder = new TrackRecorder(dem, (s) => {
   feedNativeFix(s.lastFix);
@@ -119,20 +141,29 @@ export const recorder = new TrackRecorder(dem, (s) => {
   wasRecording = recorder.recording;
   if (s.track) state.shown = { track: s.track, points: s.points, all: s.points };
   else if (state.shown && !recorder.recording) state.shown = null;
-  // 開始・終了・エラーなどはすぐ画面に出す。点が増えただけなら、次にまとめて描き直す
+  // 開始・終了はすぐ全部描き直す。エラー・保存の失敗・画面点灯が変わっただけなら、上の状態表示だけ（GPS が途切れがちだと
+  // エラーが出たり消えたりするので、そのたびに記録の線全体を描き直さない）。点が増えただけなら、次にまとめて描き直す
   // （記録中は測位のたびに呼ばれ、アプリ版では画面を消していても届くため）
-  const recState = `${s.track?.id}:${s.track?.status}:${s.error}:${s.saveFailed}:${s.wakeLock}`;
-  if (recState !== lastRecState) {
-    lastRecState = recState;
-    renderTrack();
-    updateRecButton();
-    updateNav();
-  } else if (s.points.length !== lastPointCount) markTrackStale();
+  const trackKey = `${s.track?.id}:${s.track?.status}`;
+  const flags = `${s.error}:${s.saveFailed}:${s.wakeLock}`;
+  const trackChanged = trackKey !== lastTrackKey;
+  if (trackChanged) {
+    // 記録していないときの clear()（記録を閉じた・別の記録を開いた・範囲を保存した）は、呼んだ側がこのあと描き直すので、ここでは描かない
+    if (s.track || recorder.recording) {
+      renderTrack();
+      updateRecButton();
+      updateNav();
+    }
+  } else {
+    if (flags !== lastFlags) renderStatus();
+    if (s.points.length !== lastPointCount) markTrackStale();
+  }
   // 道迷いの判定は点が届いたらすぐ（画面を消していても知らせるため）
-  if (s.points.length !== lastPointCount || recState !== lastChecked) checkOffRoute(s.points, recorder.recording);
+  if (s.points.length !== lastPointCount || trackChanged) checkOffRoute(s.points, recorder.recording);
   // 記録中は、電波があれば30分ごとに、そこまでの歩いた場所の雨（実際の天気）を残す
   if (recorder.recording && s.points.length !== lastPointCount) collectWhileRecording(s.track, s.points);
-  lastChecked = recState;
+  lastTrackKey = trackKey;
+  lastFlags = flags;
   lastPointCount = s.points.length;
   if (ended) onRecordingEnded(s.track!);
 });
@@ -151,7 +182,7 @@ function onRecordingEnded(t: Track) {
   void nameFinishedTrack(t, recorder.state.points)
     .then((named) => {
       if (!named) return;
-      state.revision++;
+      // 描き直すだけ（点で決まる覚えは経路名を使わないので、revision は上げない）
       updateNav();
       void refreshTrackList();
     })

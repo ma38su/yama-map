@@ -341,9 +341,25 @@ export function reverseRoute(r: ActiveRoute): ActiveRoute {
   };
 }
 
+/**
+ * GPX の経路の点の間隔の下限 (m)。前に残した点からこれより近い点は落とす（最後の点は残す）。
+ * 1秒ごとのログの GPX（数万点）でも、当てはめ・地図の線・グラフ・道迷いの判定・保存が重くならないように
+ */
+const GPX_MIN_STEP_M = 5;
+function thinPoints<T extends { lng: number; lat: number }>(pts: T[], minM: number): T[] {
+  if (pts.length < 3) return pts;
+  const out = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const a = out[out.length - 1];
+    if (distance([a.lng, a.lat], [pts[i].lng, pts[i].lat]) >= minM) out.push(pts[i]);
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
 /** GPX からルートを作る。地点（wpt）は経路に近いものだけ経由地として使う */
 export async function buildGpxRoute(gpx: GpxData, elevation: ElevationFn): Promise<ActiveRoute> {
-  const pts = gpx.lines.flatMap((l) => l.points);
+  const pts = thinPoints(gpx.lines.flatMap((l) => l.points), GPX_MIN_STEP_M);
   if (pts.length < 2) throw new Error('GPXに経路（trk/rte）がありません');
   const hasEle = pts.every((p) => p.ele != null);
   const raw = pts.map((p): LngLat => [p.lng, p.lat]);

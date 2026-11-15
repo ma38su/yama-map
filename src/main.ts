@@ -32,7 +32,7 @@ import './app/offline';
 import { pocketActive } from './app/pocket';
 import './app/perf';
 import { checkUnfinished, recorder, renderTrack, updateRecButton } from './app/recording';
-import { renderRoute } from './app/route';
+import { renderRoute, renderRouteLine } from './app/route';
 import './app/sheetView';
 import './app/transfer';
 import { whileVisible } from './app/scheduler';
@@ -55,7 +55,8 @@ map.on('load', () => {
   // 空の色は1分ごと。裏に回っている間は止め、戻ったらすぐ合わせる
   // ポケット表示のあいだは地図を描かないので止める（戻ったら合わせる）
   whileVisible(60_000, () => !pocketActive() && updateDaylight());
-  renderRoute();
+  // 地図の層に描くもの（地点の印やカードは、読み込みを待たずに下で描いてある）。updateNav は歩き終えた部分の塗り分けのため
+  renderRouteLine();
   renderTrack();
   updateNav();
 });
@@ -67,10 +68,13 @@ document.addEventListener('click', (e) => {
 });
 
 // ---------- レイアウト ----------
+let panelH = '';
 function updatePanelHeight() {
-  // 縮尺・出典の表示位置は、閉じたときのシートの高さに合わせる
-  const ht = $('sheet').getBoundingClientRect().height - $('sheet-body').getBoundingClientRect().height;
-  document.documentElement.style.setProperty('--panel-h', `${Math.round(ht)}px`);
+  // 縮尺・出典の表示位置は、閉じたときのシートの高さに合わせる（シートを引いているあいだは毎フレーム呼ばれるが、値はほぼ変わらない）
+  const ht = `${Math.round($('sheet').getBoundingClientRect().height - $('sheet-body').getBoundingClientRect().height)}px`;
+  if (ht === panelH) return;
+  panelH = ht;
+  document.documentElement.style.setProperty('--panel-h', ht);
 }
 new ResizeObserver(updatePanelHeight).observe($('sheet'));
 renderRoute();

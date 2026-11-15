@@ -137,6 +137,21 @@ export function cumulativeDistances(coords: LngLat[]): number[] {
 }
 
 /**
+ * 小さい順に並んだ n 個の値（i 番目は at(i)）のうち、x 以下で一番後ろの番号。すべて x より大きければ -1。
+ * 時刻や累積距離で、点の並びのどこにいるかを探す（二分探索）
+ */
+export function bisect(n: number, at: (i: number) => number, x: number): number {
+  let lo = -1;
+  let hi = n;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (at(mid) <= x) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
  * 点と点の間が maxStep (m) を超える区間に中間点を補う。
  * 計画ルート（点がまばらなGPX）でも標高グラフ・累積標高を正しく出すため。
  */

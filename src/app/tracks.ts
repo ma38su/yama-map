@@ -20,14 +20,16 @@ import { nameUnnamedTracks, relabelTrack } from './trackNames';
 
 const dialog = $<HTMLDialogElement>('tracks');
 $('btn-tracks').addEventListener('click', () => {
-  void refreshTrackList();
   dialog.showModal();
+  void refreshTrackList();
 });
 dialog.addEventListener('click', (e) => {
   if (e.target === dialog) dialog.close(); // 背景タップで閉じる
 });
 
+/** 記録の画面の一覧を作り直す。閉じていれば何もしない（開くときに必ず作るので。記録を終えたときなどに呼ばれる） */
 export async function refreshTrackList() {
+  if (!dialog.open) return;
   const list = $('track-list');
   const tracks = await listTracks().catch(() => [] as Track[]);
   list.replaceChildren(...tracks.map(trackItem));
@@ -132,7 +134,7 @@ async function renameTrack(t: Track, route: string) {
       status('経路名を保存できませんでした', true);
       return;
     }
-    state.revision++;
+    // 描き直すだけ（点で決まるペース・実績・グラフの覚えは経路名を使わないので、revision は上げない）
     updateNav();
   }
   await refreshTrackList();

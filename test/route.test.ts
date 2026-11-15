@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cumulativeDistances, type LngLat } from '../src/geo';
-import { departureAt, detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, preferredOption, reverseRoute, routeSpan, trailShare, type ActiveRoute, type RouteOption } from '../src/nav/plan';
+import { buildGpxRoute, departureAt, detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, preferredOption, reverseRoute, routeSpan, trailShare, type ActiveRoute, type RouteOption } from '../src/nav/plan';
 import { clipLine, gsiKind, osmKind } from '../src/route/roadTiles';
 import { PROFILES, TrailGraph, overlapRatio, type RouteLine } from '../src/route/trailRouter';
 
@@ -212,6 +212,19 @@ describe('plan', () => {
     // 元のルートは変えない・2回で元に戻る
     expect(route.coords[0]).toEqual(coords[0]);
     expect(reverseRoute(back).marks.map((m) => m.kind)).toEqual(['start', 'via', 'pass', 'dest']);
+  });
+});
+
+describe('buildGpxRoute', () => {
+  it('1秒ごとのログのような細かい点は、5m より近いものを落とす（最初と最後の点は残す）', async () => {
+    // 北へ約1.1m ずつ1000点（約1.1km）。標高つきなので標高タイルは引かない
+    const points = Array.from({ length: 1000 }, (_, i) => ({ lng: 139.4, lat: 36.8 + i * 0.00001, ele: 1000 + i * 0.1 }));
+    const r = await buildGpxRoute({ lines: [{ points }], waypoints: [] }, async () => null);
+    expect(r.coords.length).toBeGreaterThan(150);
+    expect(r.coords.length).toBeLessThan(260);
+    expect(r.coords[0]).toEqual([139.4, 36.8]);
+    expect(r.coords.at(-1)).toEqual([points[999].lng, points[999].lat]);
+    expect(r.dists.at(-1)).toBeCloseTo(cumulativeDistances(points.map((p): LngLat => [p.lng, p.lat])).at(-1)!, -1);
   });
 });
 

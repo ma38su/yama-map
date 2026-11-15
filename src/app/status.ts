@@ -44,6 +44,8 @@ export function renderStatus() {
   } else if (!navigator.onLine) {
     text = 'オフライン（保存済みの地図を表示中）';
   }
+  // 変わったときだけ書き換える（到着予想を描くたびに呼ばれる。aria-live なので、同じ文を書き直すと読み上げ直されることもある）
+  if (el.textContent === text && el.classList.contains('warn') === warn) return;
   el.hidden = !text;
   el.textContent = text;
   el.classList.toggle('warn', warn);

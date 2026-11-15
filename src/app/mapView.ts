@@ -104,7 +104,17 @@ export function setTerrainExaggeration(v: number) {
   saveSettings();
   if (styleReady && settings.terrain) map.setTerrain({ source: 'dem-terrain', exaggeration: v });
 }
-map.addControl(new ScaleControl({ unit: 'metric' }), 'bottom-left');
+const scale = new ScaleControl({ unit: 'metric' });
+map.addControl(scale, 'bottom-left');
+/**
+ * 縮尺の表示を出す・外す。リプレイのあいだは外す（地図が動くたびに、画面の真ん中の2点を地形と交わらせて求め直し、
+ * 幅も書き換えるので毎コマの仕事になるが、傾けて追いかける 3D では縮尺は画面の場所でまちまちで、録画にも入らない）
+ */
+export function showScale(on: boolean) {
+  if (map.hasControl(scale) === on) return;
+  if (on) map.addControl(scale, 'bottom-left');
+  else map.removeControl(scale);
+}
 
 export const emptyFC: FeatureCollection = { type: 'FeatureCollection', features: [] };
 export const lineFC = (coords: LngLat[]): FeatureCollection =>
@@ -114,6 +124,19 @@ export const lineFC = (coords: LngLat[]): FeatureCollection =>
 export const pointFC = (c: LngLat | null): FeatureCollection =>
   c ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: c } }] } : emptyFC;
 export const src = (id: string) => map.getSource(id) as GeoJSONSource | undefined;
+
+/** いま空のソース（空を空に setData しない。setData は中身が同じでも、地図の裏での作り直しと描き直しを起こすため） */
+const emptySources = new Set<string>();
+/** ソースのデータを入れ替える（空のソースに空を入れるときは何もしない）。このソースへの setData はすべてこれで行う */
+export function setSourceData(id: string, data: FeatureCollection) {
+  const source = src(id);
+  if (!source) return;
+  const empty = data.features.length === 0;
+  if (empty && emptySources.has(id)) return;
+  source.setData(data);
+  if (empty) emptySources.add(id);
+  else emptySources.delete(id);
+}
 
 /**
  * 空の色を変えるときに一緒に呼ぶもの（天気：雲量と、雲・雨の表示）。weather.ts が登録する
@@ -176,6 +199,15 @@ export const replayDoneGradient = (progress: number): ExpressionSpecification =>
   'rgba(122, 20, 36, 0)',
 ];
 
+/** ルートの線：歩き終えた部分（線の長さの割合 progress まで）は灰色、これからの部分は青（線を作り直さず、塗り分けだけを変える） */
+export const routeDoneGradient = (progress: number): ExpressionSpecification => [
+  'step',
+  ['line-progress'],
+  '#a7b1bd',
+  Math.max(0, Math.min(1, progress)),
+  '#2563eb',
+];
+
 /** 線の太さ：寄るほど太く（広く見ているときは細く、山道を見分けられるくらいに寄ったら太く） */
 const lineWidth = (z12: number, z17: number): ExpressionSpecification => ['interpolate', ['linear'], ['zoom'], 12, z12, 17, z17];
 
@@ -205,7 +237,12 @@ function arrowImage(): ImageData {
 
 /** ルート・記録・グラフのカーソルを描く層（地図の読み込み後に一度だけ） */
 export function addOverlayLayers() {
-  for (const id of ['route', 'route-done', 'route-ahead', 'track', 'track-out', 'cursor', 'replay', 'replay-dir']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  for (const id of ['route-ahead', 'track', 'track-out', 'cursor', 'replay']) {
+    map.addSource(id, { type: 'geojson', data: emptyFC });
+    emptySources.add(id);
+  }
+  // ルートは、歩き終えた部分を line-progress で塗り分ける（進むたびに線を作り直さない）
+  map.addSource('route', { type: 'geojson', data: emptyFC, lineMetrics: true });
   // リプレイの歩き終えた線は、記録の線全体を置いておき、line-progress で途中まで塗る（進むたびに線を作り直さない）
   map.addSource('replay-done', { type: 'geojson', data: emptyFC, lineMetrics: true });
   // OpenStreetMap 由来のルートを表示しているときだけ出典を出すためのソース
@@ -213,10 +250,9 @@ export function addOverlayLayers() {
   if (!map.hasImage('route-arrow')) map.addImage('route-arrow', arrowImage(), { pixelRatio: 2 });
   const round = { 'line-join': 'round' as const, 'line-cap': 'round' as const };
   map.addLayer({ id: 'osm-credit', type: 'circle', source: 'osm-credit', layout: { visibility: 'none' } });
-  // これからのルート：白い縁取りの青い線と、進む向きの印。歩き終えた部分は灰色で上から塗る
+  // ルート：白い縁取りの青い線と、これからの部分に進む向きの印。歩き終えた部分は灰色に塗り分ける（nav.ts の renderDone）
   map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: round, paint: { 'line-color': '#ffffff', 'line-width': lineWidth(7, 12), 'line-opacity': 0.9 } });
-  map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: round, paint: { 'line-color': '#2563eb', 'line-width': lineWidth(4, 8) } });
-  map.addLayer({ id: 'route-done', type: 'line', source: 'route-done', layout: round, paint: { 'line-color': '#a7b1bd', 'line-width': lineWidth(4, 8) } });
+  map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: round, paint: { 'line-gradient': routeDoneGradient(0), 'line-width': lineWidth(4, 8) } });
   map.addLayer({
     id: 'route-arrows',
     type: 'symbol',
@@ -244,14 +280,16 @@ export function addOverlayLayers() {
   map.addLayer({ id: 'track-casing', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#ffffff', 'line-width': lineWidth(6, 10), 'line-opacity': 0.95 } });
   map.addLayer({ id: 'track-line', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#d6334a', 'line-width': lineWidth(3.5, 6) } });
   map.addLayer({ id: 'replay-done', type: 'line', source: 'replay-done', layout: round, paint: { 'line-gradient': replayDoneGradient(0), 'line-width': 4.5 } });
-  // リプレイの今の位置：赤い丸に、歩いているあいだは進む向きの白い矢じり（地面に置く形。録画にも写るよう地図の層で描く）
+  // リプレイの今の位置：赤い丸に、歩いているあいだは進む向きの白い矢じり（地面に置く形。録画にも写るよう地図の層で描く）。
+  // 丸（点）と矢じり（多角形）は1つのソースに入れて、毎コマの setData を1回にする
   map.addLayer({
     id: 'replay',
     type: 'circle',
     source: 'replay',
+    filter: ['==', ['geometry-type'], 'Point'],
     paint: { 'circle-radius': 12, 'circle-color': '#d6334a', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3, 'circle-pitch-alignment': 'map' },
   });
-  map.addLayer({ id: 'replay-dir', type: 'fill', source: 'replay-dir', paint: { 'fill-color': '#ffffff', 'fill-antialias': true } });
+  map.addLayer({ id: 'replay-dir', type: 'fill', source: 'replay', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#ffffff', 'fill-antialias': true } });
   map.addLayer({
     id: 'cursor',
     type: 'circle',

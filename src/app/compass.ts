@@ -8,9 +8,9 @@ import type { IControl } from 'maplibre-gl';
 import { angleDiff, headingFrom, smoothHeading } from '../nav/heading';
 import { h } from '../ui/dom';
 import { geolocate, map } from './mapView';
+import { pocketActive } from './pocket';
 import { startGeolocate } from './recording';
 import { replayActive } from './replay';
-import { whileVisible } from './scheduler';
 import { status } from './status';
 
 /** 画面の上が向いている方位（北から時計回りの度）。分からなければ null */
@@ -33,7 +33,30 @@ function onOrientation(e: Event) {
   heading = smoothHeading(fromSensor ? heading : null, hd);
   headingAt = Date.now();
   fromSensor = true;
-  schedule();
+  // 1秒に何十回も届くので、扇か地図の向きを変えるほど変わったときだけ描く
+  if (needsRender()) schedule();
+  watchStale();
+}
+
+/** 向きが変わって、扇を書き換えるか地図を回すことになるか（render と同じ閾値） */
+function needsRender(): boolean {
+  if (heading == null) return false;
+  if (headingUp && Date.now() - lastRotateAt >= 300 && Math.abs(angleDiff(map.getBearing(), heading)) >= 4) return true;
+  if (!locating()) return false;
+  if (drawnAngle == null || !cone || cone.hidden) return true;
+  return Math.abs(angleDiff(drawnAngle, heading - map.getBearing())) >= 1.5;
+}
+
+/** 新しい向きが10秒届かなかったら扇を消す（GPS の進行方向だけで立ち止まった・センサーが止まった）。そのころに確かめる */
+let staleTimer = 0;
+function watchStale() {
+  if (staleTimer) return;
+  staleTimer = window.setTimeout(() => {
+    staleTimer = 0;
+    schedule();
+    // まだ新しければ（届き続けている）、新しくなくなるころにもう一度
+    if (heading != null && Date.now() - headingAt < 10_000) watchStale();
+  }, Math.max(500, headingAt + 10_100 - Date.now()));
 }
 
 function listen(on: boolean) {
@@ -57,17 +80,21 @@ async function requestPermission(): Promise<boolean> {
 const locating = () => geolocate._watchState !== 'OFF';
 /**
  * 現在地を出しているあいだ（か進む向きを上にしているあいだ）、画面が表のときだけセンサーを聞く。
- * ポケット表示のあいだは地図を描かないので聞かない（センサーは1秒に何十回も届くため）。
- * リプレイのあいだはカメラをリプレイが動かすので、地図を回すためには聞かない
+ * ポケット表示・シートの全画面のあいだは地図が見えないので聞かない（センサーは1秒に何十回も届くため）。
+ * リプレイのあいだはカメラをリプレイが動かすので、地図を回すためには聞かない。
+ * 現在地のオン・オフ、画面の表裏、ポケット表示・シートの出入り（body の class が変わる）のたびに合わせる
  */
 function syncListening() {
   const want =
     document.visibilityState === 'visible' &&
     !document.body.classList.contains('pocket-on') &&
+    !document.body.classList.contains('sheet-full') &&
     (locating() || (headingUp && !replayActive()));
   listen(want);
   if (!want) hideCone();
+  else schedule();
 }
+new MutationObserver(syncListening).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 geolocate.on('geolocate', (pos) => {
   syncListening();
   // センサーがない（届かない）ときは、歩いている向き（GPS の進行方向）を使う
@@ -77,16 +104,12 @@ geolocate.on('geolocate', (pos) => {
     heading = c.heading;
     headingAt = Date.now();
     schedule();
+    watchStale();
   }
 });
-geolocate.on('trackuserlocationend', syncListening);
+// 現在地ボタンでオン・オフした（MapLibre 6 はオフでも trackuserlocationend を出す）・許可がなかった
+for (const ev of ['trackuserlocationstart', 'trackuserlocationend', 'error'] as const) geolocate.on(ev, syncListening);
 document.addEventListener('visibilitychange', syncListening);
-// 現在地ボタンでオフにしたときのイベントはないので、ときどき確かめる。
-// 向きが届かなくなったとき（GPS の進行方向だけで、立ち止まった）に扇を消すのも、ここで確かめる
-whileVisible(3000, () => {
-  syncListening();
-  schedule();
-});
 
 // ---------- 表示 ----------
 let cone: HTMLDivElement | null = null;
@@ -105,7 +128,7 @@ let drawnAngle: number | null = null;
 function render() {
   frame = 0;
   // ポケット表示のあいだは地図を描かないので、扇も地図の向きも変えない
-  if (document.body.classList.contains('pocket-on')) return;
+  if (pocketActive()) return;
   // 10秒以上新しい向きが届かなければ扇を消す
   const fresh = heading != null && Date.now() - headingAt < 10_000;
   if (locating() && geolocate._dotElement) {

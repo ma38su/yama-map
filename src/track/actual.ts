@@ -2,8 +2,8 @@
  * 記録の実績：出発・途中の地点・休憩・到着を時刻順に並べ、地点のあいだの距離・登り下り・所要時間を出す。
  * 保存した記録を開いたときの「行程」に使う。
  */
-import { GainCounter, cumulativeDistances, distance, type LngLat } from '../geo';
-import { splitMoving } from '../nav/eta';
+import { GainCounter, distance, type LngLat } from '../geo';
+import { splitMoving, type Moving } from '../nav/eta';
 import type { Mark } from '../nav/plan';
 import type { TrackPoint } from './db';
 
@@ -37,11 +37,11 @@ const END_M = 300;
 /** 行程に出す休憩の長さ (ms) */
 const MIN_REST_MS = 3 * 60_000;
 
-export function actualRows(points: TrackPoint[], marks: Mark[] = []): ActualRow[] {
+/** moving は splitMoving(points) の結果（求めてあれば渡す。累積距離もそれを使う） */
+export function actualRows(points: TrackPoint[], marks: Mark[] = [], moving: Moving = splitMoving(points)): ActualRow[] {
   if (points.length < 2) return [];
   const coords = points.map((p): LngLat => [p.lng, p.lat]);
-  const dists = cumulativeDistances(coords);
-  const { rests } = splitMoving(points);
+  const { cumD: dists, rests } = moving;
   const last = points.length - 1;
   const near = (i: number, m: Mark, r: number) => distance(coords[i], m.lngLat) < r;
   const startMark = marks.find((m) => m.kind === 'start');
@@ -65,6 +65,8 @@ export function actualRows(points: TrackPoint[], marks: Mark[] = []): ActualRow[
   stops.push({ kind: 'dest', name: destMark && near(last, destMark, END_M) ? destMark.name : '到着地', index: last });
 
   const rows: ActualRow[] = [];
+  // 休憩も区間も時刻の順なので、休憩は前から順に1回ずつ見る（ri は、前の区間までに終わった休憩を飛ばした位置）
+  let ri = 0;
   for (let k = 0; k < stops.length; k++) {
     const s = stops[k];
     let leg: ActualLeg | null = null;
@@ -74,15 +76,18 @@ export function actualRows(points: TrackPoint[], marks: Mark[] = []): ActualRow[
       for (let i = a; i <= s.index; i++) gain.push(points[i].ele);
       const t0 = points[a].t;
       const t1 = points[s.index].t;
-      const restMs = rests.reduce((sum, r) => sum + Math.max(0, Math.min(r.t1, t1) - Math.max(r.t0, t0)), 0);
-      leg = { dist: dists[s.index] - dists[a], up: gain.ascent, down: gain.descent, ms: t1 - t0, restMs };
-      // 区間の途中の休憩
-      for (const r of rests) {
+      while (ri < rests.length && rests[ri].t1 <= t0) ri++;
+      let restMs = 0;
+      let index = a;
+      for (let j = ri; j < rests.length && rests[j].t0 < t1; j++) {
+        const r = rests[j];
+        restMs += Math.max(0, Math.min(r.t1, t1) - Math.max(r.t0, t0));
+        // 区間の途中の休憩（区間に収まっているもの）を行程に出す
         if (r.t1 - r.t0 < MIN_REST_MS || r.t0 < t0 || r.t1 > t1) continue;
-        let index = a;
         while (index < s.index && points[index + 1].t <= r.t0) index++;
         rows.push({ kind: 'rest', name: '休憩', t: r.t0, restMs: r.t1 - r.t0, index, leg: null });
       }
+      leg = { dist: dists[s.index] - dists[a], up: gain.ascent, down: gain.descent, ms: t1 - t0, restMs };
     }
     rows.push({ ...s, t: points[s.index].t, leg });
   }

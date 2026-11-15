@@ -3,17 +3,18 @@ import { formatDistance, formatDuration, type LngLat } from '../geo';
 import { PACE_PRESETS, estimate } from '../nav/eta';
 import { DEPART_DATE_TIME, DEPART_TIME, routeSpan } from '../nav/plan';
 import { saveSettings, settings } from '../settings';
-import { $, onLongPress, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
+import { $, onLongPress, fmtClock, fmtHM, fmtM, fmtMin, h, renderInto, setText } from '../ui/dom';
 import { BottomSheet } from '../ui/sheet';
 import { actualRows, type ActualRow } from '../track/actual';
+import type { TrackPoint } from '../track/db';
 import { trackTitle } from '../track/names';
 import { trackTimes } from '../track/trim';
 import { forecastHorizon, weatherLabel, type WeatherAt } from '../nav/weather';
-import { emptyFC, fitTo, src } from './mapView';
-import { departureTime, isLate, paceOf, updateNav, type Nav, type Row } from './nav';
+import { emptyFC, fitTo, setSourceData } from './mapView';
+import { departureTime, isLate, movingOf, paceOf, updateNav, type Nav, type Row } from './nav';
 import { pocketActive } from './pocket';
-import { miniProfileFor, profile, updateProfile } from './profileView';
-import { recorder, replayPlan, viewingTrack } from './recording';
+import { miniProfileFor, updateProfile } from './profileView';
+import { pauseFollow, recorder, replayPlan, viewingTrack } from './recording';
 import { clearRoute, exportRoute, removeMark, reverseCurrentRoute, searchAlternativesForGpx } from './route';
 import { state } from './state';
 import { renderTrimEditor } from './trimView';
@@ -158,7 +159,10 @@ export function shownActualKey(): string {
 let actualCache: { key: string; rows: ActualRow[] } | null = null;
 export function shownActual(): ActualRow[] {
   const key = shownActualKey();
-  if (actualCache?.key !== key) actualCache = { key, rows: actualRows(state.shown!.points, state.route?.marks) };
+  if (actualCache?.key !== key) {
+    const points = state.shown!.points;
+    actualCache = { key, rows: actualRows(points, state.route?.marks, movingOf(points)) };
+  }
   return actualCache.rows;
 }
 
@@ -176,7 +180,17 @@ function actualLine(first: ActualRow, last: ActualRow): HTMLElement {
   return el;
 }
 
-/** 開いている記録のカード：出発と到着を1行にまとめ、所要・ペースと、地点の入った小さな標高グラフ */
+/** 開いている記録の標高のまんなか（天気のまとめで、気温を補正するのに使う）。点が変わったときだけ求める */
+let medianEle: { points: TrackPoint[]; n: number; ele: number | null } | null = null;
+function shownMedianEle(points: TrackPoint[]): number | null {
+  if (medianEle?.points !== points || medianEle.n !== points.length) {
+    const eles = points.map((q) => q.ele).filter((v): v is number => v != null).sort((x, y) => x - y);
+    medianEle = { points, n: points.length, ele: eles.length ? eles[Math.floor(eles.length / 2)] : null };
+  }
+  return medianEle.ele;
+}
+
+/** 開いている記録のカード：出発と到着を1行にまとめ、所要・ペース（地点の入った小さな標高グラフは renderCard が足す） */
 function renderActualCard(card: HTMLElement) {
   const { track, points } = state.shown!;
   const rows = shownActual();
@@ -195,8 +209,7 @@ function renderActualCard(card: HTMLElement) {
   if (p && p.evidenceMin > 10) sub.append(h('span', '', `標準の${p.overall.toFixed(2)}倍`));
   // 記録した実際の天気のまとめ：雨の量（解析雨量）と気温（アメダスを、歩いた標高のまんなかに補正）
   const rec = showingPlan() ? null : shownWeather();
-  const eles = points.map((q) => q.ele).filter((v): v is number => v != null).sort((x, y) => x - y);
-  const sum = first && last ? rec?.summary(first.t, last.t, eles.length ? eles[Math.floor(eles.length / 2)] : null) : null;
+  const sum = first && last && rec ? rec.summary(first.t, last.t, shownMedianEle(points)) : null;
   if (sum) {
     const rain = sum.rainMm == null ? '' : sum.rainMm < 0.5 ? '雨なし' : `雨 約${sum.rainMm < 1 ? 1 : Math.round(sum.rainMm)}mm`;
     const temp = sum.minTemp != null && sum.maxTemp != null ? `${Math.round(sum.minTemp)}〜${Math.round(sum.maxTemp)}℃` : '';
@@ -204,8 +217,6 @@ function renderActualCard(card: HTMLElement) {
     sub.append(h('span', '', `${[rain, temp].filter(Boolean).join(' · ')}${from ? `（${from}）` : ''}`));
   }
   card.append(sub);
-  const mini = miniProfileFor(points);
-  if (mini) card.append(mini);
 }
 
 /** 開いている記録の行程：出発・通った地点・休憩・到着の実績 */
@@ -232,65 +243,78 @@ function renderActualTimeline(tl: HTMLElement) {
   }
 }
 
+/**
+ * カード。組み立てたものが前と同じなら差し替えない（開いている記録のカードは、30秒ごとの描き直しでも変わらない）
+ */
 export function renderCard(nav: Nav | null) {
   const card = $('card');
-  card.replaceChildren();
   if (viewingTrack()) {
-    renderActualCard(card);
+    renderInto(card, renderActualCard);
+    // 小さな標高グラフは同じ canvas を使い続ける（組み立てる中身の外に置いて、差し替えたら付け直す。描き直すのは点が変わったときだけ）
+    const mini = miniProfileFor(state.shown!.points);
+    if (mini && mini.parentNode !== card) card.append(mini);
     return;
   }
   if (nav && state.route) {
-    const span = routeSpan(state.route);
-    const title = h('div', 'nav-title');
-    title.append(h('b', '', state.route.name), h('span', '', ` · ${state.route.label} · ${formatDistance(span.to - span.from)}`));
-    card.append(title);
-    if (walking(nav)) card.append(progressBar(nav, span));
-    const { next, dest } = nav;
-    if (next && dest && next !== dest) card.append(navRow('次', next, false, nav.sunset));
-    if (dest) card.append(navRow('目的地', dest, true, nav.sunset));
-    const sub = h('div', 'nav-sub');
-    if (nav.rejoin && dest && !dest.passed) sub.append(h('span', '', `ルートに戻るまで約${fmtMin(nav.rejoin.totalMin)}を含む`));
-    else if (!nav.onRoute && dest && !dest.passed) sub.append(h('span', '', settings.departAt && !recorder.recording ? `${departLabel(nav.startAt)}出発の場合` : '今出発した場合'));
-    if (nav.pace && nav.pace.evidenceMin > 10) sub.append(h('span', '', `実績ペース 標準の${nav.pace.overall.toFixed(2)}倍`));
-    else sub.append(h('span', '', `ペース「${PACE_PRESETS[settings.pace].label}」`));
-    sub.append(h('span', '', `休憩込み`));
-    const pop = maxPop(nav);
-    if (pop != null) sub.append(h('span', pop >= 50 ? 'warn' : '', `降水確率 最大${Math.round(pop)}%`));
-    if (nav.sunset) {
-      const late = dest ? isLate(dest, nav.sunset) : false;
-      sub.append(h('span', late ? 'warn' : '', `日没 ${fmtClock(nav.sunset)}${late ? '（要注意）' : ''}`));
-    }
-    card.append(sub);
+    const route = state.route;
+    renderInto(card, (into) => renderRouteCard(into, nav, route));
     return;
   }
   if (state.shown) {
     const t = state.shown.track;
     const times = trackTimes(t);
-    const tiles = h('div', 'tiles');
-    const values: HTMLElement[] = [];
-    for (const [label, value] of [
-      ['時間', formatDuration((t.status === 'recording' ? Date.now() : times.end) - times.start)],
-      ['距離', formatDistance(t.distance)],
-      ['登り', fmtM(t.ascent)],
-      ['標高', fmtM(state.currentEle ?? state.shown.points.at(-1)?.ele)],
-    ]) {
-      const tile = h('div', 'tile');
-      const v = h('span', 'value', value);
-      tile.append(h('span', 'label', label), v);
-      tiles.append(tile);
-      values.push(v);
-    }
-    card.append(tiles);
-    if (t.status === 'recording') tickElapsed(values[0], times.start);
+    renderInto(card, (into) => {
+      const tiles = h('div', 'tiles');
+      for (const [label, value] of [
+        ['時間', formatDuration((t.status === 'recording' ? Date.now() : times.end) - times.start)],
+        ['距離', formatDistance(t.distance)],
+        ['登り', fmtM(t.ascent)],
+        ['標高', fmtM(state.currentEle ?? state.shown!.points.at(-1)?.ele)],
+      ]) {
+        const tile = h('div', 'tile');
+        tile.append(h('span', 'label', label), h('span', 'value', value));
+        tiles.append(tile);
+      }
+      into.append(tiles);
+    });
+    // 差し替えなかったときは、出ている数字のほうを書き換えていく
+    if (t.status === 'recording') tickElapsed(card.querySelector<HTMLElement>('.tile .value')!, times.start);
     return;
   }
-  const empty = h('div', 'nav-empty');
-  if (state.pending.some((p) => p.kind === 'dest')) {
-    empty.append(h('b', '', '出発地を選んでください'), h('br'), h('span', 'hint', '地図をタップ →「出発地」。右上の ◎ で現在地を出してから目的地を選ぶと、現在地から出発します'));
-  } else {
-    empty.append(h('b', '', '目的地を設定しましょう'), h('br'), h('span', 'hint', '地図をタップ →「目的地」で、道沿いのルートと到着予想を表示します'));
+  renderInto(card, (into) => {
+    const empty = h('div', 'nav-empty');
+    if (state.pending.some((p) => p.kind === 'dest')) {
+      empty.append(h('b', '', '出発地を選んでください'), h('br'), h('span', 'hint', '地図をタップ →「出発地」。右上の ◎ で現在地を出してから目的地を選ぶと、現在地から出発します'));
+    } else {
+      empty.append(h('b', '', '目的地を設定しましょう'), h('br'), h('span', 'hint', '地図をタップ →「目的地」で、道沿いのルートと到着予想を表示します'));
+    }
+    into.append(empty);
+  });
+}
+
+/** ルートがあるときのカード：行程の進み具合・次の地点と目的地の到着予想・ペースや天気の注意 */
+function renderRouteCard(card: HTMLElement, nav: Nav, route: NonNullable<typeof state.route>) {
+  const span = routeSpan(route);
+  const title = h('div', 'nav-title');
+  title.append(h('b', '', route.name), h('span', '', ` · ${route.label} · ${formatDistance(span.to - span.from)}`));
+  card.append(title);
+  if (walking(nav)) card.append(progressBar(nav, span));
+  const { next, dest } = nav;
+  if (next && dest && next !== dest) card.append(navRow('次', next, false, nav.sunset));
+  if (dest) card.append(navRow('目的地', dest, true, nav.sunset));
+  const sub = h('div', 'nav-sub');
+  if (nav.rejoin && dest && !dest.passed) sub.append(h('span', '', `ルートに戻るまで約${fmtMin(nav.rejoin.totalMin)}を含む`));
+  else if (!nav.onRoute && dest && !dest.passed) sub.append(h('span', '', settings.departAt && !recorder.recording ? `${departLabel(nav.startAt)}出発の場合` : '今出発した場合'));
+  if (nav.pace && nav.pace.evidenceMin > 10) sub.append(h('span', '', `実績ペース 標準の${nav.pace.overall.toFixed(2)}倍`));
+  else sub.append(h('span', '', `ペース「${PACE_PRESETS[settings.pace].label}」`));
+  sub.append(h('span', '', `休憩込み`));
+  const pop = maxPop(nav);
+  if (pop != null) sub.append(h('span', pop >= 50 ? 'warn' : '', `降水確率 最大${Math.round(pop)}%`));
+  if (nav.sunset) {
+    const late = dest ? isLate(dest, nav.sunset) : false;
+    sub.append(h('span', late ? 'warn' : '', `日没 ${fmtClock(nav.sunset)}${late ? '（要注意）' : ''}`));
   }
-  card.append(empty);
+  card.append(sub);
 }
 
 /**
@@ -313,94 +337,115 @@ function tickElapsed(el: HTMLElement, start: number) {
 let scrollToHere = false;
 
 export function renderBody(nav: Nav | null) {
+  // 見えているタブだけ作る（もう一方は、切り替えたときに setTab が作る）
+  if (sheetTab === 'plan') renderPlanTab(nav);
+  else renderProfileTab(nav);
+}
+
+/** 行程タブ：行程表・全行程の合計・ボタン・出発・記録の始めと終わり */
+function renderPlanTab(nav: Nav | null) {
   const tl = $('timeline');
-  tl.replaceChildren();
-  // 全行程の合計は行程表（ol）の外に書く（中に置くと最後の行が li:last-child でなくなり、目的地の下に線がはみ出す）
-  const totalNote = $('plan-total');
-  totalNote.textContent = '';
-  const actions = $('plan-actions');
-  actions.replaceChildren();
   const viewing = viewingTrack();
+  const route = viewing ? null : state.route;
+  const planning = !!(nav && route && state.timeline);
   $('sec-plan').hidden = !state.route && !viewing;
   $('plan-empty').hidden = !!state.route || viewing;
   $('depart-field').hidden = viewing;
-  if (viewing) renderActualTimeline(tl);
-  else if (nav && state.route && state.timeline) {
-    const items: { time: number | null; passed: boolean; el: HTMLElement }[] = [];
-    for (const row of nav.rows) {
-      const li = h('li', `${row.mark.kind}${row.passed ? ' passed' : ''}${isLate(row, nav.sunset) ? ' late' : ''}`);
-      const time = h('div', 'time', row.time ? fmtClock(row.time) : row.passed ? '✓' : '–');
-      time.append(h('small', '', row.mark.kind === 'start' ? '出発' : row.passed ? (row.time ? '到着' : '通過') : '予想'));
-      const body = h('div');
-      body.append(h('div', 'name', row.mark.name));
-      const wx = row.time ? wxLine(row.mark.lngLat, row.time) : null;
-      if (wx) body.append(wx);
-      if (row.leg) {
-        const l = row.leg;
-        body.append(
-          h('div', 'leg', `${formatDistance(l.dist)} · ↑${Math.round(l.up)}m ↓${Math.round(l.down)}m · 標準 ${fmtHM(l.est.stdMin)} → 歩行 ${fmtHM(l.est.movingMin)}`),
-        );
-      } else body.append(h('div', 'leg', ''));
-      const del = h('div');
-      if (row.mark.kind === 'via' && !row.passed) {
-        const b = h('button', 'del', '✕');
-        b.type = 'button';
-        b.setAttribute('aria-label', `${row.mark.name}を削除`);
-        b.addEventListener('click', () => void removeMark(row.mark.id));
-        del.append(b);
-      }
-      li.append(time, h('div', 'dot'), body, del);
-      items.push({ time: row.time, passed: row.passed, el: li });
-    }
-    const span = routeSpan(state.route);
-    if (walking(nav)) {
-      const at = items.findIndex((it) => !it.passed);
-      items.splice(at < 0 ? items.length : at, 0, { time: Date.now(), passed: true, el: hereRow(nav, span) });
-    }
-    // 到着予想が日没の前後1時間にかかるなら、日没を時系列に差し込む
-    const destTime = nav.dest?.time;
-    if (nav.sunset && destTime && !nav.dest?.passed && destTime + 60 * 60_000 > nav.sunset) {
-      const li = h('li', 'sun');
-      const time = h('div', 'time', fmtClock(nav.sunset));
-      time.append(h('small', '', '日没'));
-      const body = h('div');
-      body.append(h('div', 'name', '日没'), h('div', 'leg', '谷では日没前に暗くなります。ヘッドランプを忘れずに'));
-      li.append(time, h('div', 'dot'), body, h('div'));
-      let idx = items.findIndex((it) => !it.passed && it.time != null && it.time > nav.sunset!);
-      if (idx < 0) idx = items.length;
-      items.splice(idx, 0, { time: nav.sunset, passed: false, el: li });
-    }
-    tl.append(...items.map((i) => i.el));
+  $('plan-actions').hidden = !planning;
+  let total = '';
+  if (viewing) renderInto(tl, renderActualTimeline);
+  else if (nav && route && state.timeline) {
+    const span = routeSpan(route);
+    renderInto(tl, (into) => renderTimeline(into, nav, span));
     if (scrollToHere) {
       // シートを開いたときは、現在地の行が見えるところまで送る
       const here = tl.querySelector('li.here');
       if (here) requestAnimationFrame(() => here.scrollIntoView({ block: 'center' }));
     }
-    const total = estimate(state.timeline, span.from, span.to, nav.factors);
-    totalNote.textContent = `全行程 ${formatDistance(span.to - span.from)}・標準 ${fmtHM(total.stdMin)}・このペースで 歩行 ${fmtHM(total.movingMin)} ＋ 休憩 ${fmtHM(total.restMin)}${state.route.straightLegs ? '・一部直線区間あり' : ''}`;
-    const btn = (label: string, fn: () => void, cls = '') => {
-      const b = h('button', `btn ${cls}`, label);
-      b.type = 'button';
-      b.addEventListener('click', fn);
-      actions.append(b);
-      return b;
-    };
-    if (state.route.kind === 'gpx') btn('道沿いのルート候補を探す', () => void searchAlternativesForGpx(), 'primary');
-    // 記録中は行程の向きを変えない（歩いた分の到着予想が崩れるため）
-    if (!recorder.recording) btn('逆向き（帰り道）にする', reverseCurrentRoute);
-    // 出発時刻・ペースの到着予想どおりに歩くリプレイ（予報の雨・雲も出す）。長押しで録画しながら
-    if (!recorder.recording) onLongPress(btn('計画をリプレイ', () => replayPlan()), () => replayPlan({ capture: true }));
-    btn('GPXで保存', exportRoute);
-    btn('ルートを消す', clearRoute, 'danger');
-  }
+    const est = estimate(state.timeline, span.from, span.to, nav.factors);
+    total = `全行程 ${formatDistance(span.to - span.from)}・標準 ${fmtHM(est.stdMin)}・このペースで 歩行 ${fmtHM(est.movingMin)} ＋ 休憩 ${fmtHM(est.restMin)}${route.straightLegs ? '・一部直線区間あり' : ''}`;
+    planAlt.hidden = route.kind !== 'gpx';
+    // 記録中は行程の向きを変えない（歩いた分の到着予想が崩れるため）。計画のリプレイも記録中はしない
+    planReverse.hidden = recorder.recording;
+    planReplay.hidden = recorder.recording;
+  } else renderInto(tl, () => undefined);
+  // 全行程の合計は行程表（ol）の外に書く（中に置くと最後の行が li:last-child でなくなり、目的地の下に線がはみ出す）
+  setText($('plan-total'), total);
   renderDeparture();
   renderTrimEditor();
+}
 
+/** 行程表：地点ごとの到着予想・天気・区間の距離と時間に、現在地と日没の行を時刻の順に差し込む */
+function renderTimeline(tl: HTMLElement, nav: Nav, span: { from: number; to: number }) {
+  const items: { time: number | null; passed: boolean; el: HTMLElement }[] = [];
+  for (const row of nav.rows) {
+    const li = h('li', `${row.mark.kind}${row.passed ? ' passed' : ''}${isLate(row, nav.sunset) ? ' late' : ''}`);
+    const time = h('div', 'time', row.time ? fmtClock(row.time) : row.passed ? '✓' : '–');
+    time.append(h('small', '', row.mark.kind === 'start' ? '出発' : row.passed ? (row.time ? '到着' : '通過') : '予想'));
+    const body = h('div');
+    body.append(h('div', 'name', row.mark.name));
+    const wx = row.time ? wxLine(row.mark.lngLat, row.time) : null;
+    if (wx) body.append(wx);
+    if (row.leg) {
+      const l = row.leg;
+      body.append(
+        h('div', 'leg', `${formatDistance(l.dist)} · ↑${Math.round(l.up)}m ↓${Math.round(l.down)}m · 標準 ${fmtHM(l.est.stdMin)} → 歩行 ${fmtHM(l.est.movingMin)}`),
+      );
+    } else body.append(h('div', 'leg', ''));
+    const del = h('div');
+    if (row.mark.kind === 'via' && !row.passed) {
+      // 押したときの処理は行程表に1つだけ付けてある（data-mark で見分ける）
+      const b = h('button', 'del', '✕');
+      b.type = 'button';
+      b.dataset.mark = row.mark.id;
+      b.setAttribute('aria-label', `${row.mark.name}を削除`);
+      del.append(b);
+    }
+    li.append(time, h('div', 'dot'), body, del);
+    items.push({ time: row.time, passed: row.passed, el: li });
+  }
+  if (walking(nav)) {
+    const at = items.findIndex((it) => !it.passed);
+    items.splice(at < 0 ? items.length : at, 0, { time: Date.now(), passed: true, el: hereRow(nav, span) });
+  }
+  // 到着予想が日没の前後1時間にかかるなら、日没を時系列に差し込む
+  const destTime = nav.dest?.time;
+  if (nav.sunset && destTime && !nav.dest?.passed && destTime + 60 * 60_000 > nav.sunset) {
+    const li = h('li', 'sun');
+    const time = h('div', 'time', fmtClock(nav.sunset));
+    time.append(h('small', '', '日没'));
+    const body = h('div');
+    body.append(h('div', 'name', '日没'), h('div', 'leg', '谷では日没前に暗くなります。ヘッドランプを忘れずに'));
+    li.append(time, h('div', 'dot'), body, h('div'));
+    let idx = items.findIndex((it) => !it.passed && it.time != null && it.time > nav.sunset!);
+    if (idx < 0) idx = items.length;
+    items.splice(idx, 0, { time: nav.sunset, passed: false, el: li });
+  }
+  tl.append(...items.map((i) => i.el));
+}
+
+// 行程の下のボタンは index.html に置いておき、出し分けるだけ（描き直すたびに作り直すと、押している最中の長押しが外れるため）
+const planButton = (id: string, fn: () => void) => {
+  const b = $<HTMLButtonElement>(id);
+  b.addEventListener('click', () => fn());
+  return b;
+};
+const planAlt = planButton('plan-btn-alt', () => void searchAlternativesForGpx());
+const planReverse = planButton('plan-btn-reverse', reverseCurrentRoute);
+// 出発時刻・ペースの到着予想どおりに歩くリプレイ（予報の雨・雲も出す）。長押しで録画しながら
+const planReplay = planButton('plan-btn-replay', () => replayPlan());
+onLongPress(planReplay, () => replayPlan({ capture: true }));
+planButton('plan-btn-export', exportRoute);
+planButton('plan-btn-clear', clearRoute);
+// 経由地の ✕（行程表は描き直すたびに組み立てるので、押したときの処理は行程表に1つ）
+$('timeline').addEventListener('click', (e) => {
+  const b = (e.target as Element).closest<HTMLButtonElement>('button.del');
+  if (b?.dataset.mark) void removeMark(b.dataset.mark);
+});
+
+/** 標高・ペースタブ：標高グラフと、これまでのペースの表 */
+function renderProfileTab(nav: Nav | null) {
   updateProfile(nav);
-
-  // これまでのペース
-  const grid = $('pace-grid');
-  grid.replaceChildren();
   // 記録中はその記録、地図に表示中の保存した記録はその記録を、歩き終えた時点で分析する
   const p =
     nav?.pace ??
@@ -426,15 +471,20 @@ export function renderBody(nav: Nav | null) {
         ['休憩見込み', `${Math.round((nav?.factors.rest ?? 1 / 6) * 60)}分/時`],
         ['ペース', PACE_PRESETS[settings.pace].label],
       ];
-  for (const [label, value] of tiles) {
-    const tile = h('div', 'tile');
-    tile.append(h('span', 'label', label), h('span', 'value', value));
-    grid.append(tile);
-  }
-  $('pace-title').textContent = recorder.recording || !state.shown ? 'これまでのペース' : 'この記録のペース';
-  $('pace-note').textContent = p
-    ? `「標準比」は地形（距離と勾配）から求めた標準タイムに対して何倍かかっているか。1より小さいほど速いペースです。登り・平坦・下りそれぞれの実績を使い、休憩は歩行1時間あたり約${Math.round(p.factors.rest * 60)}分の見込みで到着予想に含めています。`
-    : '記録を開始すると、歩いた実績（登り・平坦・下りの速さ、休憩の取り方）から到着予想を自動で調整します。';
+  renderInto($('pace-grid'), (grid) => {
+    for (const [label, value] of tiles) {
+      const tile = h('div', 'tile');
+      tile.append(h('span', 'label', label), h('span', 'value', value));
+      grid.append(tile);
+    }
+  });
+  setText($('pace-title'), recorder.recording || !state.shown ? 'これまでのペース' : 'この記録のペース');
+  setText(
+    $('pace-note'),
+    p
+      ? `「標準比」は地形（距離と勾配）から求めた標準タイムに対して何倍かかっているか。1より小さいほど速いペースです。登り・平坦・下りそれぞれの実績を使い、休憩は歩行1時間あたり約${Math.round(p.factors.rest * 60)}分の見込みで到着予想に含めています。`
+      : '記録を開始すると、歩いた実績（登り・平坦・下りの速さ、休憩の取り方）から到着予想を自動で調整します。',
+  );
 }
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -484,6 +534,7 @@ function forecastNote(depart: number, arrive: number): string {
 type SheetTab = 'plan' | 'profile';
 let sheetTab: SheetTab = 'plan';
 export function setTab(tab: SheetTab) {
+  const changed = tab !== sheetTab;
   sheetTab = tab;
   for (const b of document.querySelectorAll<HTMLButtonElement>('.tabs [role="tab"]')) {
     const on = b.dataset.tab === tab;
@@ -492,8 +543,9 @@ export function setTab(tab: SheetTab) {
   }
   $('panel-plan').hidden = tab !== 'plan';
   $('panel-profile').hidden = tab !== 'profile';
-  // 表示されてから大きさが決まるので、切り替えたら描き直す
-  if (tab === 'profile') profile.draw();
+  // 見えているタブだけを作っているので、切り替えたら作る（閉じていれば開いたときに作る。
+  // グラフは、表示されて大きさが決まったときに ResizeObserver で描かれる）
+  if (changed && document.body.classList.contains('sheet-open')) renderBody(state.lastNav);
 }
 for (const b of document.querySelectorAll<HTMLButtonElement>('.tabs [role="tab"]')) {
   b.addEventListener('click', () => setTab(b.dataset.tab as SheetTab));
@@ -501,13 +553,20 @@ for (const b of document.querySelectorAll<HTMLButtonElement>('.tabs [role="tab"]
 setTab(sheetTab);
 
 // ---------- ボトムシート ----------
-export const sheet = new BottomSheet($('sheet-handle'), [$('card')], $('sheet-body'), (open) => {
-  if (open) {
-    scrollToHere = true;
-    renderBody(state.lastNav);
-    scrollToHere = false;
-  } else src('cursor')?.setData(emptyFC);
-});
+export const sheet = new BottomSheet(
+  $('sheet-handle'),
+  [$('card')],
+  $('sheet-body'),
+  (open) => {
+    if (open) {
+      scrollToHere = true;
+      renderBody(state.lastNav);
+      scrollToHere = false;
+    } else setSourceData('cursor', emptyFC);
+  },
+  // 全画面では地図が見えないので、現在地を追いかけるのをやめる（ポケット表示と同じ。方位センサーは compass.ts が止める）
+  (full) => pauseFollow('sheet', full),
+);
 export function openSheet() {
   if (!sheet.isOpen) sheet.setOpen(true);
 }
