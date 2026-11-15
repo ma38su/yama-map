@@ -54,9 +54,13 @@ async function requestPermission(): Promise<boolean> {
 }
 
 const locating = () => geolocate._watchState !== 'OFF';
-/** 現在地を出しているあいだ（か進む向きを上にしているあいだ）、画面が表のときだけセンサーを聞く */
+/**
+ * 現在地を出しているあいだ（か進む向きを上にしているあいだ）、画面が表のときだけセンサーを聞く。
+ * ポケット表示のあいだは地図を描かないので聞かない（センサーは1秒に何十回も届くため）
+ */
 function syncListening() {
-  const want = document.visibilityState === 'visible' && (locating() || headingUp);
+  const want =
+    document.visibilityState === 'visible' && !document.body.classList.contains('pocket-on') && (locating() || headingUp);
   listen(want);
   if (!want) hideCone();
 }

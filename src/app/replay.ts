@@ -21,6 +21,11 @@ const REST_BOOST = 10;
 const DAYLIGHT_STEP_MS = 2 * 60_000;
 /** カメラの向きを合わせる先：何m先の点の方を向くか */
 const LOOK_AHEAD_M = 120;
+/**
+ * 1コマの最短の間隔 (ms)。120Hz の画面（Pixel 8a・9 Pro など）では requestAnimationFrame が1秒に120回来るが、
+ * リプレイは60コマで十分なので、それより速くは地図を動かさない（地図の描き直しが半分になる）
+ */
+const FRAME_MS = 1000 / 60 - 1;
 
 let pts: TrackPoint[] = [];
 /** 点ごとの累積距離 (m)。歩き終えた線をどこまで塗るかに使う */
@@ -119,6 +124,10 @@ function render(follow: boolean) {
 }
 
 function frame(now: number) {
+  if (now - lastFrame < FRAME_MS) {
+    raf = requestAnimationFrame(frame);
+    return;
+  }
   const dt = Math.min(100, now - lastFrame);
   lastFrame = now;
   const { i } = locate(t);

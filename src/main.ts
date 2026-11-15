@@ -29,6 +29,7 @@ import './app/perf';
 import { checkUnfinished, recorder, renderTrack, updateRecButton } from './app/recording';
 import { renderRoute } from './app/route';
 import './app/sheetView';
+import './app/transfer';
 import { whileVisible } from './app/scheduler';
 import { state } from './app/state';
 import { addWeatherLayers } from './app/weather';

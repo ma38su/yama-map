@@ -51,6 +51,7 @@ android/              Capacitor の Android プロジェクト（docs/android.md
 | `pocket.ts` | ポケット表示：記録中に黒い画面へ時刻・経過・距離・ペース・到着予想・日没だけを出し、地図の描画を止める（地図は隠し、現在地の追従・雨・毎分の空の色を止める）。表示の書き換えは15秒ごと、ペースの計算は点が増えたときに多くても1分に1回。戻るのは長押し・戻るボタン・Esc・記録の終了 |
 | `diagnostics.ts` | メニューの「動作の記録」：端末の状態・アプリのログ・記録のサービスのログ・logcat をまとめて見て、ファイルで送る（位置は伏せる） |
 | `perf.ts` | 画面側の計測：表に出ているあいだ、地図を描いた回数・長い処理・JS のメモリを数え、10分ごとに動作のログへ1行残す |
+| `transfer.ts` | メニューの「記録をまとめて書き出す」「記録を読み込む」（別の端末へ移す・バックアップ。ファイルの形は `track/backup.ts`） |
 | `battery.ts` | アプリ版の電池の最適化の案内（記録開始時に一度だけ聞く。メニューに状態と設定ボタン） |
 | `offline.ts` | 地図の保存ボタン |
 
@@ -125,6 +126,7 @@ android/              Capacitor の Android プロジェクト（docs/android.md
   - 圏外で標高が取れなかった点は、記録の終了時と記録を開いたときに標高タイルから埋める（`fillMissingElevations`、`app/recording.ts` の `fillShownElevations`）。埋めたら `state.revision` を上げ、点の数で覚えている計算（ペース・実績）を作り直す
 - `db.ts`：IndexedDB（`yama-map`）の `tracks`（記録の概要）と `points`（点）に保存。接続が切れていたら（iPhone の Safari で裏から戻ったときなど）つなぎ直して1回だけやり直す（`withDb`）
 - `actual.ts`：記録の実績。ルートの地点を80m以内で通った時刻、3分以上の休憩、区間ごとの距離・登り下り・所要時間を出す
+- `backup.ts`：記録をまとめて書き出すファイルの形（`makeBackup`・`parseBackup`）と、読み込む記録の選び方（同じ記録は飛ばし、記録中のまま書き出された記録は終えたことにする）
 - `sample.ts`：ルートを標準タイムの決まった倍率で歩き、歩行30分ごとに休んだ想定の記録を作る。最初から入れる「予定」の記録（`menu.ts` の `ensureBuiltinPlan`）に使う。一度入れたら `settings.builtinPlan` を立て、消しても戻さない
 
 ### 標高グラフ（`ui/profile.ts`）
