@@ -46,9 +46,10 @@ try {
   /* 保存領域が使えない環境でも動かす */
 }
 if (!(settings.base in BASE_LAYERS)) settings.base = 'std';
-if (!(settings.terrainExaggeration >= TERRAIN_EXAGGERATION_RANGE.min && settings.terrainExaggeration <= TERRAIN_EXAGGERATION_RANGE.max)) {
-  settings.terrainExaggeration = TERRAIN_EXAGGERATION;
-}
+// 範囲の外（前の版の 1〜3 倍で 2 倍より大きくしていた）なら、範囲の端にそろえる
+settings.terrainExaggeration = Number.isFinite(settings.terrainExaggeration)
+  ? Math.min(TERRAIN_EXAGGERATION_RANGE.max, Math.max(TERRAIN_EXAGGERATION_RANGE.min, settings.terrainExaggeration))
+  : TERRAIN_EXAGGERATION;
 if (!(settings.pace in PACE_PRESETS)) settings.pace = 'normal';
 if (!(settings.routePref in ROUTE_PREFS)) settings.routePref = 'trail';
 if (settings.departAt != null && !/^\d{2}:\d{2}$/.test(settings.departAt)) settings.departAt = null;

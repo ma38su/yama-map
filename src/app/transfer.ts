@@ -5,7 +5,8 @@
  */
 import { log } from '../log';
 import { backupHeader, parseBackupHeader, parseBackupLine, prepareTrack, type BackupPhoto } from '../track/backup';
-import { getPhotos, getPoints, listTracks, putPhoto, putTrackWithPoints, type Track, type TrackPoint } from '../track/db';
+import { getPhotos, getPoints, getTrackWeather, listTracks, putPhoto, putTrackWeather, putTrackWithPoints, type Track, type TrackPoint } from '../track/db';
+import type { TrackWeather } from '../track/weatherLog';
 import { $, download, fileStamp } from '../ui/dom';
 import { refreshTrackList } from './menu';
 import { recorder } from './recording';
@@ -32,7 +33,8 @@ async function exportAll() {
     const parts: string[] = [`${JSON.stringify(backupHeader())}\n`];
     let photos = 0;
     for (const track of tracks) {
-      parts.push(`${JSON.stringify({ track, points: await getPoints(track.id) })}\n`);
+      const weather = await getTrackWeather(track.id).catch(() => null);
+      parts.push(`${JSON.stringify({ track, points: await getPoints(track.id), ...(weather ? { weather } : {}) })}\n`);
       for (const p of await getPhotos(track.id).catch(() => [])) {
         const photo: BackupPhoto = { ...p, image: await toDataUrl(p.image), thumb: await toDataUrl(p.thumb) };
         parts.push(`${JSON.stringify({ photo })}\n`);
@@ -75,13 +77,14 @@ async function importFile(file: File) {
     const imported = new Set<string>();
     let skipped = 0;
     let photos = 0;
-    const putTrack = async (track: Track, points: TrackPoint[]) => {
+    const putTrack = async (track: Track, points: TrackPoint[], weather?: TrackWeather) => {
       const ready = prepareTrack(track, points, existing);
       if (!ready) {
         skipped++;
         return;
       }
       await putTrackWithPoints(ready.track, ready.points);
+      if (weather) await putTrackWeather(weather).catch((e) => console.warn('記録したときの天気を読み込めませんでした', e));
       imported.add(track.id);
     };
     const putPhotoLine = async (p: BackupPhoto) => {
@@ -103,7 +106,7 @@ async function importFile(file: File) {
       }
       const l = parseBackupLine(line);
       if ('photo' in l) await putPhotoLine(l.photo);
-      else await putTrack(l.track, l.points);
+      else await putTrack(l.track, l.points, l.weather);
     }
     if (first) throw new Error('やまマップの記録のファイルではありません（中身が空です）');
     log(`記録を読み込んだ: ${imported.size}件（写真 ${photos}枚）・同じ記録があって飛ばした ${skipped}件`);

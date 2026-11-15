@@ -13,7 +13,8 @@ import {
 } from '../nav/eta';
 import { OFF_ROUTE } from '../nav/offRoute';
 import { departureAt, routeSpan, type ActiveRoute, type Mark } from '../nav/plan';
-import type { TrackPoint } from '../track/db';
+import type { Track, TrackPoint } from '../track/db';
+import { summarize } from '../track/trim';
 import { sunTimes } from '../nav/sun';
 import { settings } from '../settings';
 import { lineFC, emptyFC, src } from './mapView';
@@ -134,6 +135,41 @@ function computeNav(): Nav | null {
     dest: rows.at(-1) ?? null,
     sunset: sun.sunset?.getTime() ?? null,
   };
+}
+
+/** 計画のリプレイの記録の id（保存しない。plan- で始まるので「予定」として扱われる） */
+export const PLAN_REPLAY_ID = 'plan-replay';
+
+/**
+ * 計画のリプレイ用の記録：今のルートを、出発時刻から今のペース（休憩込み）の到着予想どおりに歩いたとする。
+ * 保存はしない。記録中・ルートがなければ null
+ */
+export function planTrack(): { track: Track; points: TrackPoint[] } | null {
+  const r = state.route;
+  const tl = state.timeline;
+  if (!r || !tl || recorder.recording) return null;
+  const span = routeSpan(r);
+  const factors = defaultFactors(settings.pace);
+  const startAt = departureTime();
+  const points: TrackPoint[] = [];
+  r.coords.forEach(([lng, lat], i) => {
+    const d = r.dists[i];
+    if (d < span.from - 1 || d > span.to + 1) return;
+    const min = d > span.from ? estimate(tl, span.from, d, factors).totalMin : 0;
+    points.push({ trackId: PLAN_REPLAY_ID, t: startAt + min * 60_000, lng, lat, alt: null, acc: 0, ele: r.eles[i] ?? null });
+  });
+  if (points.length < 2) return null;
+  const track: Track = {
+    id: PLAN_REPLAY_ID,
+    // 経路名は付けない（タイトルなどに「計画：」の付いた名前を出す）
+    name: `計画：${r.name}`,
+    startedAt: startAt,
+    endedAt: points[points.length - 1].t,
+    status: 'done',
+    ...summarize(points),
+    pointCount: points.length,
+  };
+  return { track, points };
 }
 
 /** 歩き終えた部分のルート（灰色の線）と、これからの部分（向きの印）として描いてあるもの。変わらなければ描き直さない（地図の描き直しが起きるため） */

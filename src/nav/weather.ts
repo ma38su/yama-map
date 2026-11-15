@@ -44,7 +44,7 @@ export function cellCenter(key: string): LngLat {
   return [+(x * WEATHER_CELL_DEG).toFixed(4), +(y * WEATHER_CELL_DEG).toFixed(4)];
 }
 
-const HOURLY = ['precipitation_probability', 'precipitation', 'weather_code', 'cloud_cover', 'temperature_2m', 'wind_speed_10m', 'wind_direction_10m'] as const;
+export const HOURLY = ['precipitation_probability', 'precipitation', 'weather_code', 'cloud_cover', 'temperature_2m', 'wind_speed_10m', 'wind_direction_10m'] as const;
 
 export function forecastUrl(points: LngLat[]): string {
   const q = new URLSearchParams({
@@ -58,6 +58,29 @@ export function forecastUrl(points: LngLat[]): string {
     forecast_days: '3',
   });
   return `https://api.open-meteo.com/v1/forecast?${q}`;
+}
+
+/** Open-Meteo の過去のデータに使う：直近3か月ほどは予報の API、それより前は過去の予報の API */
+const RECENT_DAYS = 80;
+
+/**
+ * 過去の1時間ごとの天気（from〜to の日を含む）を取る URL。予報モデルの、その時刻にいちばん近い計算（解析値）をつないだもの。
+ * 記録したときの天気を、あとから取るのに使う
+ */
+export function analysisUrl(points: LngLat[], from: number, to: number, now = Date.now()): string {
+  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const q = new URLSearchParams({
+    latitude: points.map((p) => p[1]).join(','),
+    longitude: points.map((p) => p[0]).join(','),
+    hourly: HOURLY.join(','),
+    wind_speed_unit: 'ms',
+    timeformat: 'unixtime',
+    timezone: 'GMT',
+    start_date: day(from - 3_600_000),
+    end_date: day(to + 3_600_000),
+  });
+  const host = now - to > RECENT_DAYS * 86_400_000 ? 'historical-forecast-api.open-meteo.com' : 'api.open-meteo.com';
+  return `https://${host}/v1/forecast?${q}`;
 }
 
 interface OpenMeteoResponse {

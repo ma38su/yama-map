@@ -26,7 +26,7 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 | GPX・動画の書き出し（`ui/dom.ts` の `download`） | `<a download>` | キャッシュフォルダに書き出し、共有シートを開く（`@capacitor/filesystem`・`@capacitor/share`）。動画は3MBずつ書き足す |
 | メニューの「ホーム画面に追加」（`app/install.ts`） | 出す | 出さない |
 | Service Worker（`src/sw.js`） | アプリ本体と地図タイルをキャッシュ | 地図タイルだけ（`./sw.js?native=1` で登録）。アプリ本体は APK に入っている |
-| 電池の最適化（`app/battery.ts`） | なし | 記録を始めたときに、最適化の対象なら一度だけ外すか聞く（`settings.batteryAsked`）。メニューの「記録」に状態と設定を開くボタン |
+| 電池の最適化（`app/battery.ts`） | なし | 記録を始めたときに、最適化の対象なら一度だけ外すか聞く（`settings.batteryAsked`）。メニューの「記録」に状態と設定を開くボタン（外してあるときはアプリ情報の画面を開く。外すか聞くダイアログは、外してあるアプリには何も出さずに閉じるため） |
 | ポケット表示（`app/pocket.ts`） | 黒い画面にする | さらに上下のシステムバーも隠して画面全体を黒にする（`SystemBars.hide`）。戻るボタンでも地図に戻る |
 
 ### なぜこうしているか

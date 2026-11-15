@@ -111,3 +111,44 @@ function blobToBase64(blob: Blob): Promise<string> {
     r.readAsDataURL(blob);
   });
 }
+
+/**
+ * 長押し（ms 以上押し続けた）で fn を呼ぶ。長押ししたあとの click はほかの処理に渡さない。
+ * 指が大きく動いたら（スクロールなど）やめる
+ */
+export function onLongPress(el: HTMLElement, fn: () => void, ms = 600) {
+  let timer = 0;
+  let fired = false;
+  let start: { x: number; y: number } | null = null;
+  const cancel = () => {
+    clearTimeout(timer);
+    start = null;
+  };
+  el.addEventListener('pointerdown', (e) => {
+    fired = false;
+    clearTimeout(timer);
+    start = { x: e.clientX, y: e.clientY };
+    timer = window.setTimeout(() => {
+      fired = true;
+      start = null;
+      navigator.vibrate?.(20);
+      fn();
+    }, ms);
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 12) cancel();
+  });
+  for (const type of ['pointerup', 'pointerleave', 'pointercancel']) el.addEventListener(type, cancel);
+  // 長押しのあとの click は止める（ほかの click の処理より先に呼ばれるよう、捕捉の段階で）
+  el.addEventListener(
+    'click',
+    (e) => {
+      if (!fired) return;
+      fired = false;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    },
+    true,
+  );
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+}

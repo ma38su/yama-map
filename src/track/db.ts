@@ -6,6 +6,7 @@
  */
 import type { PlaceItem, PlaceSource } from '../places/sources';
 import type { TrimRange } from './trim';
+import type { TrackWeather } from './weatherLog';
 
 export interface TrackPoint {
   trackId: string;
@@ -106,7 +107,7 @@ export interface SavedArea {
 }
 
 const DB_NAME = 'yama-map';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -130,6 +131,8 @@ function open(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('places')) db.createObjectStore('places', { keyPath: 'key' });
       if (!db.objectStoreNames.contains('areas')) db.createObjectStore('areas', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('imports')) db.createObjectStore('imports', { keyPath: 'id' });
+      // 版4：記録した天気（記録ごとに1つ。./weatherLog.ts）
+      if (!db.objectStoreNames.contains('weather')) db.createObjectStore('weather', { keyPath: 'trackId' });
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -269,10 +272,10 @@ export class LockedTrackError extends Error {
   }
 }
 
-/** 記録を点・写真ごと消す。ロックしている記録は消さずに LockedTrackError */
+/** 記録を点・写真・天気ごと消す。ロックしている記録は消さずに LockedTrackError */
 export function deleteTrack(id: string): Promise<void> {
   return withDb((db) => {
-    const tx = db.transaction(['tracks', 'points', 'photos'], 'readwrite');
+    const tx = db.transaction(['tracks', 'points', 'photos', 'weather'], 'readwrite');
     const tracks = tx.objectStore('tracks');
     let locked = false;
     const req = tracks.get(id);
@@ -283,6 +286,7 @@ export function deleteTrack(id: string): Promise<void> {
         return;
       }
       tracks.delete(id);
+      tx.objectStore('weather').delete(id);
       for (const name of ['points', 'photos']) {
         const store = tx.objectStore(name);
         const cursorReq = store.index('trackId').openKeyCursor(IDBKeyRange.only(id));
@@ -297,6 +301,19 @@ export function deleteTrack(id: string): Promise<void> {
     return done(tx).catch((e) => {
       throw locked ? new LockedTrackError() : e;
     });
+  });
+}
+
+/** 記録した天気（なければ null） */
+export async function getTrackWeather(trackId: string): Promise<TrackWeather | null> {
+  return (await withDb((db) => wrap<TrackWeather | undefined>(db.transaction('weather').objectStore('weather').get(trackId)))) ?? null;
+}
+
+export function putTrackWeather(rec: TrackWeather): Promise<void> {
+  return withDb((db) => {
+    const tx = db.transaction('weather', 'readwrite');
+    tx.objectStore('weather').put(rec);
+    return done(tx);
   });
 }
 

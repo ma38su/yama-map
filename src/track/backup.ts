@@ -2,11 +2,12 @@
  * 記録をまとめて書き出す・読み込むファイルの形（別の端末へ移す、バックアップにする）。DOM と保存先には触れない（app/transfer.ts から使う）。
  * 1行に1つの JSON を並べる（JSON Lines）。写真がたくさんあっても、全体を1つの文字列にせずに書き出し・読み込みができるように：
  *   1行目: { app: 'yama-map', kind: 'tracks', version: 2, exportedAt }
- *   記録:  { track, points }
+ *   記録:  { track, points, weather? }（weather は記録したときの天気。./weatherLog.ts）
  *   写真:  { photo }（画像は data URL）。その写真の記録の行より後に置く
  * 版1（全体が1つの JSON で entries を持つ）のファイルも読める
  */
 import type { Track, TrackPhoto, TrackPoint } from './db';
+import type { TrackWeather } from './weatherLog';
 
 export const BACKUP_VERSION = 2;
 
@@ -29,7 +30,7 @@ export interface BackupHeader {
 }
 
 /** 1行の中身 */
-export type BackupLine = { track: Track; points: TrackPoint[] } | { photo: BackupPhoto };
+export type BackupLine = { track: Track; points: TrackPoint[]; weather?: TrackWeather } | { photo: BackupPhoto };
 
 export const backupHeader = (now = Date.now()): BackupHeader => ({ app: 'yama-map', kind: 'tracks', version: BACKUP_VERSION, exportedAt: now });
 
@@ -57,9 +58,12 @@ export function parseBackupHeader(line: string): BackupHeader {
 
 /** 2行目からの1行を読む */
 export function parseBackupLine(line: string): BackupLine {
-  const l = json(line) as Partial<{ track: Track; points: TrackPoint[]; photo: BackupPhoto }>;
+  const l = json(line) as Partial<{ track: Track; points: TrackPoint[]; weather: TrackWeather; photo: BackupPhoto }>;
   if (l.photo?.id && l.photo.trackId) return { photo: l.photo };
-  if (l.track?.id && Array.isArray(l.points)) return { track: l.track, points: l.points };
+  if (l.track?.id && Array.isArray(l.points)) {
+    const weather = l.weather && typeof l.weather === 'object' && (l.weather.rain || l.weather.analysis || l.weather.amedas) ? { ...l.weather, trackId: l.track.id } : undefined;
+    return { track: l.track, points: l.points, ...(weather ? { weather } : {}) };
+  }
   throw new Error('記録のファイルが壊れています');
 }
 

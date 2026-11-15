@@ -1,6 +1,7 @@
 /**
- * 天気予報の取得と表示：行程の各地点の降水確率など（weatherFor）と、3D の雲（地形にかかる雲の層）と雨・雪。
+ * 天気予報の取得と表示：行程の各地点の降水確率など（weatherFor）と、リプレイの雲（地形にかかる雲の層）と雨・雪。
  * 予報は約5kmのマス目ごとにまとめて取り、端末に保存して圏外でも直近の予報を使う。
+ * 雲・雨・雪はリプレイ中だけ出し（歩いているときは出さない）、記録したときの天気（./trackWeather.ts）に合わせる。
  * 表示する時刻は今（リプレイ中は再生中の時刻）。
  */
 import type { LngLat } from '../geo';
@@ -118,11 +119,37 @@ function forecastFor(lngLat: LngLat): HourlyWeather | null {
   return hit?.h ?? null;
 }
 
-/** 地点・時刻の天気（予報がまだ届いていない・範囲外なら null） */
+type WeatherSource = (lngLat: LngLat, time: number) => WeatherAt | null;
+/** リプレイ中の天気の出どころ（記録は記録したときの天気、計画は端末に残っている予報）。リプレイ中でなければ null */
+let replay: { source: WeatherSource } | null = null;
+
+/** リプレイを始めた・やめたときに呼ぶ（雲・雨・雪はリプレイ中だけ、source の天気で出す。リプレイ中は取りに行かない） */
+export function setReplayWeather(on: boolean, source: WeatherSource = () => null) {
+  replay = on ? { source } : null;
+  cloudDrawn = null;
+  updateWeatherLayers(true);
+}
+
+/** 地点・時刻の天気（予報がまだ届いていない・範囲外なら null）。リプレイ中はリプレイの天気だけ（取りに行かない） */
 export function weatherFor(lngLat: LngLat, time: number): WeatherAt | null {
+  if (replay) return replay.source(lngLat, time);
   const h = forecastFor(lngLat);
   return h ? weatherAt(h, time) : null;
 }
+
+/** 計画のリプレイの天気：端末に残っている予報だけを使う（なければ一番近い（20km以内）マス目の予報。取りには行かない） */
+export const cachedForecastSource: WeatherSource = (lngLat, time) => {
+  let hit = cache.get(cellKey(lngLat));
+  if (!hit) {
+    let best = Infinity;
+    for (const [k, v] of cache) {
+      const [x, y] = cellCenter(k);
+      const d = Math.hypot(x - lngLat[0], y - lngLat[1]);
+      if (d < best && d < 0.2) [best, hit] = [d, v];
+    }
+  }
+  return hit ? weatherAt(hit.h, time) : null;
+};
 
 /** 空や雲・雨を合わせる時刻：今、リプレイ中は再生中の時刻 */
 const weatherTime = () => state.daylightAt ?? Date.now();
@@ -271,8 +298,8 @@ export function addWeatherLayers(before?: string) {
  * 雲の層と雨・雪を、今（リプレイ中は再生中の時刻）の予報に合わせる。
  * 雲の画像は時刻が10分動くか、表示範囲のマス目が変わったときだけ描き直す
  */
-/** 3D の雲・雨・雪を出すか */
-const fxOn = () => settings.weather && settings.weatherFx && settings.terrain;
+/** 雲・雨・雪を出すか：リプレイ中だけ（歩いているときは、電池と見やすさのために出さない） */
+const fxOn = () => settings.weatherFx && replay != null;
 
 export function updateWeatherLayers(force = false) {
   const show = fxOn();
@@ -292,7 +319,7 @@ export function updateWeatherLayers(force = false) {
 }
 map.on('moveend', () => updateWeatherLayers());
 hookDaylight({
-  cloud: () => (settings.weather && settings.weatherFx ? (centerWeather()?.cloud ?? 0) / 100 : 0),
+  cloud: () => (fxOn() ? (centerWeather()?.cloud ?? 0) / 100 : 0),
   after: () => updateWeatherLayers(),
 });
 

@@ -38,9 +38,9 @@ export const BASE_LAYERS: Record<BaseLayerId, BaseLayerDef> = {
   },
 };
 
-/** 3D の起伏の強調の初期値（設定で 1〜3 倍に変えられる） */
+/** 3D の起伏の強調の初期値（設定で 0〜2 倍に変えられる。0 は起伏なしの平らな地図を傾けて見る） */
 export const TERRAIN_EXAGGERATION = 1.3;
-export const TERRAIN_EXAGGERATION_RANGE = { min: 1, max: 3, step: 0.1 } as const;
+export const TERRAIN_EXAGGERATION_RANGE = { min: 0, max: 2, step: 0.1 } as const;
 /** 時刻に合わせて地図全体に重ねる色（夜の青み・夕方の暖色）。ルートや現在地より下に置く */
 export const TINT_LAYER = 'daylight-tint';
 

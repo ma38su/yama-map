@@ -1595,3 +1595,40 @@ dialog.photo-view {
   margin: 2px 0 2px;
   pointer-events: none; /* 触るとシートの上げ下げ（グラフで調べるのは「標高・ペース」タブで） */
 }
+
+/* リプレイの始めのタイトル（経路名と日時）。録画にも同じものを描く（app/replayVideo.ts） */
+.replay-title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 30%;
+  transform: translateY(-50%);
+  z-index: 3;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  text-align: center;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.6s ease-out;
+}
+.replay-title.fade {
+  opacity: 0;
+}
+.replay-title[hidden] {
+  display: none;
+}
+.replay-title .name {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.replay-title .sub {
+  margin-top: 4px;
+  font-size: 14px;
+  opacity: 0.92;
+}
+#btn-replay {
+  -webkit-touch-callout: none;
+  user-select: none;
+}

@@ -192,8 +192,6 @@ function syncMenu() {
   dayToneOpt.checked = settings.dayTone;
   weatherOpt.checked = settings.weather;
   weatherFxOpt.checked = settings.weatherFx;
-  // 演出は予報を出しているときだけ使える
-  weatherFxOpt.disabled = !settings.weather;
   wakeOpt.checked = settings.wakeLock;
   offRouteOpt.checked = settings.offRouteAlert;
   terrainEx.value = String(settings.terrainExaggeration);

@@ -3,19 +3,21 @@ import { formatDistance, formatDuration, type LngLat } from '../geo';
 import { PACE_PRESETS, estimate } from '../nav/eta';
 import { routeSpan } from '../nav/plan';
 import { saveSettings, settings } from '../settings';
-import { $, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
+import { $, onLongPress, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
 import { BottomSheet } from '../ui/sheet';
 import { actualRows, type ActualRow } from '../track/actual';
 import { trackTitle } from '../track/names';
 import { trackTimes } from '../track/trim';
-import { weatherLabel } from '../nav/weather';
+import { weatherLabel, type WeatherAt } from '../nav/weather';
 import { emptyFC, fitTo, src } from './mapView';
 import { departureTime, isLate, paceOf, updateNav, type Nav, type Row } from './nav';
 import { miniProfileFor, profile, updateProfile } from './profileView';
-import { recorder, viewingTrack } from './recording';
+import { recorder, replayPlan, viewingTrack } from './recording';
 import { clearRoute, exportRoute, removeMark, reverseCurrentRoute, searchAlternativesForGpx } from './route';
 import { state } from './state';
 import { renderTrimEditor } from './trimView';
+import { showingPlan, shownWeather } from './trackWeather';
+import { rainRangeText } from '../track/weatherLog';
 import { weatherFor } from './weather';
 
 function navRow(label: string, row: Row, primary: boolean, sunset: number | null): HTMLElement {
@@ -39,16 +41,41 @@ function navRow(label: string, row: Row, primary: boolean, sunset: number | null
 const isTomorrow = (ms: number) => new Date(ms).toDateString() !== new Date().toDateString();
 const departLabel = (ms: number) => `${isTomorrow(ms) ? '明日 ' : ''}${fmtClock(ms)}`;
 
-/** 地点・時刻の天気の一行（予報がまだなければ null） */
-function wxLine(lngLat: LngLat, time: number): HTMLElement | null {
-  const w = weatherFor(lngLat, time);
-  if (!w) return null;
+/** 天気の一行「🌤️ 晴れ時々曇り · 降水 20% · 12℃」（head は「予報」などの見出し） */
+function wxRow(w: WeatherAt, head = ''): HTMLElement {
   const { icon, label } = weatherLabel(w.code);
-  const parts = [`${icon} ${label}`.trim()];
+  const parts = [`${head ? `${head} ` : ''}${icon} ${label}`.trim()];
   if (w.pop != null) parts.push(`降水 ${Math.round(w.pop)}%`);
+  else if (w.precip >= 0.1) parts.push(`${w.precip.toFixed(1)}mm/h`);
   if (w.temp != null) parts.push(`${Math.round(w.temp)}℃`);
   if (w.wind != null && w.wind >= 5) parts.push(`風 ${Math.round(w.wind)}m/s`);
   return h('div', `wx${(w.pop ?? 0) >= 50 || w.precip >= 1 ? ' wet' : ''}`, parts.filter(Boolean).join(' · '));
+}
+
+/** 地点・時刻の天気の一行（予報がまだなければ null） */
+function wxLine(lngLat: LngLat, time: number): HTMLElement | null {
+  const w = weatherFor(lngLat, time);
+  return w ? wxRow(w) : null;
+}
+
+/**
+ * 開いている記録の、その時刻の天気の一行：記録は実際の天気（雨は解析雨量、気温はアメダスを標高で補正、空の様子は解析値）、
+ * 計画（予定）は端末に残っている予報
+ */
+function recordedWxLine(lngLat: LngLat, time: number, ele: number | null): HTMLElement | null {
+  if (showingPlan()) {
+    const w = wxLine(lngLat, time);
+    w?.prepend('予報 ');
+    return w;
+  }
+  const a = shownWeather()?.actual(lngLat, time, ele);
+  if (!a) return null;
+  const { icon, label } = weatherLabel(a.code);
+  const parts = [`${icon} ${a.rainCls ? (a.snow ? '雪' : '雨') : label}`.trim()];
+  if (a.rainCls != null && a.rainCls > 0) parts.push(rainRangeText(a.rainCls));
+  if (a.temp != null) parts.push(`${Math.round(a.temp)}℃`);
+  if (a.wind != null && a.wind >= 5) parts.push(`風 ${Math.round(a.wind)}m/s`);
+  return h('div', `wx${(a.rainCls ?? 0) >= 2 ? ' wet' : ''}`, parts.join(' · '));
 }
 
 /** これから通る地点の降水確率のうち、いちばん高いもの */
@@ -146,6 +173,16 @@ function renderActualCard(card: HTMLElement) {
   if (p) sub.append(h('span', '', `歩行 ${fmtHM(p.movingMs / 60_000)} · 休憩 ${fmtHM(p.restMs / 60_000)}`));
   sub.append(h('span', '', `登り ${fmtM(track.ascent)} · 下り ${fmtM(track.descent)}`));
   if (p && p.evidenceMin > 10) sub.append(h('span', '', `標準の${p.overall.toFixed(2)}倍`));
+  // 記録した実際の天気のまとめ：雨の量（解析雨量）と気温（アメダスを、歩いた標高のまんなかに補正）
+  const rec = showingPlan() ? null : shownWeather();
+  const eles = points.map((q) => q.ele).filter((v): v is number => v != null).sort((x, y) => x - y);
+  const sum = first && last ? rec?.summary(first.t, last.t, eles.length ? eles[Math.floor(eles.length / 2)] : null) : null;
+  if (sum) {
+    const rain = sum.rainMm == null ? '' : sum.rainMm < 0.5 ? '雨なし' : `雨 約${sum.rainMm < 1 ? 1 : Math.round(sum.rainMm)}mm`;
+    const temp = sum.minTemp != null && sum.maxTemp != null ? `${Math.round(sum.minTemp)}〜${Math.round(sum.maxTemp)}℃` : '';
+    const from = [sum.rainMm != null ? '解析雨量' : '', rec?.station && temp ? `アメダス${rec.station.name}` : ''].filter(Boolean).join('・');
+    sub.append(h('span', '', `${[rain, temp].filter(Boolean).join(' · ')}${from ? `（${from}）` : ''}`));
+  }
   card.append(sub);
   const mini = miniProfileFor(points);
   if (mini) card.append(mini);
@@ -160,7 +197,7 @@ function renderActualTimeline(tl: HTMLElement) {
     const body = h('div');
     body.append(h('div', 'name', row.kind === 'rest' ? `休憩 ${fmtMin(row.restMs! / 60_000)}` : row.name));
     const p = state.shown!.points[row.index];
-    const wx = row.kind === 'rest' ? null : wxLine([p.lng, p.lat], row.t);
+    const wx = row.kind === 'rest' ? null : recordedWxLine([p.lng, p.lat], row.t, p.ele);
     if (wx) body.append(wx);
     const l = row.leg;
     body.append(
@@ -305,10 +342,13 @@ export function renderBody(nav: Nav | null) {
       b.type = 'button';
       b.addEventListener('click', fn);
       actions.append(b);
+      return b;
     };
     if (state.route.kind === 'gpx') btn('道沿いのルート候補を探す', () => void searchAlternativesForGpx(), 'primary');
     // 記録中は行程の向きを変えない（歩いた分の到着予想が崩れるため）
     if (!recorder.recording) btn('逆向き（帰り道）にする', reverseCurrentRoute);
+    // 出発時刻・ペースの到着予想どおりに歩くリプレイ（予報の雨・雲も出す）。長押しで録画しながら
+    if (!recorder.recording) onLongPress(btn('計画をリプレイ', () => replayPlan()), () => replayPlan({ capture: true }));
     btn('GPXで保存', exportRoute);
     btn('ルートを消す', clearRoute, 'danger');
   }

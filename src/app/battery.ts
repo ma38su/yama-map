@@ -25,14 +25,18 @@ export async function refreshBattery() {
   if (optimized == null) return;
   $('battery-note').textContent = optimized
     ? '電池の最適化の対象です。画面を消して長く記録していると、記録が止められることがあります。'
-    : '電池の最適化の対象外です。画面を消して長く記録しても止められにくくなっています。';
+    : '電池の最適化の対象外です。画面を消して長く記録しても止められにくくなっています。戻すときは、アプリ情報の「アプリの電池使用量」で変えられます。';
   // メーカー独自の省電力機能は、ここでは外せない（機種ごとの手順は docs/android-plan.md）
   $('battery-note').append(' メーカー独自の省電力機能がある機種は、その設定も確かめてください。');
-  $<HTMLButtonElement>('btn-battery').textContent = optimized ? '電池の最適化から外す' : '電池の最適化の設定を開く';
+  // 外してあるときは、外すか聞くダイアログが出ないので、アプリ情報の画面を開く（TrackingPlugin.openBatterySettings）
+  $<HTMLButtonElement>('btn-battery').textContent = optimized ? '電池の最適化から外す' : 'アプリ情報（電池の設定）を開く';
 }
 
 $('btn-battery').addEventListener('click', () => void openBatterySettings());
-// 設定の画面から戻ってきたら、表示を合わせ直す
-document.addEventListener('visibilitychange', () => {
+// 設定の画面から戻ってきたら、表示を合わせ直す。外すか聞くダイアログは画面の上に重なるだけで visibilitychange が起きないので、
+// アプリ版の resume（Capacitor が画面に戻ったときに document に出す）でも合わせる
+const refreshIfOpen = () => {
   if (document.visibilityState === 'visible' && $<HTMLDialogElement>('menu').open) void refreshBattery();
-});
+};
+document.addEventListener('visibilitychange', refreshIfOpen);
+document.addEventListener('resume', refreshIfOpen);

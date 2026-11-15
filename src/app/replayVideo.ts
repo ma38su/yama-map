@@ -24,9 +24,15 @@ function pickType(): { mime: string; ext: string } {
 
 /**
  * 録画を始める。caption は字幕（記録の名前と再生中の時刻など）を返す関数。
- * visibleHeight は地図のうちシートに隠れていない高さ (CSS px)
+ * visibleHeight は地図のうちシートに隠れていない高さ (CSS px)。
+ * overlay は画面の真ん中に大きく出すタイトル（経路名と日時）と、その濃さ（0〜1）。出していなければ null
  */
-export function startCapture(name: string, caption: () => string[], visibleHeight: () => number) {
+export function startCapture(
+  name: string,
+  caption: () => string[],
+  visibleHeight: () => number,
+  overlay: () => { lines: string[]; alpha: number } | null = () => null,
+) {
   if (rec || !captureSupported()) return;
   const src = map.getCanvas();
   const rain = map.getContainer().querySelector<HTMLCanvasElement>('canvas.rain');
@@ -49,16 +55,21 @@ export function startCapture(name: string, caption: () => string[], visibleHeigh
     const { sh, w, h } = size();
     ctx.drawImage(src, 0, 0, src.width, sh, 0, 0, w, h);
     if (rain && !rain.hidden && rain.width) ctx.drawImage(rain, 0, 0, rain.width, (rain.width / src.width) * sh, 0, 0, w, h);
-    const lines = caption();
     const fs = Math.round(h / 22);
-    ctx.font = `600 ${fs}px system-ui, sans-serif`;
-    ctx.textBaseline = 'bottom';
-    ctx.shadowColor = 'rgba(0,0,0,0.6)';
-    ctx.shadowBlur = fs / 3;
-    ctx.fillStyle = '#fff';
     const maxW = w - fs * 1.6;
-    lines.forEach((line, i) => ctx.fillText(fit(ctx, line, maxW), fs * 0.8, h - fs * 0.6 - (lines.length - 1 - i) * fs * 1.3));
-    ctx.shadowBlur = 0;
+    const o = overlay();
+    if (o && o.alpha > 0) drawTitle(ctx, o.lines, o.alpha, w, h);
+    else {
+      // タイトルを出しているあいだは、下の字幕は出さない
+      const lines = caption();
+      ctx.font = `600 ${fs}px system-ui, sans-serif`;
+      ctx.textBaseline = 'bottom';
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = fs / 3;
+      ctx.fillStyle = '#fff';
+      lines.forEach((line, i) => ctx.fillText(fit(ctx, line, maxW), fs * 0.8, h - fs * 0.6 - (lines.length - 1 - i) * fs * 1.3));
+      ctx.shadowBlur = 0;
+    }
     // 最初の場面を写してから記録を始める（始めの黒い画面を入れない）
     if (recorder.state === 'inactive') recorder.start(1000);
   };
@@ -69,6 +80,26 @@ export function startCapture(name: string, caption: () => string[], visibleHeigh
   map.on('render', draw);
   map.triggerRepaint();
   rec = { recorder, chunks, canvas, off: () => map.off('render', draw), name: `${name}.${ext}` };
+}
+
+/** 始めのタイトル：画面の真ん中に、暗い帯と大きな経路名・日時（alpha で消していく） */
+function drawTitle(ctx: CanvasRenderingContext2D, lines: string[], alpha: number, w: number, h: number) {
+  const big = Math.round(Math.min(w / 14, h / 10));
+  const small = Math.round(big * 0.55);
+  const bandH = big * 1.6 + (lines.length - 1) * small * 1.5;
+  const top = h * 0.38 - bandH / 2;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.fillRect(0, top, w, bandH);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `700 ${big}px system-ui, sans-serif`;
+  ctx.fillText(fit(ctx, lines[0], w - big), w / 2, top + big * 0.85);
+  ctx.font = `500 ${small}px system-ui, sans-serif`;
+  lines.slice(1).forEach((l, i) => ctx.fillText(fit(ctx, l, w - big), w / 2, top + big * 1.6 + small * (0.55 + i * 1.5)));
+  ctx.restore();
 }
 
 /** 幅に収まらない字幕は末尾を「…」にする */

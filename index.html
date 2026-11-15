@@ -102,7 +102,7 @@
           <span class="dot" aria-hidden="true"></span><span class="text">記録開始</span>
         </button>
         <div id="view-actions" class="view-actions" hidden>
-          <button id="btn-replay" class="rec-btn" type="button"><span aria-hidden="true">▶</span><span>リプレイ</span></button>
+          <button id="btn-replay" class="rec-btn" type="button" title="長押しで録画しながらリプレイ"><span aria-hidden="true">▶</span><span>リプレイ</span></button>
           <button id="btn-close-track" class="btn" type="button" aria-label="記録を閉じる">✕ 閉じる</button>
         </div>
         <button id="btn-photo" class="icon-btn" type="button" aria-label="写真を記録に残す" title="写真を記録に残す" hidden>
@@ -172,7 +172,7 @@
           <label class="toggle"><input type="checkbox" id="opt-hillshade" /> 陰影（起伏）を重ねる</label>
           <label class="toggle"><input type="checkbox" id="opt-daytone" /> 時刻に合わせて空と地図の色を変える（夜は暗め）</label>
           <label class="toggle"><input type="checkbox" id="opt-weather" /> 天気予報を出す（行程の天気・降水確率）</label>
-          <label class="toggle"><input type="checkbox" id="opt-weatherfx" /> 3Dで雲・雨・雪を表示する（予報に合わせたアニメーション）</label>
+          <label class="toggle"><input type="checkbox" id="opt-weatherfx" /> リプレイで雲・雨・雪を表示する（記録したときの天気に合わせたアニメーション）</label>
           <div class="field">
             <span class="field-label">3Dの起伏の強調 <output id="terrain-ex-value" for="opt-terrain-ex"></output></span>
             <input type="range" id="opt-terrain-ex" class="range" aria-label="3Dの起伏の強調" />

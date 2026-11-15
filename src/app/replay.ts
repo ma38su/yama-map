@@ -3,17 +3,19 @@
  * 視点は、後ろから追う・少し高くから俯瞰して追う・全体を見る、の3つから選ぶ（操作バーのボタン）。
  * 今の位置は赤い丸で、歩いているあいだは進む向きの矢じりを重ねる。休憩（点と点のあいだが空いているところ）は速く送る。
  */
-import { arrowPolygon, bbox, bearing as bearingTo, cumulativeDistances, distance, metersPerPixel, type LngLat } from '../geo';
+import { arrowPolygon, bbox, bearing as bearingTo, cumulativeDistances, distance, formatDistance, metersPerPixel, type LngLat } from '../geo';
 import { angleDiff } from '../nav/heading';
 import type { TrackPoint } from '../track/db';
-import { trackTitle } from '../track/names';
-import { $, fileStamp, fmtClock } from '../ui/dom';
+import { trackTitle, trackWhen } from '../track/names';
+import { $, fileStamp, fmtClock, h } from '../ui/dom';
 import { emptyFC, lineFC, map, pointFC, replayDoneGradient, setTerrain, src, updateDaylight } from './mapView';
 import { setReplayMarker } from './profileView';
 import { updateRecButton } from './recording';
 import { captureSupported, capturing, startCapture, stopCapture } from './replayVideo';
 import { saveSettings, savedOverrides, settings, type Settings } from '../settings';
 import { state } from './state';
+import { recordedWeatherSource, showingPlan, weatherShort } from './trackWeather';
+import { cachedForecastSource, setReplayWeather } from './weather';
 
 /** 再生の速さ（実際の何倍か） */
 const SPEEDS = [100, 300, 1000] as const;
@@ -69,6 +71,55 @@ const playBtn = $<HTMLButtonElement>('replay-play');
 const seek = $<HTMLInputElement>('replay-seek');
 const clock = $('replay-clock');
 const speedBtn = $<HTMLButtonElement>('replay-speed');
+
+// ---------- 始めのタイトル ----------
+/** 始めにタイトル（経路名と日時）を出す時間。このあいだにカメラが出発地へ動き、終わったら再生を始める */
+const TITLE_MS = 3200;
+/** タイトルを消していく時間 */
+const TITLE_FADE_MS = 600;
+const titleEl = h('div', 'replay-title');
+titleEl.hidden = true;
+map.getContainer().append(titleEl);
+/** 出しているタイトル（録画にも描く）と、出し始めた時刻 */
+let title: { lines: string[]; at: number } | null = null;
+let titleTimers: number[] = [];
+let titleRaf = 0;
+
+/** タイトルの濃さ（1 → 消していく → 0） */
+function titleAlpha(now = performance.now()): number {
+  if (!title) return 0;
+  const left = title.at + TITLE_MS - now;
+  return left <= 0 ? 0 : Math.min(1, left / TITLE_FADE_MS);
+}
+
+function hideTitle() {
+  for (const id of titleTimers) clearTimeout(id);
+  titleTimers = [];
+  cancelAnimationFrame(titleRaf);
+  title = null;
+  titleEl.hidden = true;
+  titleEl.classList.remove('fade');
+}
+
+/** タイトルを出す。録画中は、消えていくところも録画に入るように、そのあいだだけ地図を描き直す */
+function showTitle(lines: string[]) {
+  hideTitle();
+  title = { lines, at: performance.now() };
+  titleEl.replaceChildren(h('div', 'name', lines[0]), ...lines.slice(1).map((l) => h('div', 'sub', l)));
+  // 地図のうちシートに隠れていない部分の、上から4割ほどのところに出す（録画の中と同じ位置）
+  titleEl.style.top = `${Math.max(48, $('sheet').getBoundingClientRect().top * 0.38)}px`;
+  titleEl.hidden = false;
+  titleTimers.push(
+    window.setTimeout(() => titleEl.classList.add('fade'), TITLE_MS - TITLE_FADE_MS),
+    window.setTimeout(hideTitle, TITLE_MS),
+  );
+  const tick = () => {
+    if (!title) return;
+    if (capturing()) map.triggerRepaint();
+    titleRaf = requestAnimationFrame(tick);
+  };
+  titleRaf = requestAnimationFrame(tick);
+}
 
 /** リプレイ中か（一時停止中も含む） */
 export const replayActive = () => !bar.hidden;
@@ -138,6 +189,10 @@ function aimCamera(duration: number) {
   map.easeTo({ center: positionAt(t), bearing, pitch: v.pitch, zoom, duration });
 }
 
+/** 時刻の横に出している天気と、それを引いた時刻 */
+let wxText = '';
+let wxAt = -Infinity;
+
 /** 位置・カメラ・時刻の表示を t に合わせる */
 function render(follow: boolean) {
   const { i, f } = locate(t);
@@ -147,7 +202,12 @@ function render(follow: boolean) {
   src('replay')?.setData(pointFC(here));
   const resting = b.t - a.t > REST_GAP_MS && f > 0 && f < 1;
   drawDirection(here, i, !resting && t < pts[pts.length - 1].t, follow);
-  clock.textContent = `${fmtClock(t)}${resting ? ` 休憩中（${Math.round((b.t - a.t) / 60_000)}分）` : ''}`;
+  // 天気は、時刻が1分動いたら引き直す
+  if (Math.abs(t - wxAt) >= 60_000) {
+    wxAt = t;
+    wxText = weatherShort(here, t);
+  }
+  clock.textContent = `${fmtClock(t)}${wxText ? ` ${wxText}` : ''}${resting ? ` 休憩中（${Math.round((b.t - a.t) / 60_000)}分）` : ''}`;
   seek.value = String(Math.round(((t - pts[0].t) / (pts[pts.length - 1].t - pts[0].t)) * 1000));
   // 視点を変えている途中と「全体」のときは、カメラを動かさない
   if (follow && view !== 'whole' && performance.now() >= easingUntil) {
@@ -229,8 +289,11 @@ function fitPadding() {
 // リプレイ中にシートを最小にしたり開いたりしたら、追いかける位置も合わせる
 new ResizeObserver(() => replayActive() && fitPadding()).observe($('sheet'));
 
-/** 開いている記録のリプレイを始める（3D にして、出発地の後ろから見る） */
-export function startReplay() {
+/**
+ * 開いている記録のリプレイを始める（3D にして、出発地の後ろから見る）。始めに経路名と日時のタイトルを出し、
+ * そのあいだにカメラを出発地へ動かしてから再生する。capture なら、タイトルから録画する（リプレイボタンの長押し）
+ */
+export function startReplay(opts: { capture?: boolean } = {}) {
   const shown = state.shown;
   if (!shown || shown.points.length < 2) return;
   pts = shown.points;
@@ -240,6 +303,9 @@ export function startReplay() {
   drawnProgress = -1;
   src('replay-done')?.setData(lineFC(pts.map(lngLat)));
   bar.hidden = false;
+  // 雲・雨・雪はリプレイ中だけ。記録は記録したときの天気、計画は端末に残っている予報で（リプレイ中は取りに行かない）
+  wxAt = -Infinity;
+  setReplayWeather(true, showingPlan() ? cachedForecastSource : recordedWeatherSource);
   terrainBefore = settings.terrain;
   savedOverrides.terrain = terrainBefore;
   setTerrain(true);
@@ -247,13 +313,23 @@ export function startReplay() {
   const intro = 1200;
   // シートに隠れない部分の真ん中で追いかける
   fitPadding();
+  // 録画するなら、タイトルとカメラの動きから入れる
+  if (opts.capture) beginCapture();
+  const track = shown.track;
+  showTitle([trackTitle(track), `${trackWhen(track)} · ${formatDistance(track.distance)}`]);
   aimCamera(intro);
-  // カメラが出発地に着いてから動かし始める
+  // タイトルを出し終えてから（カメラは出発地に着いている）動かし始める
   const token = ++session;
   setTimeout(() => {
     if (replayActive() && token === session && !playing) play();
-  }, intro + 100);
+  }, TITLE_MS);
   render(false);
+}
+
+let stoppedHandler: (() => void) | null = null;
+/** リプレイをやめたときに呼ぶ処理（計画のリプレイなら計画の画面に戻す：recording.ts） */
+export function onReplayStopped(fn: () => void) {
+  stoppedHandler = fn;
 }
 
 /** リプレイをやめる */
@@ -262,6 +338,8 @@ export function stopReplay() {
   void stopRecording();
   pause();
   bar.hidden = true;
+  hideTitle();
+  setReplayWeather(false);
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
   state.daylightAt = null;
   delete savedOverrides.terrain;
@@ -275,9 +353,17 @@ export function stopReplay() {
   if (map.getLayer('replay-done')) map.setPaintProperty('replay-done', 'line-gradient', replayDoneGradient(0));
   lastIndex = -1;
   setReplayMarker(null);
+  stoppedHandler?.();
 }
 
-playBtn.addEventListener('click', () => (playing ? pause() : play()));
+playBtn.addEventListener('click', () => {
+  if (playing) pause();
+  else {
+    // タイトルの途中で再生を押したら、すぐ始める
+    hideTitle();
+    play();
+  }
+});
 
 // ---------- 録画 ----------
 const recBtn = $<HTMLButtonElement>('replay-rec');
@@ -293,21 +379,29 @@ async function stopRecording() {
   await stopCapture();
   updateRecBtn();
 }
+/** 録画を始める（字幕は経路名と日付・時刻、始めのタイトルも録画に描く） */
+function beginCapture() {
+  const track = state.shown?.track;
+  if (!track || pts.length < 2 || capturing()) return;
+  startCapture(
+    `yama-replay-${fileStamp(track.startedAt)}`,
+    () => [trackTitle(track), `${track.route ? `${new Date(track.startedAt).toLocaleDateString('ja-JP')} ` : ''}${clock.textContent ?? ''}`],
+    () => $('sheet').getBoundingClientRect().top,
+    () => (title ? { lines: title.lines, alpha: titleAlpha() } : null),
+  );
+  updateRecBtn();
+}
 recBtn.addEventListener('click', () => {
   if (capturing()) {
     void stopRecording();
     return;
   }
-  const track = state.shown?.track;
-  if (!track || pts.length < 2) return;
-  startCapture(
-    `yama-replay-${fileStamp(track.startedAt)}`,
-    () => [trackTitle(track), `${track.route ? `${new Date(track.startedAt).toLocaleDateString('ja-JP')} ` : ''}${clock.textContent ?? ''}`],
-    () => $('sheet').getBoundingClientRect().top,
-  );
-  updateRecBtn();
+  beginCapture();
   // 止まっていたら再生を始める（最後まで行っていたら最初から）
-  if (!playing) play();
+  if (!playing) {
+    hideTitle();
+    play();
+  }
 });
 $('replay-close').addEventListener('click', () => {
   stopReplay();

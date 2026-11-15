@@ -149,14 +149,21 @@ public class TrackingPlugin extends Plugin {
     }
 
     /**
-     * 電池の最適化から外す画面を開く（このアプリだけを聞くダイアログ）。開けなければ、アプリの一覧の設定画面。
-     * Play ストアで配るときは、このダイアログを出すのは審査の対象になる（docs/android-plan.md）
+     * 電池の最適化の設定を開く。最適化の対象なら、外すか聞くダイアログ（このアプリだけ）。
+     * もう外してあれば、このダイアログは何も出さずに閉じるので、アプリ情報の画面（「アプリの電池使用量」から変えられる）。
+     * 開けなければ、アプリの一覧の設定画面。
+     * Play ストアで配るときは、外すか聞くダイアログを出すのは審査の対象になる（docs/android-plan.md）
      */
     @PluginMethod
     public void openBatterySettings(PluginCall call) {
         String pkg = getContext().getPackageName();
+        PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+        boolean ignoring = pm != null && pm.isIgnoringBatteryOptimizations(pkg);
+        Intent first = ignoring
+            ? new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg))
+            : new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + pkg));
         try {
-            getActivity().startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + pkg)));
+            getActivity().startActivity(first);
         } catch (ActivityNotFoundException e) {
             try {
                 getActivity().startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));

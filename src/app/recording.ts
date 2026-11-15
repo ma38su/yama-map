@@ -6,13 +6,13 @@ import { backgroundCapable, pendingRecordedTracks, stopTrackingService, tracking
 import { routeNameOf, trackTitle } from '../track/names';
 import { TrackRecorder, fillMissingElevations } from '../track/recorder';
 import { saveSettings, settings } from '../settings';
-import { $, fmtM } from '../ui/dom';
+import { $, fmtM, onLongPress } from '../ui/dom';
 import { dem, geolocate, map } from './mapView';
 import { refreshTrackList } from './menu';
 import { setProfileSource } from './profileView';
-import { replayActive, startReplay, stopReplay } from './replay';
+import { onReplayStopped, replayActive, startReplay, stopReplay } from './replay';
 import { sheet } from './sheetView';
-import { markTrackStale, refreshNow, updateNav } from './nav';
+import { PLAN_REPLAY_ID, markTrackStale, planTrack, refreshNow, updateNav } from './nav';
 import { suggestBatteryExemption } from './battery';
 import { exitPocket } from './pocket';
 import { checkOffRoute } from './offRouteAlert';
@@ -20,6 +20,7 @@ import { renderPhotos } from './photos';
 import { state } from './state';
 import { status } from './status';
 import { nameFinishedTrack } from './trackNames';
+import { collectFinished, collectWhileRecording } from './trackWeather';
 import { drawTrackLine, offerTrim } from './trimView';
 
 // ---------- 現在地 ----------
@@ -128,6 +129,8 @@ export const recorder = new TrackRecorder(dem, (s) => {
   } else if (s.points.length !== lastPointCount) markTrackStale();
   // 道迷いの判定は点が届いたらすぐ（画面を消していても知らせるため）
   if (s.points.length !== lastPointCount || recState !== lastChecked) checkOffRoute(s.points, recorder.recording);
+  // 記録中は、電波があれば30分ごとに、そこまでの歩いた場所の雨（実際の天気）を残す
+  if (recorder.recording && s.points.length !== lastPointCount) collectWhileRecording(s.track, s.points);
   lastChecked = recState;
   lastPointCount = s.points.length;
   if (ended) onRecordingEnded(s.track!);
@@ -141,6 +144,8 @@ function onRecordingEnded(t: Track) {
   offerTrim(t);
   void fillShownElevations();
   void refreshTrackList();
+  // 実際の天気（雨・空の様子・アメダスの気温と風）を取って残す（圏外なら、電波が戻ったとき・次にアプリを開いたときに）
+  collectFinished(t, recorder.state.points);
   // 経路名がなければ付ける（今のルートの名前、なければ近くの山小屋・温泉などの名前）
   void nameFinishedTrack(t, recorder.state.points)
     .then((named) => {
@@ -227,6 +232,40 @@ export function closeTrack() {
   updateNav();
 }
 $('btn-close-track').addEventListener('click', closeTrack);
+
+/**
+ * 計画をリプレイする：今のルートを出発時刻・ペースの到着予想どおりに歩いたとして、予報の雲・雨・雪とともに見る
+ * （途中から雨になるかなどが分かる）。リプレイを終えたら計画の画面に戻る
+ */
+export function replayPlan(opts: { capture?: boolean } = {}) {
+  const plan = planTrack();
+  if (!plan || recorder.recording) return;
+  stopReplay();
+  state.shown = { track: plan.track, points: plan.points, all: plan.points };
+  setProfileSource('track');
+  stopGeolocate();
+  renderTrack();
+  updateRecButton();
+  updateNav();
+  // 地図が見えるように、シートは半分まで（録画するなら一番下まで）下げる
+  if (opts.capture) sheet.setState('mini');
+  else if (sheet.isOpen) sheet.setState('half');
+  startReplay(opts);
+  updateRecButton();
+}
+// 計画のリプレイを終えたら、計画の画面に戻る
+onReplayStopped(() => {
+  if (state.shown?.track.id === PLAN_REPLAY_ID) closeTrack();
+});
+// 長押しで、録画しながらリプレイ（始めのタイトルから録画する）
+onLongPress($('btn-replay'), () => {
+  if (replayActive()) return;
+  // 録画は地図の見えている部分を写すので、シートは一番下まで下げる
+  sheet.setState('mini');
+  startReplay({ capture: true });
+  updateRecButton();
+  status('録画しながらリプレイします（● か ✕ で止めると保存します）');
+});
 $('btn-replay').addEventListener('click', () => {
   if (replayActive()) stopReplay();
   else {
