@@ -124,14 +124,18 @@ let photos: TrackPhoto[] = [];
 let markers: Marker[] = [];
 let urls: string[] = [];
 let loadedFor: string | null = null;
+/** 読み込みを始めるたびに増やす（読み込みが重なったら、最後に始めたものだけを描く） */
+let loadSeq = 0;
 
 /** 表示中の記録の写真を地図に出す（記録が変わったときだけ読み直す） */
 export async function renderPhotos() {
   const id = state.shown?.track.id ?? null;
   if (id === loadedFor) return;
   loadedFor = id;
+  const seq = ++loadSeq;
   const list = id ? await getPhotos(id).catch(() => [] as TrackPhoto[]) : [];
-  if (loadedFor !== id) return; // 読んでいるあいだに別の記録に変わった
+  // 読んでいるあいだに別の記録に変わった・同じ記録を読み直し始めた（写真を続けて足したときなど。古い一覧で上書きしないように）
+  if (seq !== loadSeq) return;
   for (const m of markers) m.remove();
   for (const u of urls) URL.revokeObjectURL(u);
   photos = list;

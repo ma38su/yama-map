@@ -20,6 +20,8 @@ export class BottomSheet {
   /** ノッチ・ステータスバーの高さ。画面の向きが変わったら測り直す */
   private safeTopPx: number | null = null;
   private drag: { y0: number; h0: number; t0: number; moved: boolean; id: number } | null = null;
+  /** 閉じきったら中身を非表示にするタイマー */
+  private hideTimer = 0;
 
   constructor(
     private readonly handle: HTMLElement,
@@ -84,12 +86,12 @@ export class BottomSheet {
     document.body.classList.toggle('sheet-mini', state === 'mini');
     this.handle.setAttribute('aria-label', open ? '詳細を閉じる' : state === 'mini' ? '表示を戻す' : '詳細を開く');
     if (!open) {
-      // 閉じきったら非表示（スクリーンリーダー・タブ移動の対象外に）
-      const done = () => {
+      // 閉じきったら非表示（スクリーンリーダー・タブ移動の対象外に）。閉じる動き（0.22秒）が終わるころに1回だけ確かめる
+      // （transitionend は、動きのない最小⇄閉じるでは来ずにリスナーが残り、中の要素の動きでも来るので使わない）
+      clearTimeout(this.hideTimer);
+      this.hideTimer = window.setTimeout(() => {
         if (!this.isOpen) this.body.hidden = true;
-      };
-      this.body.addEventListener('transitionend', done, { once: true });
-      setTimeout(done, 400);
+      }, 400);
     }
     if (open || wasOpen) this.onChange(open);
   }

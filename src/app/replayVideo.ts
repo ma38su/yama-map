@@ -117,11 +117,21 @@ export function stopCapture(save = true): Promise<void> {
   rec = null;
   r.off();
   return new Promise((resolve) => {
-    r.recorder.onstop = () => {
-      if (save && r.chunks.length) download(r.name, new Blob(r.chunks, { type: r.recorder.mimeType || 'video/webm' }));
+    // canvas の映像の流れも止める（止めないと、録画を終えても canvas を写し続ける）
+    const finish = () => {
+      r.recorder.stream.getTracks().forEach((t) => t.stop());
       resolve();
     };
-    if (r.recorder.state === 'inactive') resolve();
+    r.recorder.onstop = () => {
+      if (save && r.chunks.length) download(r.name, new Blob(r.chunks, { type: r.recorder.mimeType || 'video/webm' }));
+      finish();
+    };
+    // 録画のエラーでは onstop が来ないことがあるので、そのときも終える（ボタンの表示が戻らなくならないように）
+    r.recorder.onerror = (e) => {
+      console.warn('録画できませんでした', e);
+      finish();
+    };
+    if (r.recorder.state === 'inactive') finish();
     else r.recorder.stop();
   });
 }

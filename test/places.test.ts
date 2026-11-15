@@ -10,6 +10,7 @@ import {
   osmDetails,
   osmKind,
   overpassQuery,
+  overpassRuntimeError,
   parseCommonsInfo,
   parseCommonsSearch,
   parseInat,
@@ -217,6 +218,12 @@ describe('OpenStreetMap', () => {
   });
   it('答えが読めなければ例外（混んでいるときのエラー）', () => {
     expect(() => parseOverpass({ remark: 'runtime error' })).toThrow();
+  });
+  it('時間切れの途中までの答え（HTTP 200 で elements は空、remark に runtime error）は、何もないとして読まない', () => {
+    const json = { elements: [], remark: 'runtime error: Query timed out in "query" at line 3 after 26 seconds.' };
+    expect(overpassRuntimeError(json)).toContain('timed out');
+    expect(() => parseOverpass(json)).toThrow();
+    expect(overpassRuntimeError({ elements: [] })).toBeNull();
   });
 });
 

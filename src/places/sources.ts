@@ -301,10 +301,20 @@ export function parseInat(json: unknown): PlaceItem[] {
 export const OVERPASS_ENDPOINTS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 
 /**
- * 取る種類を変えたら上げる。前の版で取ったマス目は古いとみなして取り直す（app/places.ts）。
+ * 取る種類を変えたら上げる。前の版で取ったマス目は古いとみなして取り直す（app/places.ts。上書きするだけで消さない）。
  * 版2：宿・見どころ・山頂（名前のあるもの）・バス停・駐車場を足した
+ * 版3：混んでいるときの途中までの答え（runtime error）を「何もない」として残していたので、取り直す
  */
-export const OSM_QUERY_VERSION = 2;
+export const OSM_QUERY_VERSION = 3;
+
+/**
+ * Overpass の答えが、時間切れ・メモリ不足で途中までのものなら、その知らせ（そうでなければ null）。
+ * Overpass は HTTP 200 のまま、elements を空か途中までにして remark に「runtime error: …」を入れて返す
+ */
+export function overpassRuntimeError(json: unknown): string | null {
+  const remark = (json as { remark?: unknown } | null)?.remark;
+  return typeof remark === 'string' && /runtime error/i.test(remark) ? remark : null;
+}
 
 /** 範囲 (west, south, east, north) の中の山小屋・水場・宿・山頂・バス停など（POST の data に入れる） */
 export function overpassQuery([w, s, e, n]: [number, number, number, number]): string {
@@ -388,7 +398,7 @@ interface OsmElement {
 
 export function parseOverpass(json: unknown): PlaceItem[] {
   const list = (json as { elements?: OsmElement[] }).elements;
-  if (!Array.isArray(list)) throw new Error('OpenStreetMap の答えが読めませんでした');
+  if (!Array.isArray(list) || overpassRuntimeError(json)) throw new Error('OpenStreetMap の答えが読めませんでした');
   const out: PlaceItem[] = [];
   for (const el of list) {
     const tags = el.tags ?? {};

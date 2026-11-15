@@ -318,7 +318,8 @@ export async function nativeReport(): Promise<{ diag: NativeDiagnostics; log: st
   if (!backgroundCapable) return null;
   const [diag, nlog, logcat] = await Promise.all([
     Tracking.diagnostics(),
-    Tracking.getLog({ limit: 300 }).catch(() => ({ lines: [] })),
+    // 記録のサービスが残している分（TrackingStore の LOG_KEEP）を全部読む（見るときだけなので負担はない）
+    Tracking.getLog({ limit: 2000 }).catch(() => ({ lines: [] })),
     Tracking.getLogcat({ lines: 400 }).catch((e) => ({ text: `logcat を読めませんでした: ${e}` })),
   ]);
   return { diag, log: nlog.lines.reverse().map((l) => `${new Date(l.t).toLocaleString('ja-JP')} ${l.msg}`), logcat: logcat.text };

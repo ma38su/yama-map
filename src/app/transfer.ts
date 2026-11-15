@@ -5,7 +5,7 @@
  */
 import { log } from '../log';
 import { backupHeader, parseBackupHeader, parseBackupLine, prepareTrack, type BackupPhoto } from '../track/backup';
-import { getPhotos, getPoints, getTrackWeather, listTracks, putPhoto, putTrackWeather, putTrackWithPoints, type Track, type TrackPoint } from '../track/db';
+import { appendPoints, getPhotos, getPoints, getTrackWeather, listTracks, putPhoto, putTrackWeather, type Track, type TrackPoint } from '../track/db';
 import type { TrackWeather } from '../track/weatherLog';
 import { $, download, fileStamp } from '../ui/dom';
 import { refreshTrackList } from './tracks';
@@ -83,7 +83,7 @@ async function importFile(file: File) {
         skipped++;
         return;
       }
-      await putTrackWithPoints(ready.track, ready.points);
+      await appendPoints(ready.track, ready.points);
       if (weather) await putTrackWeather(weather).catch((e) => console.warn('記録したときの天気を読み込めませんでした', e));
       imported.add(track.id);
     };

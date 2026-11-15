@@ -3,7 +3,7 @@ import { distance, type LngLat } from '../geo';
 import { BASE_LAYERS, TERRAIN_EXAGGERATION_RANGE, setBaseLayer, setHillshade, type BaseLayerId } from '../map/style';
 import { PACE_PRESETS, type PacePreset } from '../nav/eta';
 import { ROUTE_PREFS, buildGpxRoute, makePoint, type RoutePref } from '../nav/plan';
-import { deleteTrack, listTracks, putTrackWithPoints } from '../track/db';
+import { appendPoints, deleteTrack, listTracks } from '../track/db';
 import { parseGpx } from '../track/gpx';
 import { backgroundCapable } from '../track/location';
 import { generateSampleTrack } from '../track/sample';
@@ -205,6 +205,13 @@ export async function ensureBuiltinPlan() {
   if (settings.builtinPlan) return;
   const preset = PRESETS[0];
   try {
+    const tracks = await listTracks();
+    // 入れ終えたのに印だけ保存できていなかったとき（設定の保存に失敗した・設定だけ消えた）は、作り直さない（点は追記になり、二重になるため）
+    if (tracks.some((t) => t.id === BUILTIN_PLAN.id)) {
+      settings.builtinPlan = true;
+      saveSettings();
+      return;
+    }
     const res = await fetch(preset.file);
     if (!res.ok) return;
     const r = await buildGpxRoute(parseGpx(await res.text()), elevation);
@@ -219,8 +226,8 @@ export async function ensureBuiltinPlan() {
       restEveryMin: BUILTIN_PLAN.restEveryMin,
       restMin: [BUILTIN_PLAN.restMin, BUILTIN_PLAN.restMin],
     });
-    await putTrackWithPoints({ ...track, id: BUILTIN_PLAN.id, route: preset.title }, points.map((p) => ({ ...p, trackId: BUILTIN_PLAN.id })));
-    for (const t of await listTracks()) if (t.id.startsWith('sample-')) await deleteTrack(t.id).catch(() => {}); // ロックしていれば残す
+    await appendPoints({ ...track, id: BUILTIN_PLAN.id, route: preset.title }, points.map((p) => ({ ...p, trackId: BUILTIN_PLAN.id })));
+    for (const t of tracks) if (t.id.startsWith('sample-')) await deleteTrack(t.id).catch(() => {}); // ロックしていれば残す
     settings.builtinPlan = true;
     saveSettings();
     await refreshTrackList();

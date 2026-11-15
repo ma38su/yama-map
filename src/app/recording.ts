@@ -7,7 +7,7 @@ import { routeNameOf, trackTitle } from '../track/names';
 import { TrackRecorder, fillMissingElevations } from '../track/recorder';
 import { saveSettings, settings } from '../settings';
 import { $, fmtM, onLongPress } from '../ui/dom';
-import { dem, geolocate, map } from './mapView';
+import { dem, geolocate, map, mapReady } from './mapView';
 import { refreshTrackList } from './tracks';
 import { setProfileSource } from './profileView';
 import { onReplayStopped, replayActive, startReplay, stopReplay } from './replay';
@@ -70,7 +70,8 @@ export function hereLngLat(): LngLat | null {
 /** 現在地の追従をオンにする（trigger() はオン/オフの切り替えなので、オフのときだけ押す） */
 export function startGeolocate() {
   // 地図の読み込み前は、現在地ボタンの準備ができていないので、読み込んでから
-  if (!map.loaded()) {
+  // （map.loaded() はタイルの読み込み中にも false になり、そのとき 'load' を待っても、もう来ないので使わない）
+  if (!mapReady()) {
     map.once('load', startGeolocate);
     return;
   }
@@ -286,7 +287,8 @@ export async function fillShownElevations() {
     return null;
   });
   if (!updated || state.shown?.track.id !== updated.id) return;
-  state.shown = { ...state.shown, track: updated };
+  // 変わったのは登り・下りだけ（範囲や経路名は、埋めているあいだに変えたものを残す）
+  state.shown = { ...state.shown, track: { ...state.shown.track, ascent: updated.ascent, descent: updated.descent } };
   state.revision++;
   updateNav();
   void refreshTrackList();

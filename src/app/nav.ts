@@ -1,5 +1,4 @@
 /** 到着予想：ルート上の位置・ペース・出発時刻から、各地点の到着予想を計算して画面に反映する */
-import { distance } from '../geo';
 import {
   addEstimates,
   analyzePace,
@@ -55,10 +54,41 @@ export interface Nav {
   sunset: number | null;
 }
 
-/** 記録の中で地点の近く（80m以内）を最初に通った時刻 */
-function arrivalTime(m: Mark): number | null {
-  for (const p of recorder.state.points) if (distance([p.lng, p.lat], m.lngLat) < 80) return p.t;
-  return null;
+/** ルートからこれ以上離れていたら、ルートの上にいないとみなす (m) */
+const ON_ROUTE_M = 300;
+/** 地点のこれだけ手前まで来たら、通ったとみなす (m) */
+const PASSED_M = 30;
+
+/**
+ * 記録の点ごとの「ルートのどこまで進んだか」（ルートに当てはめた位置の、それまでで一番先。ルートから離れた点は数えない）。
+ * 前の点の位置を手がかりに当てはめるので、周回・往復のルートでも出発地と目的地を取り違えない。点は増えるだけなので、増えた分だけ当てはめる
+ */
+let reach: { route: ActiveRoute | null; key: string; along: number[]; hint: number | undefined } = { route: null, key: '', along: [], hint: undefined };
+function reachedAlong(r: ActiveRoute, from: number, pts: TrackPoint[]): number[] {
+  const key = `${pts[0]?.trackId}:${state.revision}`;
+  if (reach.route !== r || reach.key !== key || reach.along.length > pts.length) reach = { route: r, key, along: [], hint: from };
+  let max = reach.along.at(-1) ?? -Infinity;
+  for (let i = reach.along.length; i < pts.length; i++) {
+    const pos = projectOnRoute(r.coords, r.dists, [pts[i].lng, pts[i].lat], reach.hint);
+    if (pos && pos.offset < ON_ROUTE_M) {
+      reach.hint = pos.along;
+      max = Math.max(max, pos.along);
+    }
+    reach.along.push(max);
+  }
+  return reach.along;
+}
+
+/** 地点に着いた時刻：記録で、地点の手前 PASSED_M まで最初に進んだ点の時刻（通過の判定と同じ）。まだなら null */
+function arrivalTime(m: Mark, pts: TrackPoint[], reached: number[]): number | null {
+  let lo = 0;
+  let hi = reached.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (reached[mid] >= m.along - PASSED_M) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < reached.length ? pts[lo].t : null;
 }
 
 /** 出発時刻 (ms)。記録中・時刻を指定していないときは今。今より6時間以上前の時刻は翌日 */
@@ -93,8 +123,10 @@ function computeNav(): Nav | null {
   const pos = here ? projectOnRoute(r.coords, r.dists, here, state.lastNav?.pos?.along) : null;
   // 出発時刻を指定しているあいだは計画の確認なので、現在地に関係なく出発地から数える
   const planning = !recorder.recording && !!settings.departAt;
-  const onRoute = !planning && !!pos && pos.offset < 300 && pos.along >= span.from - 100 && pos.along <= span.to + 100;
-  const pace = recorder.recording ? paceOf(recorder.state.points) : null;
+  const onRoute = !planning && !!pos && pos.offset < ON_ROUTE_M && pos.along >= span.from - 100 && pos.along <= span.to + 100;
+  // recorder.state は呼ぶたびに作り直すので1回だけ
+  const points = recorder.state.points;
+  const pace = recorder.recording ? paceOf(points) : null;
   const factors = pace?.factors ?? defaultFactors(settings.pace);
   // 記録中にルートから離れたら、いちばん近いルート上の地点に戻ってから先を歩くとみなす
   // （戻るまでは平坦な直線として見積もる）。遠すぎるときは出発地から数える
@@ -104,17 +136,19 @@ function computeNav(): Nav | null {
   const rejoin = rejoining ? { ...estimateFlat(rejoinM, factors), distM: rejoinM } : null;
   const startAt = onRoute || rejoining ? Date.now() : departureTime();
   const marks = r.marks.filter((m) => m.along >= span.from - 1 && m.along <= span.to + 1);
+  /** 記録の点ごとの、ルートのどこまで進んだか（通った地点の到着時刻を出すのに使う） */
+  const reached = points.length ? reachedAlong(r, span.from, points) : [];
   const rows: Row[] = marks.map((m, i) => {
     const prev = i > 0 ? marks[i - 1].along : m.along;
     const g = tl.gain(prev, m.along);
     // ルートから離れているあいだは、戻る地点より手前の地点だけを通過済みにする（目的地に着いたことにはしない）
-    const passed = onRoute ? m.along <= fromAlong + 30 : rejoining && m.kind !== 'dest' && m.along < fromAlong - 30;
+    const passed = onRoute ? m.along <= fromAlong + PASSED_M : rejoining && m.kind !== 'dest' && m.along < fromAlong - PASSED_M;
     const ahead = passed ? null : estimate(tl, fromAlong, m.along, factors);
     const remain = ahead && rejoin ? addEstimates(rejoin, ahead) : ahead;
     return {
       mark: m,
       passed,
-      time: remain ? startAt + remain.totalMin * 60_000 : arrivalTime(m),
+      time: remain ? startAt + remain.totalMin * 60_000 : arrivalTime(m, points, reached),
       remainM: passed ? 0 : Math.max(0, m.along - fromAlong) + rejoinM,
       remain,
       leg: i > 0 ? { dist: m.along - prev, up: g.ascent, down: g.descent, est: estimate(tl, prev, m.along, factors) } : null,
@@ -186,7 +220,6 @@ function renderDone(nav: Nav | null) {
   done.setData(r && n ? lineFC(r.coords.slice(0, n)) : emptyFC);
   ahead.setData(r ? lineFC(r.coords.slice(Math.max(0, n - 1))) : emptyFC);
   doneDrawn = { route: r, n };
-  markPassed(nav);
 }
 
 let arrivedNotified = false;
@@ -200,6 +233,8 @@ export function updateNav() {
   // ポケット表示のあいだは地図とシートを隠しているので描かない（到着予想はポケット表示が使う）。戻ったら refreshNow で描く
   if (pocketActive()) return;
   renderDone(nav);
+  // 地点の印（通過・次）は線と別に毎回合わせる（ルートに戻る途中は線が変わらなくても、印は変わるため。class を変えるだけで軽い）
+  markPassed(nav);
   renderCard(nav);
   if (sheet.isOpen) renderBody(nav);
   renderStatus();

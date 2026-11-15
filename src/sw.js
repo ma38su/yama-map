@@ -85,8 +85,31 @@ async function tile(req, event) {
     return res;
   } catch (e) {
     if (seen) return seen; // 取り直せなければ古いものを使う
+    // OpenFreeMap は版が変わるとタイルの URL も変わる。保存したときの版のタイルがあれば、それを使う（圏外で、保存した道データ・小道を出すため）
+    const saved = await savedOsmTile(req.url);
+    if (saved) return saved;
     throw e;
   }
+}
+
+/** OpenFreeMap のタイルの URL：/planet/<版>/{z}/{x}/{y}.pbf（src/places/load.ts にも同じもの） */
+const OSM_TILE_URL = /^(https:\/\/tiles\.openfreemap\.org\/planet\/)([^/]+)(\/\d+\/\d+\/\d+\.pbf)$/;
+/** 保存した地図にある OpenFreeMap の版。圏外で今の版のタイルが見つからなかったときに、一度だけ数える */
+let savedOsmVersions = null;
+async function savedOsmTile(url) {
+  const m = OSM_TILE_URL.exec(url);
+  if (!m) return undefined;
+  const cache = await caches.open(TILE_CACHE);
+  savedOsmVersions ??= cache
+    .keys()
+    .then((keys) => [...new Set(keys.map((k) => OSM_TILE_URL.exec(k.url)?.[2]).filter(Boolean))])
+    .catch(() => []);
+  for (const v of await savedOsmVersions) {
+    if (v === m[2]) continue;
+    const hit = await cache.match(`${m[1]}${v}${m[3]}`, { ignoreVary: true });
+    if (hit) return hit;
+  }
+  return undefined;
 }
 
 function isOld(res) {

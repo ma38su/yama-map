@@ -88,7 +88,8 @@ async function planView(): Promise<Plan> {
     name: `表示中の範囲（${c.lat.toFixed(3)}, ${c.lng.toFixed(3)} 付近）`,
     bounds,
     urls,
-    cells: placeCellsIn(bounds, 16),
+    // 地図と同じ範囲を残す（16マスで打ち切ると、広く表示しているときに外側の場所の情報が抜けていた。範囲の広さは MAX_TILES で抑えている）
+    cells: placeCellsIn(bounds),
     near: ([lng, lat]) => lng >= w && lng <= e && lat >= s && lat <= n,
   };
 }

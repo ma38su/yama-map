@@ -7,6 +7,7 @@
  *    名前と種類だけを出す（partial。あとで Overpass から取り直す）
  *  - iNaturalist は 1秒に1回まで
  */
+import { TILE_CACHE } from '../offline/download';
 import { OSM_ZOOM, decodeOsmPois, osmTileUrls } from '../route/roadTiles';
 import {
   OVERPASS_ENDPOINTS,
@@ -16,6 +17,7 @@ import {
   commonsSearchUrl,
   inatUrl,
   overpassQuery,
+  overpassRuntimeError,
   parseCommonsInfo,
   parseCommonsSearch,
   parseInat,
@@ -95,7 +97,11 @@ async function overpassCells(cells: string[], signal?: AbortSignal): Promise<Map
   for (let tries = 1; ; tries++) {
     const endpoint = OVERPASS_ENDPOINTS[overpassIndex % OVERPASS_ENDPOINTS.length];
     try {
-      return splitByCell(parseOverpass(await getJson(endpoint, { method: 'POST', body, signal, timeoutMs: 60_000 })), cells);
+      const json = await getJson(endpoint, { method: 'POST', body, signal, timeoutMs: 60_000 });
+      // 時間切れ・メモリ不足の途中までの答えは、混んでいるとして別のサーバーに聞き直す（何もないとして残さない）
+      const busy = overpassRuntimeError(json);
+      if (busy) throw new BusyError(busy);
+      return splitByCell(parseOverpass(json), cells);
     } catch (e) {
       if (signal?.aborted || !isBusy(e) || tries >= OVERPASS_ENDPOINTS.length) throw e;
       overpassIndex++;
@@ -107,6 +113,32 @@ async function overpassCells(cells: string[], signal?: AbortSignal): Promise<Map
 const tilePoiCache = new Map<string, PlaceItem[]>();
 const TILE_POI_CACHE = 200;
 
+/** OpenFreeMap のタイルの URL：/planet/<版>/{z}/{x}/{y}.pbf（src/sw.js にも同じもの） */
+const OSM_TILE_URL = /^(https:\/\/tiles\.openfreemap\.org\/planet\/)([^/]+)(\/\d+\/\d+\/\d+\.pbf)$/;
+/** 保存した地図にある OpenFreeMap の版。今の版のタイルが端末になかったときに、一度だけ数える */
+let savedOsmVersions: Promise<string[]> | null = null;
+
+/**
+ * 端末に残っている OpenFreeMap のタイル。OpenFreeMap は版が変わるとタイルの URL も変わるので、
+ * 今の版のものがなければ、オフライン保存したときの版のものを探す（保存したあとに電波のある所で開いて、版が新しくなっていても使えるように）
+ */
+async function cachedOsmTile(url: string): Promise<Response | undefined> {
+  const hit = await caches.match(url, { ignoreVary: true }).catch(() => undefined);
+  if (hit) return hit;
+  const m = OSM_TILE_URL.exec(url);
+  if (!m) return undefined;
+  savedOsmVersions ??= caches
+    .open(TILE_CACHE)
+    .then(async (cache) => [...new Set((await cache.keys()).map((k) => OSM_TILE_URL.exec(k.url)?.[2]).filter((v): v is string => !!v))])
+    .catch(() => []);
+  for (const v of await savedOsmVersions) {
+    if (v === m[2]) continue;
+    const old = await caches.match(`${m[1]}${v}${m[3]}`, { ignoreVary: true }).catch(() => undefined);
+    if (old) return old;
+  }
+  return undefined;
+}
+
 /** 端末に残っている OpenFreeMap の地図データから、山小屋・トイレなどを出す（ネットには聞かない）。1枚もなければ null */
 async function cachedTilePois(cells: string[]): Promise<Map<string, PlaceItem[]> | null> {
   if (typeof caches === 'undefined') return null;
@@ -116,7 +148,7 @@ async function cachedTilePois(cells: string[]): Promise<Map<string, PlaceItem[]>
   for (const t of tiles) {
     let pois = tilePoiCache.get(t.url);
     if (!pois) {
-      const res = await caches.match(t.url, { ignoreVary: true }).catch(() => undefined);
+      const res = await cachedOsmTile(t.url);
       if (!res?.ok) continue;
       pois = fromTilePois(decodeOsmPois(await res.arrayBuffer(), t.x, t.y, OSM_ZOOM));
       if (tilePoiCache.size >= TILE_POI_CACHE) tilePoiCache.delete(tilePoiCache.keys().next().value!);

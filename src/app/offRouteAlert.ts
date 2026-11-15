@@ -104,7 +104,9 @@ async function notify(offset: number, again: boolean) {
   if (!backgroundCapable) return;
   try {
     await ensureChannel();
-    await LocalNotifications.schedule({ notifications: [{ id: NOTIFY_ID, title, body, channelId: CHANNEL }] });
+    // isExactNotification は既定で true で、その場合プラグインは、すぐ出す通知でも「アラームとリマインダー」の許可がなければ
+    // （Android 14 から新しく入れたアプリは既定で許可なし）その設定画面を開き、戻るまで通知を出さない（画面オフでは出ない）
+    await LocalNotifications.schedule({ notifications: [{ id: NOTIFY_ID, title, body, channelId: CHANNEL, isExactNotification: false }] });
   } catch (e) {
     console.warn('通知を出せませんでした', e);
   }
@@ -112,5 +114,7 @@ async function notify(offset: number, again: boolean) {
 
 async function clearNotice() {
   if (!backgroundCapable) return;
+  // 出ている通知を消す（cancel は予約中の通知しか消さない）。cancel は、端末を再起動したときに出し直さないための印
+  await LocalNotifications.removeDeliveredNotificationsById({ ids: [NOTIFY_ID] }).catch(() => undefined);
   await LocalNotifications.cancel({ notifications: [{ id: NOTIFY_ID }] }).catch(() => undefined);
 }

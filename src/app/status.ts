@@ -8,10 +8,13 @@ import { state } from './state';
 
 // ---------- 状態表示 ----------
 let flash: { text: string; until: number; warn: boolean } | null = null;
+/** お知らせを消すタイマー（続けて出したら、前のものは取り消して1つにする） */
+let flashTimer = 0;
 export function status(text: string, warn = false) {
   flash = { text, until: Date.now() + 6000, warn };
   renderStatus();
-  setTimeout(renderStatus, 6100);
+  clearTimeout(flashTimer);
+  flashTimer = window.setTimeout(renderStatus, 6100);
 }
 export function renderStatus() {
   const el = $('status');

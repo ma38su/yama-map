@@ -142,6 +142,7 @@ let replay: { source: WeatherSource } | null = null;
 export function setReplayWeather(on: boolean, source: WeatherSource = () => null) {
   replay = on ? { source } : null;
   cloudDrawn = null;
+  cloudFlow = null;
   updateWeatherLayers(true);
 }
 
@@ -184,6 +185,11 @@ const IMG = 192;
 const noise = makeNoise(IMG, 7);
 /** 描いてある雲：中心のマス目・再生中の時刻・描いた時刻（実時間） */
 let cloudDrawn: { key: string; t: number; at: number } | null = null;
+/**
+ * 雲の模様のずれ (px) と、それを合わせた再生中の時刻。前に描いたときからの時間 × 今の風で足していく
+ * （絶対の時刻 × 風で出すと、風が少し変わるだけで模様が大きく跳ぶため）
+ */
+let cloudFlow: { t: number; ox: number; oy: number } | null = null;
 
 function makeNoise(size: number, seed: number): Float32Array {
   let a = seed >>> 0;
@@ -235,22 +241,25 @@ function bilinear(v: number[], ix: number, iy: number, fx: number, fy: number): 
  * 画像は ImageData のまま地図に渡す（PNG にして読み直させると、圧縮と復号の分だけ重い）
  */
 function drawClouds(center: [number, number], t: number): { image: ImageData; coords: [[number, number], [number, number], [number, number], [number, number]] } | null {
-  const grid: WeatherAt[] = [];
+  const found: (WeatherAt | null)[] = [];
   for (let dy = GRID_R; dy >= -GRID_R; dy--) {
     for (let dx = -GRID_R; dx <= GRID_R; dx++) {
-      const w = weatherFor([(center[0] + dx) * WEATHER_CELL_DEG, (center[1] + dy) * WEATHER_CELL_DEG], t);
-      if (!w) return null;
-      grid.push(w);
+      found.push(weatherFor([(center[0] + dx) * WEATHER_CELL_DEG, (center[1] + dy) * WEATHER_CELL_DEG], t));
     }
   }
-  const mid = grid[GRID_R * GRID_N + GRID_R];
+  // 真ん中の天気がなければ描かない。ほかの欠けたマス目（計画のリプレイで、端末に予報がない遠いところ）は真ん中の天気で埋める
+  const mid = found[GRID_R * GRID_N + GRID_R];
+  if (!mid) return null;
+  const grid = found.map((w) => w ?? mid);
   // 模様は風に流す（地上の風は上空より弱いので3倍にする）。風向は吹いてくる方位なので、流れる向きは逆
   const speed = (mid.wind ?? 3) * 3;
   const rad = (((mid.dir ?? 270) + 180) * Math.PI) / 180;
   const kmPerPx = (GRID_N * WEATHER_CELL_DEG * 111) / IMG;
-  const hours = t / 3_600_000;
-  const ox = (Math.sin(rad) * speed * 3.6 * hours) / kmPerPx;
-  const oy = (-Math.cos(rad) * speed * 3.6 * hours) / kmPerPx;
+  const pxPerHour = (speed * 3.6) / kmPerPx;
+  const hours = cloudFlow ? (t - cloudFlow.t) / 3_600_000 : 0;
+  const ox = (cloudFlow?.ox ?? 0) + Math.sin(rad) * pxPerHour * hours;
+  const oy = (cloudFlow?.oy ?? 0) - Math.cos(rad) * pxPerHour * hours;
+  cloudFlow = { t, ox, oy };
   const cloudGrid = grid.map((w) => w.cloud);
   const precipGrid = grid.map((w) => w.precip);
   const img = new ImageData(IMG, IMG);
@@ -353,9 +362,11 @@ export function updateWeatherLayers(force = false) {
   clearTimeout(cloudTimer);
   cloudTimer = 0;
   const drawn = drawClouds(center, t);
-  if (!drawn) return;
+  // 描けなかったとき（真ん中の天気がない）も覚えて、マス目か時刻が変わるまで描き直さない。前の雲は消しておく（別の場所・時刻のものなので）
   cloudDrawn = { key, t, at: performance.now() };
-  (map.getSource('weather-cloud') as import('maplibre-gl').ImageSource | undefined)?.updateImage({ image: drawn.image, coordinates: drawn.coords });
+  (map.getSource('weather-cloud') as import('maplibre-gl').ImageSource | undefined)?.updateImage(
+    drawn ? { image: drawn.image, coordinates: drawn.coords } : { image: new ImageData(1, 1) },
+  );
 }
 // リプレイが追いかけるための jumpTo（毎コマ）の moveend では数え直さない（雨は下の 'move' でまとめて数え直す）
 map.on('moveend', (e) => {

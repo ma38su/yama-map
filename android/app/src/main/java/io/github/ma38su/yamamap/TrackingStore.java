@@ -28,9 +28,8 @@ class TrackingStore extends SQLiteOpenHelper {
     }
 
     private static final String TAG = "YamaTracking";
-    /** ログに残す行数 */
+    /** ログに残す行数（「動作の記録」はこの行数まで読む：src/track/location.ts） */
     private static final int LOG_KEEP = 2000;
-    private int logAdded = 0;
 
     private TrackingStore(Context context) {
         super(context, "tracking.db", null, 3);
@@ -73,9 +72,9 @@ class TrackingStore extends SQLiteOpenHelper {
         v.put("t", System.currentTimeMillis());
         v.put("msg", msg);
         SQLiteDatabase db = getWritableDatabase();
-        db.insert("log", null, v);
-        // 古い行は、ときどきまとめて消す
-        if (++logAdded % 50 == 0) db.execSQL("DELETE FROM log WHERE id <= (SELECT MAX(id) - " + LOG_KEEP + " FROM log)");
+        long id = db.insert("log", null, v);
+        // 古い行は、50行ごとにまとめて消す。数えるのは行の番号で（プロセスごとに数え直すと、短い記録が続いたときに消されないまま増えるため）
+        if (id > 0 && id % 50 == 0) db.execSQL("DELETE FROM log WHERE id <= " + (id - LOG_KEEP));
     }
 
     /** 新しい順に limit 行（時刻とメッセージ） */
@@ -104,14 +103,15 @@ class TrackingStore extends SQLiteOpenHelper {
     }
 
     /**
-     * 1回に届いた測位をまとめて保存する。hpa は気圧 (hPa)。気圧計がない・値が古ければ null。
-     * steps は記録を始めてからの歩数（歩数計がない・許可がなければ null）
+     * 1回に届いた測位をまとめて保存する。hpa は点ごとの気圧 (hPa)（気圧計がない・値が古ければ null）。
+     * steps は点ごとの、記録を始めてからの歩数（歩数計がない・許可がなければ null）
      */
-    void addAll(String track, List<Location> locations, Double hpa, Long steps) {
+    void addAll(String track, List<Location> locations, Double[] hpa, Long[] steps) {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
-            for (Location loc : locations) {
+            for (int i = 0; i < locations.size(); i++) {
+                Location loc = locations.get(i);
                 ContentValues v = new ContentValues();
                 v.put("track", track);
                 v.put("t", loc.getTime());
@@ -119,8 +119,8 @@ class TrackingStore extends SQLiteOpenHelper {
                 v.put("lng", loc.getLongitude());
                 v.put("acc", loc.hasAccuracy() ? loc.getAccuracy() : 9999);
                 if (loc.hasAltitude()) v.put("alt", loc.getAltitude());
-                if (hpa != null) v.put("hpa", hpa);
-                if (steps != null) v.put("steps", steps);
+                if (hpa[i] != null) v.put("hpa", hpa[i]);
+                if (steps[i] != null) v.put("steps", steps[i]);
                 db.insert("fixes", null, v);
             }
             db.setTransactionSuccessful();

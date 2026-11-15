@@ -145,12 +145,20 @@ function hereRow(nav: Nav & { pos: NonNullable<Nav['pos']> }, span: { from: numb
   return li;
 }
 
+/**
+ * 開いている記録の実績を作り直す目印：記録・範囲の中の点・点の書き換え・ルートの地点が変わったら変わる。
+ * カードの小さな標高グラフ（通った地点の目盛り）も同じ目印で作り直す（別々に作ると、片方だけ古いまま残るため）
+ */
+export function shownActualKey(): string {
+  const shown = state.shown!;
+  return `${shown.track.id}:${shown.points.length}:${shown.points[0]?.t}:${state.revision}:${state.route?.name ?? ''}:${state.route?.marks.length ?? 0}`;
+}
+
 /** 開いている記録の実績（ルートの地点を通った時刻など）。点が増えたときだけ計算し直す */
 let actualCache: { key: string; rows: ActualRow[] } | null = null;
 export function shownActual(): ActualRow[] {
-  const shown = state.shown!;
-  const key = `${shown.track.id}:${shown.points.length}:${state.revision}:${state.route?.name ?? ''}:${state.route?.marks.length ?? 0}`;
-  if (actualCache?.key !== key) actualCache = { key, rows: actualRows(shown.points, state.route?.marks) };
+  const key = shownActualKey();
+  if (actualCache?.key !== key) actualCache = { key, rows: actualRows(state.shown!.points, state.route?.marks) };
   return actualCache.rows;
 }
 
@@ -307,6 +315,9 @@ let scrollToHere = false;
 export function renderBody(nav: Nav | null) {
   const tl = $('timeline');
   tl.replaceChildren();
+  // 全行程の合計は行程表（ol）の外に書く（中に置くと最後の行が li:last-child でなくなり、目的地の下に線がはみ出す）
+  const totalNote = $('plan-total');
+  totalNote.textContent = '';
   const actions = $('plan-actions');
   actions.replaceChildren();
   const viewing = viewingTrack();
@@ -366,9 +377,7 @@ export function renderBody(nav: Nav | null) {
       if (here) requestAnimationFrame(() => here.scrollIntoView({ block: 'center' }));
     }
     const total = estimate(state.timeline, span.from, span.to, nav.factors);
-    const sum = h('p', 'note');
-    sum.textContent = `全行程 ${formatDistance(span.to - span.from)}・標準 ${fmtHM(total.stdMin)}・このペースで 歩行 ${fmtHM(total.movingMin)} ＋ 休憩 ${fmtHM(total.restMin)}${state.route.straightLegs ? '・一部直線区間あり' : ''}`;
-    tl.append(sum);
+    totalNote.textContent = `全行程 ${formatDistance(span.to - span.from)}・標準 ${fmtHM(total.stdMin)}・このペースで 歩行 ${fmtHM(total.movingMin)} ＋ 休憩 ${fmtHM(total.restMin)}${state.route.straightLegs ? '・一部直線区間あり' : ''}`;
     const btn = (label: string, fn: () => void, cls = '') => {
       const b = h('button', `btn ${cls}`, label);
       b.type = 'button';

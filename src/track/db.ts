@@ -230,7 +230,10 @@ export function updateTrack(id: string, patch: Partial<Pick<Track, 'route' | 'lo
   });
 }
 
-/** 点の追記とトラック集計の更新を1トランザクションで行う（前に保存できなかった点もまとめて渡せる） */
+/**
+ * 点の追記とトラック集計の更新を1トランザクションで行う（前に保存できなかった点もまとめて渡せる）。
+ * 記録をまとめて保存する（読み込んだ記録・予定の記録）ときにも使う。追記なので、同じ記録に2回渡すと点が二重になる
+ */
 export function appendPoints(track: Track, points: TrackPoint[]): Promise<void> {
   return withDb((db) => {
     const tx = db.transaction(['tracks', 'points'], 'readwrite');
@@ -241,23 +244,40 @@ export function appendPoints(track: Track, points: TrackPoint[]): Promise<void> 
   });
 }
 
-/** 記録をまとめて保存する（サンプルの記録や、読み込んだ記録用） */
-export const putTrackWithPoints = appendPoints;
-
-/** 記録の点の標高を書き換える（時刻 → 標高）。あとから標高を埋めるときに使う */
-export function updateElevations(trackId: string, eles: Map<number, number>): Promise<void> {
+/**
+ * あとから標高を埋める：記録の点のうち標高のないものを書き換え（時刻 → 標高）、記録の登り・下りを数え直す。
+ * 1つのトランザクションで行い、記録は保存してあるものを読み直して登り・下りだけを変える
+ * （埋めているあいだに変えた範囲・経路名を、古い写しで上書きしないように。消した記録は戻さない）。
+ * gainOf は保存してある記録（範囲 trim を含む）から登り・下りを数える。書き換えた記録を返す（記録がなければ null）
+ */
+export function fillTrackElevations(
+  trackId: string,
+  eles: Map<number, number>,
+  gainOf: (stored: Track) => { ascent: number; descent: number },
+): Promise<Track | null> {
   return withDb((db) => {
-    const tx = db.transaction('points', 'readwrite');
-    const req = tx.objectStore('points').index('trackId').openCursor(IDBKeyRange.only(trackId));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) return;
-      const p = cursor.value as TrackPoint;
-      const ele = eles.get(p.t);
-      if (ele != null && p.ele == null) cursor.update({ ...p, ele });
-      cursor.continue();
+    const tx = db.transaction(['tracks', 'points'], 'readwrite');
+    const tracks = tx.objectStore('tracks');
+    let updated: Track | null = null;
+    const get = tracks.get(trackId);
+    get.onsuccess = () => {
+      const stored = get.result as Track | undefined;
+      if (!stored) return;
+      const req = tx.objectStore('points').index('trackId').openCursor(IDBKeyRange.only(trackId));
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) {
+          updated = { ...stored, ...gainOf(stored) };
+          tracks.put(updated);
+          return;
+        }
+        const p = cursor.value as TrackPoint;
+        const ele = eles.get(p.t);
+        if (ele != null && p.ele == null) cursor.update({ ...p, ele });
+        cursor.continue();
+      };
     };
-    return done(tx);
+    return done(tx).then(() => updated);
   });
 }
 

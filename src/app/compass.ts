@@ -9,6 +9,7 @@ import { angleDiff, headingFrom, smoothHeading } from '../nav/heading';
 import { h } from '../ui/dom';
 import { geolocate, map } from './mapView';
 import { startGeolocate } from './recording';
+import { replayActive } from './replay';
 import { whileVisible } from './scheduler';
 import { status } from './status';
 
@@ -56,11 +57,14 @@ async function requestPermission(): Promise<boolean> {
 const locating = () => geolocate._watchState !== 'OFF';
 /**
  * 現在地を出しているあいだ（か進む向きを上にしているあいだ）、画面が表のときだけセンサーを聞く。
- * ポケット表示のあいだは地図を描かないので聞かない（センサーは1秒に何十回も届くため）
+ * ポケット表示のあいだは地図を描かないので聞かない（センサーは1秒に何十回も届くため）。
+ * リプレイのあいだはカメラをリプレイが動かすので、地図を回すためには聞かない
  */
 function syncListening() {
   const want =
-    document.visibilityState === 'visible' && !document.body.classList.contains('pocket-on') && (locating() || headingUp);
+    document.visibilityState === 'visible' &&
+    !document.body.classList.contains('pocket-on') &&
+    (locating() || (headingUp && !replayActive()));
   listen(want);
   if (!want) hideCone();
 }
@@ -125,8 +129,8 @@ map.on('rotate', schedule);
 function rotateMap(hd: number) {
   const now = Date.now();
   if (Math.abs(angleDiff(map.getBearing(), hd)) < 4 || now - lastRotateAt < 300) return;
-  // ほかの動き（地名検索・写真への移動など）の途中なら、止めないよう待つ
-  if (map.isMoving()) return;
+  // ほかの動き（地名検索・写真への移動など）の途中なら、止めないよう待つ。リプレイのあいだはリプレイがカメラを動かす（ぶつからないように）
+  if (map.isMoving() || replayActive()) return;
   lastRotateAt = now;
   // 現在地に追従しているあいだは、中心も現在地に合わせる（追従のアニメーションを止めてしまうので）。
   // geolocateSource を付けて、追従が外れないようにする

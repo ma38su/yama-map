@@ -124,6 +124,8 @@ let styleReady = false;
 map.once('load', () => {
   styleReady = true;
 });
+/** 地図を読み込み終えたか（map.loaded() はタイルの読み込み中や設定を変えた直後にも false になるので、読み込んだかどうかはこちらで見る） */
+export const mapReady = () => styleReady;
 export function hookDaylight(hooks: Partial<typeof daylightHooks>) {
   Object.assign(daylightHooks, hooks);
 }

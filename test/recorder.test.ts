@@ -18,7 +18,7 @@ vi.mock('../src/track/db', () => ({
     if (db.fail) throw new Error('QuotaExceededError');
   },
   getPoints: async () => [],
-  updateElevations: async () => undefined,
+  fillTrackElevations: async () => null,
 }));
 const loc = vi.hoisted(() => ({ onFix: null as ((f: Fix) => void) | null }));
 vi.mock('../src/track/location', () => ({

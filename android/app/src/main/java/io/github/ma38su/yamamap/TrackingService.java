@@ -43,6 +43,7 @@ import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -204,10 +205,18 @@ public class TrackingService extends Service implements SensorEventListener {
         public void onLocationResult(@NonNull LocationResult result) {
             String t = track;
             if (t == null) return;
-            Double p = !Double.isNaN(hPa) && System.currentTimeMillis() - hPaAt < PRESSURE_STALE_MS ? hPa : null;
             List<Location> locations = result.getLocations();
+            // 最大 MAX_DELAY_MS ぶんまとめて届くので、気圧と歩数は点ごとに、その点の時刻の値を付ける（届いたときの値をまとめて付けない）
+            int n = locations.size();
+            Double[] pressures = new Double[n];
+            Long[] stepCounts = new Long[n];
+            for (int i = 0; i < n; i++) {
+                long at = locations.get(i).getElapsedRealtimeNanos() / 1_000_000;
+                pressures[i] = pressureAt(at);
+                stepCounts[i] = stepsAt(at);
+            }
             // 1回に届いた分は、まとめて1回で保存する
-            TrackingStore.get(TrackingService.this).addAll(t, locations, p, steps >= 0 ? steps : null);
+            TrackingStore.get(TrackingService.this).addAll(t, locations, pressures, stepCounts);
             deliveries++;
             for (Location loc : locations) {
                 received++;
@@ -287,6 +296,10 @@ public class TrackingService extends Service implements SensorEventListener {
             }
         }
         if (id.equals(track)) return START_STICKY; // もう記録している
+        // 世代は、この記録の値を書く前に進める（前の記録を止める処理がちょうど走っていても、世代が変わっていれば、この記録の値を消さない）
+        synchronized (this) {
+            generation++;
+        }
         boolean resumed = id.equals(p.getString("track", null));
         TrackingStore.log(this, restarted
             ? "システムに止められたあと、記録のサービスが再起動した（記録 " + shortId(id) + " を続ける）"
@@ -313,9 +326,6 @@ public class TrackingService extends Service implements SensorEventListener {
             return START_NOT_STICKY;
         }
         running = this;
-        synchronized (this) {
-            generation++;
-        }
         // 記録の値の準備と測位の開始は、記録用のスレッドで
         final boolean fresh = !resumed;
         final String startTrack = id;
@@ -631,8 +641,10 @@ public class TrackingService extends Service implements SensorEventListener {
 
     @Override
     public void onSensorChanged(SensorEvent event) {
+        long at = event.timestamp / 1_000_000;
         if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {
             onSteps((long) event.values[0]);
+            if (steps >= 0) remember(stepSamples, at, steps);
             return;
         }
         double v = event.values[0];
@@ -641,6 +653,37 @@ public class TrackingService extends Service implements SensorEventListener {
         hPaAt = System.currentTimeMillis() - (SystemClock.elapsedRealtimeNanos() - event.timestamp) / 1_000_000;
         latestHPa = hPa;
         latestHPaAt = hPaAt;
+        remember(hPaSamples, at, hPa);
+    }
+
+    /** 直近の気圧と歩数（[時刻（elapsedRealtime の ms）, 値]）。測位はまとめて届くので、点ごとにその時刻の値を引くのに使う */
+    private final ArrayDeque<double[]> hPaSamples = new ArrayDeque<>();
+    private final ArrayDeque<double[]> stepSamples = new ArrayDeque<>();
+    /** 覚えておく長さ（測位がまとめて届く最大の遅れ MAX_DELAY_MS より十分長く） */
+    private static final long SAMPLE_KEEP_MS = 60_000;
+
+    private static void remember(ArrayDeque<double[]> samples, long at, double value) {
+        samples.addLast(new double[] { at, value });
+        while (samples.size() > 1 && at - samples.peekFirst()[0] > SAMPLE_KEEP_MS) samples.pollFirst();
+    }
+
+    /** 時刻 at（elapsedRealtime の ms）の気圧。いちばん近い時刻の値（気圧計がない・近い値がなければ null） */
+    private Double pressureAt(long at) {
+        double[] best = null;
+        for (double[] s : hPaSamples) if (best == null || Math.abs(s[0] - at) < Math.abs(best[0] - at)) best = s;
+        return best != null && Math.abs(best[0] - at) < PRESSURE_STALE_MS ? best[1] : null;
+    }
+
+    /** 時刻 at の歩数（記録を始めてからの歩数）：その時刻までに数えた値。前の値がなければ、覚えているいちばん古い値（歩数計がなければ null） */
+    private Long stepsAt(long at) {
+        if (steps < 0) return null;
+        double[] found = null;
+        for (double[] s : stepSamples) {
+            if (s[0] > at) break;
+            found = s;
+        }
+        if (found == null) found = stepSamples.peekFirst();
+        return found != null ? (long) found[1] : steps;
     }
 
     @Override
@@ -684,6 +727,8 @@ public class TrackingService extends Service implements SensorEventListener {
                 running = null;
                 latestHPa = Double.NaN;
                 hPa = Double.NaN;
+                hPaSamples.clear();
+                stepSamples.clear();
                 SharedPreferences.Editor e = prefs(this).edit()
                     .remove("track").remove("startedAt").remove("startBattery").remove("startMah").remove("startBatteryAt")
                     .remove("steps").remove("stepCounterBase").remove("stepsBase");

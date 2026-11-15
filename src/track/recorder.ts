@@ -12,11 +12,11 @@
  * そのため記録中は Screen Wake Lock で画面を点けたままにできるようにしている。
  * Androidアプリ版ではネイティブのバックグラウンド測位を使うので、画面を消しても記録が続く（./location.ts）。
  */
-import { GainCounter, distance, formatDistance } from '../geo';
+import { GainCounter, distance, elevationGain, formatDistance } from '../geo';
 import { log } from '../log';
 import type { DemSampler } from '../map/gsiDem';
 import { BaroFusion } from './baroAltitude';
-import { appendPoints, getPoints, putTrack, updateElevations, type Track, type TrackPoint } from './db';
+import { appendPoints, fillTrackElevations, getPoints, putTrack, type Track, type TrackPoint } from './db';
 import { pointsIn } from './trim';
 import {
   backgroundCapable,
@@ -74,20 +74,22 @@ export class TrackRecorder {
   constructor(
     private readonly dem: DemSampler,
     private readonly onChange: (s: RecorderState) => void,
-  ) {
-    document.addEventListener('visibilitychange', () => {
-      if (!this.recording) return;
-      // 裏に回るときは、まだ書いていない点を書いておく（そのままアプリが閉じられても残るように）
-      if (document.visibilityState === 'hidden') {
-        this.flush();
-        return;
-      }
-      // Web版はバックグラウンドから戻ったら測位を取り直す（iOSで止まることがあるため）。
-      // アプリ版の測位はバックグラウンドでも続いているので、そのままにする
-      if (!backgroundCapable) void this.startWatch();
-      void this.acquireWakeLock();
-    });
-  }
+  ) {}
+
+  /** 裏に回った・戻ったときの処理を登録したか（測位を始めるときに1回だけ。締めるためだけに作る recorder は登録しないので、点ごと残らない） */
+  private listening = false;
+  private readonly onVisibility = () => {
+    if (!this.recording) return;
+    // 裏に回るときは、まだ書いていない点を書いておく（そのままアプリが閉じられても残るように）
+    if (document.visibilityState === 'hidden') {
+      this.flush();
+      return;
+    }
+    // Web版はバックグラウンドから戻ったら測位を取り直す（iOSで止まることがあるため）。
+    // アプリ版の測位はバックグラウンドでも続いているので、そのままにする
+    if (!backgroundCapable) void this.startWatch();
+    void this.acquireWakeLock();
+  };
 
   get recording(): boolean {
     return this.track?.status === 'recording';
@@ -271,6 +273,10 @@ export class TrackRecorder {
   private async startWatch(): Promise<void> {
     const track = this.track;
     if (!track) return;
+    if (!this.listening) {
+      this.listening = true;
+      document.addEventListener('visibilitychange', this.onVisibility);
+    }
     // 前の測位を止め終えてから始める（前の止める依頼が、新しい記録を止めないように）
     await this.stopWatch();
     this.watch = watchLocation(
@@ -425,7 +431,7 @@ export class TrackRecorder {
 
 /**
  * 標高が取れていない点（圏外で標高タイルを読めなかったときなど）を標高タイルから埋めて保存し、登り・下りを数え直す。
- * points の標高はその場で書き換える。埋められた点がなければ null
+ * points の標高はその場で書き換える。保存してある記録（登り・下りだけ変えたもの）を返す。埋められた点がない・記録が消えていれば null
  */
 export async function fillMissingElevations(
   track: Track,
@@ -440,11 +446,6 @@ export async function fillMissingElevations(
   }
   if (!eles.size) return null;
   for (const p of points) p.ele ??= eles.get(p.t) ?? null;
-  // 登り・下りは記録の範囲（trim）の中で数え直す
-  const gain = new GainCounter();
-  for (const p of pointsIn(points, track.trim)) gain.push(p.ele);
-  const updated = { ...track, ascent: gain.ascent, descent: gain.descent };
-  await updateElevations(track.id, eles);
-  await putTrack(updated);
-  return updated;
+  // 登り・下りは、保存してある記録の範囲（trim）の中で数え直す（標高を埋めているあいだに範囲を変えていても、その範囲で）
+  return fillTrackElevations(track.id, eles, (stored) => elevationGain(pointsIn(points, stored.trim).map((p) => p.ele)));
 }

@@ -263,16 +263,20 @@ function frame(now: number) {
     t = end;
     render(true);
     pause();
-    // 最後の場面が少し映ってから録画を止める
-    if (capturing()) setTimeout(() => void stopRecording(), 800);
+    // 最後の場面が少し映ってから録画を止める（そのあいだに再生・録画を始めたら止めない：play と beginCapture で取り消す）
+    if (capturing()) endTimer = window.setTimeout(() => void stopRecording(), 800);
     return;
   }
   render(true);
   raf = requestAnimationFrame(frame);
 }
 
+/** 最後まで再生したあと、少し待って録画を止めるタイマー */
+let endTimer = 0;
+
 function play() {
   if (pts.length < 2) return;
+  clearTimeout(endTimer);
   if (t >= pts[pts.length - 1].t) t = pts[0].t;
   playing = true;
   playBtn.textContent = '❚❚';
@@ -307,7 +311,8 @@ new ResizeObserver(() => replayActive() && fitPadding()).observe($('sheet'));
  */
 export function startReplay(opts: { capture?: boolean } = {}) {
   const shown = state.shown;
-  if (!shown || shown.points.length < 2) return;
+  // リプレイ中にもう一度始めない（始める前の 2D/3D を、リプレイの 3D で上書きして、終えても戻らなくなるため）
+  if (!shown || shown.points.length < 2 || replayActive()) return;
   pts = shown.points;
   cumD = cumulativeDistances(pts.map(lngLat));
   t = pts[0].t;
@@ -397,6 +402,7 @@ async function stopRecording() {
 /** 録画を始める（字幕は経路名と日付・時刻、始めのタイトルも録画に描く） */
 function beginCapture() {
   const track = state.shown?.track;
+  clearTimeout(endTimer);
   if (!track || pts.length < 2 || capturing()) return;
   startCapture(
     `yama-replay-${fileStamp(track.startedAt)}`,

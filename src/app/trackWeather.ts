@@ -204,12 +204,18 @@ function collect(track: Track, all: TrackPoint[], final: boolean): Promise<boole
 
 /** 記録中の取得の間隔 */
 const DURING_MS = 30 * 60_000;
+/**
+ * 最新の点がこれより古ければ、今歩いている記録ではない（途中で閉じた記録を締めるために読み込んだところ。読み込んだときは記録中に見える）。
+ * そのときは取らない（「今」までを範囲にして、歩き終えたあとの時間の雨まで取ってしまうため。締めたあとに collectFinished で取る）
+ */
+const LIVE_POINT_MS = 10 * 60_000;
 let lastDuring = 0;
 
 /** 記録の点が増えたら呼ぶ。電波があれば30分ごとに、そこまでの雨を取って残す */
 export function collectWhileRecording(track: Track | null, points: TrackPoint[]) {
   if (!track || track.status !== 'recording' || !navigator.onLine || Date.now() - lastDuring < DURING_MS) return;
   if (points.length < 2 || points[points.length - 1].t - points[0].t < DURING_MS) return;
+  if (Date.now() - points[points.length - 1].t > LIVE_POINT_MS) return;
   lastDuring = Date.now();
   void collect(track, points, false).catch((e) => console.warn('記録中の天気を取れませんでした', e));
 }

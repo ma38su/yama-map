@@ -10,7 +10,7 @@ import { pointFC, src } from './mapView';
 import { departureTime, type Nav } from './nav';
 import { recorder } from './recording';
 import { replayIndex } from './replay';
-import { shownActual } from './sheetView';
+import { shownActual, shownActualKey } from './sheetView';
 import { state } from './state';
 
 // ---------- 標高グラフ ----------
@@ -59,7 +59,8 @@ let miniKey = '';
 /** カードに出す小さな標高グラフ（点が2つ未満なら null）。点が変わったときだけ作り直す */
 export function miniProfileFor(points: TrackPoint[]): HTMLCanvasElement | null {
   if (points.length < 2) return null;
-  const key = `mini:${points[0].trackId}:${points.length}:${points[0].t}:${state.revision}:${state.route?.name ?? ''}`;
+  // 目盛り（通った地点）は実績から作るので、実績と同じ目印で作り直す
+  const key = `mini:${shownActualKey()}`;
   if (key !== miniKey) {
     miniKey = key;
     const dists = cumulativeDistances(points.map((p): LngLat => [p.lng, p.lat]));

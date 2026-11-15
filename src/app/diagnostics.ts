@@ -62,10 +62,16 @@ async function buildReport(): Promise<string> {
 
 async function show() {
   textEl.textContent = '読み込み中…';
-  dialog.showModal();
+  // 「ログを消す」から読み直すときは開いたまま（開いているダイアログにもう一度 showModal すると例外になる）
+  if (!dialog.open) dialog.showModal();
   report = await buildReport();
   textEl.textContent = report;
 }
+// 閉じたら報告の文字列（数百KBになる）を手放す
+dialog.addEventListener('close', () => {
+  report = '';
+  textEl.textContent = '';
+});
 
 $('btn-log').addEventListener('click', () => void show());
 $('btn-log-send').addEventListener('click', () => {
