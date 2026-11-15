@@ -52,6 +52,10 @@ const catRow = (c: PlaceCat) => toggleRow(c, PLACE_CATS[c].label, PLACE_CATS[c].
 
 function renderLayers() {
   $('layers-osm').replaceChildren(...osmCats.map(catRow));
+  $('layers-trails').replaceChildren(
+    toggleRow('trails', '徒歩道（国土地理院。ズーム15から）', '〰', '#e8590c'),
+    toggleRow('osmTrails', '小道・登山道（OpenStreetMap。ズーム13から）', '┅', '#7b1fa2'),
+  );
   $('layers-photo').replaceChildren(catRow('photo'), catRow('life'));
   $('layers-mine').replaceChildren(catRow('mine'));
   $('layers-saved').replaceChildren(toggleRow('saved', '保存した範囲（オフラインで使える範囲）', '⬛', '#16805c'));

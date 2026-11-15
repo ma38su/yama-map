@@ -37,12 +37,15 @@ import './app/transfer';
 import { whileVisible } from './app/scheduler';
 import { state } from './app/state';
 import { addWeatherLayers } from './app/weather';
+import { addTrailLayers } from './app/trails';
 
 log(`起動 ${__APP_VERSION__}（${backgroundCapable ? 'アプリ版' : 'Web版'}）`);
 
 map.on('load', () => {
   addOverlayLayers();
   addWeatherLayers('route-casing');
+  // 登山道（地理院の徒歩道・OpenStreetMap の小道）はルートの線の下
+  addTrailLayers('route-casing');
   // 保存した範囲はルートの線の下、山小屋・写真などの吹き出しはリプレイの点・カーソルの下（ルートや軌跡の線の上）
   addSavedLayer('route-casing');
   addPlaceLayers('replay');

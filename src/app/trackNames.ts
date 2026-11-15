@@ -13,7 +13,7 @@ import { recorder } from './recording';
 import { state } from './state';
 
 /** 経路名に使う場所の種類（名前の付いていることが多いもの） */
-const NAME_CATS = new Set<PlaceItem['cat']>(['hut', 'onsen', 'camp', 'view', 'fall', 'mine']);
+const NAME_CATS = new Set<PlaceItem['cat']>(['hut', 'inn', 'onsen', 'camp', 'view', 'peak', 'fall', 'bus', 'mine']);
 
 /** OpenStreetMap の場所は名前があるときだけ（名前がなければ title は「山小屋」などの種類） */
 const named = (it: PlaceItem) => NAME_CATS.has(it.cat) && (it.source !== 'osm' || it.subtitle != null);

@@ -12,6 +12,7 @@ import type { PlaceItem } from '../places/sources';
 import { dem, map } from './mapView';
 import { placeAt, placeContent } from './places';
 import { choosePoint } from './route';
+import { trailAt } from './trails';
 import { state } from './state';
 
 // 開いたときに中のボタン・リンクに移らない（スマホでは要らず、枠が出て目立つため）
@@ -75,7 +76,9 @@ export async function openPointPopup(lngLat: LngLat, knownName?: string) {
   const coord = h('div', 'pp-coord', `${lngLat[1].toFixed(5)}, ${lngLat[0].toFixed(5)}`);
   const eta = h('div', 'pp-eta');
   let placeName: string | null = knownName ?? null;
-  box.append(name, ele, coord, eta, pointActions(lngLat, () => placeName ?? undefined));
+  // 登山道の上なら、その名前（OpenStreetMap に名前があれば）
+  const trail = trailAt(map.project(lngLat));
+  box.append(name, ele, coord, ...(trail ? [h('div', 'pp-trail', `登山道：${trail}`)] : []), eta, pointActions(lngLat, () => placeName ?? undefined));
   popup.setLngLat(lngLat).setDOMContent(box).addTo(map);
   // ルート上ならここまでの到着予想も出す
   const nav = state.lastNav;

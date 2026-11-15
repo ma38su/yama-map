@@ -21,7 +21,8 @@
 - **雲・雨・雪はリプレイのときだけ**：記録は記録したときの天気、計画は予報に合わせて、地形に雲をかけ、雨・雪を降らせ、曇りなら空を灰色に寄せる。歩いているときは出さない（メニューでオフにもできる）
 - 現在地（GPS）の表示と追従。現在地の印に向いている方向の扇を出し、「進む向きを上」にすると向きに合わせて地図を回す（方位センサー、なければ GPS の進行方向）
 - **地名の検索**：山・沢・温泉などの名前で探し、選ぶとその場所の吹き出し（出発地・経由地・目的地）を出す（国土地理院の地名検索）
-- **山小屋・水場・写真などを地図に重ねる**：種類ごとに色とアイコンの違う吹き出しで出し、タップで詳しく見る（その場所を出発地・目的地にもできる）。地図の右上の「重ねる情報」ボタンで、種類ごとに表示・非表示を切り替えられる
+- **山小屋・宿・山頂・写真などを地図に重ねる**：山小屋・宿（日光沢温泉などの温泉宿）・水場・トイレ・キャンプ場・展望地と見どころ・山頂・温泉・滝・バス停・駐車場（OpenStreetMap）と写真・生きものを、種類ごとに色とアイコンの違う吹き出しで出し、タップで詳しく見る（その場所を出発地・目的地にもできる）。地図の右上の「重ねる情報」ボタンで、種類ごとに表示・非表示を切り替えられる
+- **登山道を目立たせる**：国土地理院の徒歩道（ズーム15から、オレンジの太い線）と OpenStreetMap の小道・登山道（ズーム13から、紫の点線）を重ねる。線をタップすると、OpenStreetMap に名前があれば出す（「重ねる情報」で切り替え）。コース名やコースタイムは、自由に使える公開データにはほとんどない
   - 山の施設（山小屋・避難小屋・水場・トイレ・キャンプ場・展望地・温泉・滝）：[OpenStreetMap](https://www.openstreetmap.org/)（Overpass API。混んでいて取れないときは、端末に残っている OpenFreeMap の地図データから名前と種類だけ）
   - 写真：[Wikimedia Commons](https://commons.wikimedia.org/) の位置付きの写真、生きもの：[iNaturalist](https://www.inaturalist.org/) の写真付きの観察記録（どちらも自由なライセンスのものだけ。撮影者とライセンスを表示）
   - **自分の場所のファイル**（GeoJSON の点・GPX のウェイポイント）を読み込んで、コメントや写真付きで出せる（形式は [docs/places.md](docs/places.md)）
@@ -155,5 +156,5 @@ Web版との違い、ビルド環境の準備、エミュレータ、デバッ�
 - 地図・標高・道データ：[国土地理院（地理院タイル）](https://maps.gsi.go.jp/development/ichiran.html)
 - 天気予報・記録したときの天気：[Open-Meteo](https://open-meteo.com/)（気象庁などの予報モデル、CC BY 4.0）、[気象庁](https://www.jma.go.jp/)の解析雨量とアメダスの観測
 - 道データ（ルート候補）：[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)（[OpenFreeMap](https://openfreemap.org) / OpenMapTiles）
-- 山小屋・水場など：[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)（ODbL、[Overpass API](https://overpass-api.de/)）
+- 山小屋・宿・水場・山頂・バス停など、登山道（小道）：[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)（ODbL、[Overpass API](https://overpass-api.de/)・[OpenFreeMap](https://openfreemap.org)）。登山道（徒歩道）：国土地理院のベクトルタイル
 - 写真：[Wikimedia Commons](https://commons.wikimedia.org/)、生きもの：[iNaturalist](https://www.inaturalist.org/)（撮影者とライセンスは各写真に表示）

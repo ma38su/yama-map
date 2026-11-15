@@ -152,6 +152,14 @@ describe('OpenStreetMap', () => {
     expect(osmKind({ natural: 'hot_spring' })).toBe('onsen');
     expect(osmKind({ waterway: 'waterfall' })).toBe('fall');
     expect(osmKind({ highway: 'path' })).toBeNull();
+    // 宿・見どころ・山頂（名前のあるものだけ）・バス停・駐車場
+    expect(osmKind({ tourism: 'hotel', name: '日光沢温泉' })).toBe('inn');
+    expect(osmKind({ tourism: 'guest_house' })).toBe('inn');
+    expect(osmKind({ tourism: 'attraction' })).toBe('attraction');
+    expect(osmKind({ natural: 'peak', name: '黒岩山' })).toBe('peak');
+    expect(osmKind({ natural: 'peak' })).toBeNull();
+    expect(osmKind({ highway: 'bus_stop' })).toBe('bus');
+    expect(osmKind({ amenity: 'parking' })).toBe('parking');
   });
   it('役立つタグを日本語にする', () => {
     expect(osmDetails({ ele: '1850.4', drinking_water: 'yes', fee: 'no', capacity: '40', ele_bad: 'x' })).toEqual([
@@ -178,10 +186,13 @@ describe('OpenStreetMap', () => {
     expect(tilePoiKind('lodging', 'alpine_hut')).toBe('hut');
     expect(tilePoiKind('shelter', 'shelter')).toBe('shelter');
     expect(tilePoiKind('toilets', 'toilets')).toBe('toilet');
-    expect(tilePoiKind('lodging', 'hotel')).toBeNull();
+    expect(tilePoiKind('lodging', 'hotel')).toBe('inn');
+    expect(tilePoiKind('bus', 'bus_stop')).toBe('bus');
+    expect(tilePoiKind('shop', 'convenience')).toBeNull();
     const items = fromTilePois([
       { cls: 'shelter', subclass: 'shelter', name: '間欠泉展望台', lngLat: [139.4123456789, 36.87] },
       { cls: 'bus', subclass: 'bus_stop', name: '女夫渕', lngLat: [139.4, 36.86] },
+      { cls: 'shop', subclass: 'convenience', name: 'コンビニ', lngLat: [139.4, 36.86] },
     ]);
     expect(items).toEqual([
       {
@@ -192,6 +203,15 @@ describe('OpenStreetMap', () => {
         title: '間欠泉展望台',
         subtitle: '避難小屋・あずまや',
         url: 'https://www.openstreetmap.org/?mlat=36.87&mlon=139.412346#map=18/36.87/139.412346',
+      },
+      {
+        id: 'osm:tile/bus/139.4,36.86',
+        source: 'osm',
+        cat: 'bus',
+        lngLat: [139.4, 36.86],
+        title: '女夫渕',
+        subtitle: 'バス停',
+        url: 'https://www.openstreetmap.org/?mlat=36.86&mlon=139.4#map=18/36.86/139.4',
       },
     ]);
   });

@@ -76,6 +76,8 @@ export interface PlaceCell {
   items: PlaceItem[];
   /** 名前と種類だけ（Overpass から取れず、OpenFreeMap の地図データから出したもの）。あとで取り直す */
   partial?: boolean;
+  /** OpenStreetMap の取り方の版（places/sources.ts の OSM_QUERY_VERSION）。古ければ取り直す */
+  v?: number;
 }
 
 /** 自分で読み込んだ場所のファイル（GeoJSON・GPX） */

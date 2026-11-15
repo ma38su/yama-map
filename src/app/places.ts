@@ -9,6 +9,7 @@ import { viewBounds } from '../geo';
 import { log } from '../log';
 import { fetchCells } from '../places/load';
 import {
+  OSM_QUERY_VERSION,
   PLACE_CATS,
   PLACE_CAT_IDS,
   REMOTE_SOURCES,
@@ -25,6 +26,7 @@ import { parseGpx } from '../track/gpx';
 import { $, h } from '../ui/dom';
 import { emptyFC, fitTo, map, src } from './mapView';
 import { pocketActive } from './pocket';
+import { TRAIL_LAYERS, updateTrailLayers, type TrailLayerId } from './trails';
 
 export const PLACES_LAYER = 'places';
 /** これより縮小しているときは出さない（遠くから見ると吹き出しで地図が埋まるため） */
@@ -37,14 +39,18 @@ const VIEW_CELLS = 16;
 const MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 /** 名前と種類だけのマス目（OpenFreeMap の地図データから出したもの）を、Overpass から取り直すまでの時間 */
 const PARTIAL_AGE_MS = 6 * 60 * 60_000;
-const stale = (c: PlaceCell | undefined, maxAge = MAX_AGE_MS) => !c || Date.now() - c.fetchedAt > (c.partial ? Math.min(maxAge, PARTIAL_AGE_MS) : maxAge);
+const stale = (c: PlaceCell | undefined, maxAge = MAX_AGE_MS) =>
+  !c ||
+  Date.now() - c.fetchedAt > (c.partial ? Math.min(maxAge, PARTIAL_AGE_MS) : maxAge) ||
+  // 取る種類を増やす前に取った OpenStreetMap のマス目（宿・山頂・バス停などがない）
+  (c.source === 'osm' && (c.v ?? 1) < OSM_QUERY_VERSION);
 /** 覚えておくマス目の数（地図を動かしても、遠くのマス目は少しずつ忘れる） */
 const MEMORY_CELLS = 150;
 export const PLACES_ATTRIBUTION =
   '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>・<a href="https://commons.wikimedia.org/" target="_blank" rel="noopener">Commons</a>・<a href="https://www.inaturalist.org/" target="_blank" rel="noopener">iNaturalist</a>';
 
 // ---------- 表示・非表示 ----------
-export type LayerId = PlaceCat | 'saved';
+export type LayerId = PlaceCat | 'saved' | TrailLayerId;
 /** その種類を出すか（初めは「保存した範囲」以外はすべて出す） */
 export const layerOn = (id: LayerId) => settings.layers?.[id] ?? id !== 'saved';
 
@@ -54,6 +60,10 @@ export function setLayer(id: LayerId, on: boolean) {
   settings.layers = { ...settings.layers, [id]: on };
   saveSettings();
   if (id === 'saved') return; // 保存した範囲は savedAreas.ts
+  if (id in TRAIL_LAYERS) {
+    updateTrailLayers();
+    return;
+  }
   if (map.getLayer(PLACES_LAYER)) map.setFilter(PLACES_LAYER, placesFilter() as never);
   if (on) scheduleRefresh();
 }
@@ -220,7 +230,15 @@ async function store(source: RemoteSource, cell: string, list: PlaceItem[], part
   // 名前と種類だけのものは、前に取った詳しいものがあれば、そちらを残す
   const old = cells.get(placeKey(source, cell));
   if (partial && old && !old.partial) return;
-  const c: PlaceCell = { key: placeKey(source, cell), source, cell, fetchedAt: Date.now(), items: list, partial: partial || undefined };
+  const c: PlaceCell = {
+    key: placeKey(source, cell),
+    source,
+    cell,
+    fetchedAt: Date.now(),
+    items: list,
+    partial: partial || undefined,
+    ...(source === 'osm' ? { v: OSM_QUERY_VERSION } : {}),
+  };
   remember(c);
   scheduleRender();
   await putPlaceCell(c).catch((e) => console.warn('場所の情報を保存できませんでした', e));

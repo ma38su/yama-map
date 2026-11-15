@@ -2,7 +2,7 @@
  * 地図に重ねる「場所の情報」。公開データから読むもの・自分で読み込んだファイルを、同じ形（PlaceItem）にする（DOM に触れない）。
  *  - commons: Wikimedia Commons の、位置の付いた写真（自由なライセンス）
  *  - inat:    iNaturalist の、写真付きの生きものの観察記録（研究用の質のもの・写真にライセンスがあるもの）
- *  - osm:     OpenStreetMap の山小屋・水場・トイレ・展望地など（Overpass API）
+ *  - osm:     OpenStreetMap の山小屋・宿・水場・トイレ・展望地・山頂・バス停・駐車場など（Overpass API）
  *  - user:    自分で読み込んだ場所・コメント・写真（GeoJSON・GPX のウェイポイント）
  * 公開データは約5kmのマス目（PLACE_CELL_DEG）ごとに取り、端末に保存して圏外でも出す（app/places.ts）。
  */
@@ -22,12 +22,16 @@ export const PLACE_CELL_DEG = 0.05;
  */
 export const PLACE_CATS = {
   hut: { label: '山小屋・避難小屋', icon: '🛖', color: '#8d5524', prio: 0, source: 'osm' },
+  inn: { label: '宿（温泉宿・旅館・ホテル）', icon: '🏨', color: '#b4442c', prio: 0.5, source: 'osm' },
   water: { label: '水場・湧き水', icon: '💧', color: '#1e7fd6', prio: 1, source: 'osm' },
   toilet: { label: 'トイレ', icon: '🚻', color: '#6a4fa3', prio: 2, source: 'osm' },
   camp: { label: 'キャンプ場', icon: '⛺', color: '#2e7d32', prio: 3, source: 'osm' },
-  view: { label: '展望地', icon: '🔭', color: '#e07000', prio: 4, source: 'osm' },
+  view: { label: '展望地・見どころ', icon: '🔭', color: '#e07000', prio: 4, source: 'osm' },
+  peak: { label: '山頂', icon: '⛰️', color: '#5d4037', prio: 4.5, source: 'osm' },
   onsen: { label: '温泉', icon: '♨️', color: '#d84315', prio: 5, source: 'osm' },
   fall: { label: '滝', icon: '🌊', color: '#00838f', prio: 6, source: 'osm' },
+  bus: { label: 'バス停', icon: '🚏', color: '#0277bd', prio: 6.5, source: 'osm' },
+  parking: { label: '駐車場', icon: '🅿️', color: '#546e7a', prio: 6.8, source: 'osm' },
   mine: { label: '読み込んだ場所・コメント', icon: '💬', color: '#c2185b', prio: 7, source: 'user' },
   photo: { label: '写真（Wikimedia Commons）', icon: '📷', color: '#3949ab', prio: 8, source: 'commons' },
   life: { label: '生きもの（iNaturalist）', icon: '🌿', color: '#5f8f00', prio: 9, source: 'inat' },
@@ -46,6 +50,11 @@ export const OSM_KINDS = {
   view: { label: '展望地', cat: 'view' },
   onsen: { label: '温泉', cat: 'onsen' },
   fall: { label: '滝', cat: 'fall' },
+  inn: { label: '宿', cat: 'inn' },
+  attraction: { label: '見どころ', cat: 'view' },
+  peak: { label: '山頂', cat: 'peak' },
+  bus: { label: 'バス停', cat: 'bus' },
+  parking: { label: '駐車場', cat: 'parking' },
 } as const satisfies Record<string, { label: string; cat: PlaceCat }>;
 export type OsmKind = keyof typeof OSM_KINDS;
 
@@ -291,14 +300,22 @@ export function parseInat(json: unknown): PlaceItem[] {
 /** Overpass API のサーバー（混んでいて答えないときは、次から別のサーバーに聞く） */
 export const OVERPASS_ENDPOINTS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 
-/** 範囲 (west, south, east, north) の中の山小屋・水場など（POST の data に入れる） */
+/**
+ * 取る種類を変えたら上げる。前の版で取ったマス目は古いとみなして取り直す（app/places.ts）。
+ * 版2：宿・見どころ・山頂（名前のあるもの）・バス停・駐車場を足した
+ */
+export const OSM_QUERY_VERSION = 2;
+
+/** 範囲 (west, south, east, north) の中の山小屋・水場・宿・山頂・バス停など（POST の data に入れる） */
 export function overpassQuery([w, s, e, n]: [number, number, number, number]): string {
   const b = `${s},${w},${n},${e}`;
   return (
     '[out:json][timeout:50];(' +
-    `nwr["tourism"~"^(alpine_hut|wilderness_hut|camp_site|viewpoint)$"](${b});` +
-    `nwr["amenity"~"^(drinking_water|toilets|shelter)$"](${b});` +
+    `nwr["tourism"~"^(alpine_hut|wilderness_hut|camp_site|viewpoint|hotel|guest_house|hostel|motel|chalet|attraction)$"](${b});` +
+    `nwr["amenity"~"^(drinking_water|toilets|shelter|parking)$"](${b});` +
     `nwr["natural"~"^(spring|hot_spring)$"](${b});` +
+    `nwr["natural"="peak"]["name"](${b});` +
+    `nwr["highway"="bus_stop"](${b});` +
     `nwr["waterway"="waterfall"](${b});` +
     ');out center tags;'
   );
@@ -314,6 +331,14 @@ export function osmKind(tags: Record<string, string>): OsmKind | null {
       return 'camp';
     case 'viewpoint':
       return 'view';
+    case 'hotel':
+    case 'guest_house':
+    case 'hostel':
+    case 'motel':
+    case 'chalet':
+      return 'inn';
+    case 'attraction':
+      return 'attraction';
   }
   switch (tags.amenity) {
     case 'drinking_water':
@@ -322,9 +347,13 @@ export function osmKind(tags: Record<string, string>): OsmKind | null {
       return 'toilet';
     case 'shelter':
       return 'shelter';
+    case 'parking':
+      return 'parking';
   }
   if (tags.natural === 'spring') return 'spring';
   if (tags.natural === 'hot_spring') return 'onsen';
+  if (tags.natural === 'peak' && tags.name) return 'peak';
+  if (tags.highway === 'bus_stop') return 'bus';
   if (tags.waterway === 'waterfall') return 'fall';
   return null;
 }
@@ -408,6 +437,18 @@ export function tilePoiKind(cls: string, subclass: string): OsmKind | null {
       return 'fall';
     case 'toilets':
       return 'toilet';
+    case 'hotel':
+    case 'guest_house':
+    case 'hostel':
+    case 'motel':
+    case 'chalet':
+      return 'inn';
+    case 'bus_stop':
+      return 'bus';
+    case 'parking':
+      return 'parking';
+    case 'attraction':
+      return 'attraction';
   }
   if (cls === 'shelter') return 'shelter';
   if (cls === 'toilets') return 'toilet';

@@ -1095,6 +1095,12 @@ dialog.photo-view::backdrop {
   margin-top: 4px;
   font-size: 13px;
 }
+.pp-trail {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #7b1fa2;
+  font-weight: 600;
+}
 
 .mk {
   display: flex;
