@@ -34,6 +34,12 @@ async function buildReport(): Promise<string> {
         ` / 電池の最適化: ${d.batteryOptimized ? '対象' : '対象外'} / 省電力モード: ${d.powerSave ? 'オン' : 'オフ'}`,
     );
     out.push(`記録のサービス: ${d.serviceRunning ? `動いている（${d.serviceTrack?.slice(0, 8)}）` : '止まっている'} / 取り込み前の測位: ${d.pendingFixes}件`);
+    out.push(
+      `歩数計: ${d.stepCounter ? 'あり' : 'なし'} / 大きな動きのセンサー: ${d.motionSensor ? 'あり' : 'なし'} / 身体活動の許可: ${d.activity ? '許可' : 'なし'}` +
+        `（${d.stepCounter && d.activity ? '止まっているあいだは測位を間引く' : '測位は間引かない'}）`,
+    );
+    // アプリが最近終了した理由（Android に止められたときの理由が分かる）
+    for (const e of d.exits ?? []) out.push(`アプリの終了: ${time(e.t)} ${e.reason}（${e.importance}）${e.description ? ` ${e.description}` : ''}`);
   }
   const rs = recorder.state;
   out.push(

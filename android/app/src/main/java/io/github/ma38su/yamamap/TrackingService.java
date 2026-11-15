@@ -1,5 +1,6 @@
 package io.github.ma38su.yamamap;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -10,11 +11,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.hardware.TriggerEvent;
+import android.hardware.TriggerEventListener;
 import android.location.Location;
 import android.os.BatteryManager;
 import android.os.Build;
@@ -49,6 +53,10 @@ import java.util.Locale;
  * WebView が止められても記録は続く。止めるのはアプリの「記録終了」か、通知の「停止」だけ。
  *  - 測位は1秒間隔・5m 動いたときだけ。最大20秒ぶんまとめて受け取る（その間 CPU を眠らせておける）
  *  - 気圧計があれば、気圧も点と一緒に残す（JS の気圧高度計で標高を補う）。今の気圧は TrackingPlugin の status からも読める
+ *  - 歩数計があり、身体活動の許可があれば、記録を始めてからの歩数も点と一緒に残す。
+ *    3分間歩数が増えず、GPS でも30m以上動いていなければ（休憩・山小屋）、止まっているとみなして GPS を止め、
+ *    低電力の測位（5分おき）にする。大きな動きを感じた（significant motion）・歩数が増えた・遠くの測位が届いたら、すぐ元に戻す
+ *    （車やバスでは歩数が増えなくても GPS の位置が動くので、間引かない）
  *  - システムに止められて再起動されたら（START_STICKY）、記録中だった記録を続ける
  *  - あとでパフォーマンスを分析できるよう、10分ごとに「計測」の1行をログに残す（電池・温度・測位の届き具合・画面が点いていた時間など）
  * スレッド：onStartCommand と止める依頼はメインスレッドなどから来るが、測位・気圧・画面のオン/オフ・計測の値は
@@ -76,6 +84,21 @@ public class TrackingService extends Service implements SensorEventListener {
     private static final float COUNT_STEP_M = 8;
     /** これより古い気圧は点に付けない */
     private static final long PRESSURE_STALE_MS = 2 * 60_000;
+    /** 歩数が増えず、GPS でも動いていない時間がこれだけ続いたら、止まっているとみなして測位を間引く */
+    private static final long STILL_AFTER_MS = 3 * 60_000;
+    /** 止まっているかを確かめる間隔 */
+    private static final long STILL_CHECK_MS = 30_000;
+    /** この半径の中なら、GPS では動いていないとみなす（測位のぶれを含めて） */
+    private static final float STILL_RADIUS_M = 30;
+    /** 止まっているあいだの測位（低電力。Wi-Fi・基地局など）の間隔と、届けてもらう距離 */
+    private static final long STILL_INTERVAL_MS = 5 * 60_000;
+    private static final float STILL_DISTANCE_M = 50;
+    /** 止まっているあいだに、これだけ歩いたら（歩数が増えたら）測位を戻す */
+    private static final long RESUME_STEPS = 10;
+    /** 止まっているあいだに、これだけ離れた測位が届いたら（歩数計に出ない乗り物など）測位を戻す */
+    private static final float RESUME_DISTANCE_M = 100;
+    /** 測位が使えない状態がこれだけ続いたら、ログに書く（短く途切れるのは10分ごとの計測に回数だけ書く） */
+    private static final long UNAVAILABLE_LOG_MS = 60_000;
 
     /** 動いているサービス（なければ null）。TrackingPlugin が止めるときに使う */
     static volatile TrackingService running;
@@ -113,6 +136,42 @@ public class TrackingService extends Service implements SensorEventListener {
     private long screenOnMs;
     private long screenOnSince;
     private final Runnable summaryTask = this::summarize;
+    /** 測位が使えない状態になった回数（10分ごとの計測に書く）と、使えなくなった時刻（ログに書いたら記録しておく） */
+    private int unavailableCount;
+    private long unavailableSince;
+    private boolean unavailableLogged;
+    private final Runnable unavailableTask = () -> {
+        if (track == null || available == null || available) return;
+        unavailableLogged = true;
+        TrackingStore.log(TrackingService.this, "測位が1分以上使えない（GPS の電波が届かない・位置情報がオフなど）");
+    };
+
+    // ---------- 歩数と、止まっているあいだの測位の間引き（記録用のスレッド） ----------
+    /** 歩数計（なければ・身体活動の許可がなければ null。そのときは歩数を残さず、測位も間引かない） */
+    private Sensor stepSensor;
+    /** 大きな動きを感じたら一度だけ知らせるセンサー（止まっているあいだに、歩き出した・乗り物で動き出したのを知る） */
+    private Sensor motionSensor;
+    /** 記録を始めてからの歩数（-1 は歩数計なし）。歩数計の値（端末を起動してからの歩数）との対応は stepCounterBase・stepsBase */
+    private long steps = -1;
+    private long stepCounterBase = -1;
+    private long stepsBase;
+    /** 最後に歩数が増えた時刻・GPS で STILL_RADIUS_M 以上動いた時刻（elapsedRealtime）と、そのときの位置 */
+    private long steppedAt;
+    private long movedAt;
+    private Location anchor;
+    /** 止まっているとみなして測位を間引いているか。間引き始めた時刻と歩数、10分ごとの計測に書く間引いた時間 */
+    private boolean still;
+    private long stillSince;
+    private long stepsAtStill;
+    private long stillMs;
+    private final Runnable stillTask = this::checkStill;
+    private final TriggerEventListener motionListener = new TriggerEventListener() {
+        @Override
+        public void onTrigger(TriggerEvent event) {
+            // メインスレッドで届くので、記録用のスレッドで扱う
+            handler.post(() -> setStill(false, "大きな動きを感じた"));
+        }
+    };
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -135,13 +194,14 @@ public class TrackingService extends Service implements SensorEventListener {
             Double p = !Double.isNaN(hPa) && System.currentTimeMillis() - hPaAt < PRESSURE_STALE_MS ? hPa : null;
             List<Location> locations = result.getLocations();
             // 1回に届いた分は、まとめて1回で保存する
-            TrackingStore.get(TrackingService.this).addAll(t, locations, p);
+            TrackingStore.get(TrackingService.this).addAll(t, locations, p, steps >= 0 ? steps : null);
             deliveries++;
             for (Location loc : locations) {
                 received++;
                 if (!loc.hasAccuracy()) continue;
                 accuracies.add(loc.getAccuracy());
                 if (loc.getAccuracy() > COUNT_ACCURACY_M) continue;
+                trackMovement(loc);
                 if (counted == null) counted = loc;
                 else if (loc.distanceTo(counted) >= COUNT_STEP_M) {
                     distance += loc.distanceTo(counted);
@@ -155,11 +215,24 @@ public class TrackingService extends Service implements SensorEventListener {
 
         @Override
         public void onLocationAvailability(@NonNull LocationAvailability availability) {
-            // 測位が使えなくなった・戻った（GPS の電波が届かない、位置情報がオフにされた、など）
+            // 測位が使えなくなった・戻った（GPS の電波が届かない、位置情報がオフにされた、など）。
+            // 谷などでは数十秒ごとに行ったり来たりするので、回数だけ数え、1分以上続いたときだけログに書く
             boolean now = availability.isLocationAvailable();
             if (available != null && available == now) return;
             available = now;
-            if (track != null) TrackingStore.log(TrackingService.this, now ? "測位が使える状態になった" : "測位が使えない状態になった");
+            if (track == null) return;
+            if (!now) {
+                unavailableCount++;
+                unavailableSince = SystemClock.elapsedRealtime();
+                handler.removeCallbacks(unavailableTask);
+                handler.postDelayed(unavailableTask, UNAVAILABLE_LOG_MS);
+            } else {
+                handler.removeCallbacks(unavailableTask);
+                if (unavailableLogged) {
+                    TrackingStore.log(TrackingService.this, String.format(Locale.JAPAN, "測位が使える状態に戻った（%.0f分ぶり）", (SystemClock.elapsedRealtime() - unavailableSince) / 60_000.0));
+                }
+                unavailableLogged = false;
+            }
         }
     };
 
@@ -240,17 +313,23 @@ public class TrackingService extends Service implements SensorEventListener {
             if (!fresh) notifyProgress();
             available = null;
             startMeasuring(fresh);
+            startSteps(fresh);
             requestUpdates();
             startPressure();
         });
         return START_STICKY;
     }
 
+    /** 測位を頼む（同じ callback で頼み直すと置き換わる）。止まっているあいだは低電力の測位 */
     private void requestUpdates() {
-        LocationRequest request = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, INTERVAL_MS)
-            .setMinUpdateDistanceMeters(MIN_DISTANCE_M)
-            .setMaxUpdateDelayMillis(MAX_DELAY_MS)
-            .build();
+        LocationRequest request = still
+            ? new LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, STILL_INTERVAL_MS)
+                .setMinUpdateDistanceMeters(STILL_DISTANCE_M)
+                .build()
+            : new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, INTERVAL_MS)
+                .setMinUpdateDistanceMeters(MIN_DISTANCE_M)
+                .setMaxUpdateDelayMillis(MAX_DELAY_MS)
+                .build();
         try {
             fused.requestLocationUpdates(request, callback, thread.getLooper()).addOnFailureListener(e -> {
                 // Google Play 開発者サービスがない・許可が足りない（裏から再起動したときなど）
@@ -275,6 +354,8 @@ public class TrackingService extends Service implements SensorEventListener {
         deliveries = 0;
         accuracies.clear();
         screenOnMs = 0;
+        unavailableCount = 0;
+        stillMs = 0;
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         screenOnSince = pm != null && pm.isInteractive() ? summarizedAt : 0;
         IntentFilter f = new IntentFilter(Intent.ACTION_SCREEN_ON);
@@ -307,14 +388,21 @@ public class TrackingService extends Service implements SensorEventListener {
             Collections.sort(accuracies);
             acc = String.format(Locale.JAPAN, "%.0f/%.0fm", accuracies.get(accuracies.size() / 2), accuracies.get(accuracies.size() - 1));
         }
+        long stillNow = stillMs + (still ? now - stillSince : 0);
+        if (still) stillSince = now;
         TrackingStore.log(this, String.format(Locale.JAPAN,
-            "計測 区間=%d分 測位=%d件 受信=%d回 精度(中央/最大)=%s 画面オン=%.1f分 距離=%.0fm 気圧=%s %s",
-            Math.round((now - summarizedAt) / 60_000.0), received, deliveries, acc, screen / 60_000.0, distance,
+            "計測 区間=%d分 測位=%d件 受信=%d回 精度(中央/最大)=%s 測位なし=%d回 画面オン=%.1f分 距離=%.0fm 歩数=%s 間引き=%.1f分 気圧=%s %s",
+            Math.round((now - summarizedAt) / 60_000.0), received, deliveries, acc, unavailableCount, screen / 60_000.0, distance,
+            steps >= 0 ? String.valueOf(steps) : "なし", stillNow / 60_000.0,
             !Double.isNaN(hPa) ? String.format(Locale.JAPAN, "%.1fhPa", hPa) : "なし", deviceState()));
         summarizedAt = now;
         received = 0;
         deliveries = 0;
         accuracies.clear();
+        unavailableCount = 0;
+        stillMs = 0;
+        // 端末が再起動して記録のサービスも始め直したときに、歩数を続きから数えられるように
+        if (steps >= 0) prefs(this).edit().putLong("steps", steps).apply();
         handler.removeCallbacks(summaryTask);
         handler.postDelayed(summaryTask, SUMMARY_MS);
     }
@@ -350,6 +438,10 @@ public class TrackingService extends Service implements SensorEventListener {
 
     private void stopMeasuring() {
         handler.removeCallbacks(summaryTask);
+        handler.removeCallbacks(unavailableTask);
+        handler.removeCallbacks(stillTask);
+        if (motionSensor != null) sensors.cancelTriggerSensor(motionListener, motionSensor);
+        still = false;
         try {
             unregisterReceiver(screenReceiver);
         } catch (IllegalArgumentException ignored) {
@@ -363,8 +455,116 @@ public class TrackingService extends Service implements SensorEventListener {
         if (sensor != null) sensors.registerListener(this, sensor, 1_000_000, 10_000_000, handler);
     }
 
+    // ---------- 歩数と、止まっているあいだの間引き ----------
+
+    /** 身体活動の許可（Android 10 から。歩数計に要る） */
+    private boolean activityAllowed() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+            || ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** 歩数計を使い始める（なければ・許可がなければ、歩数は残さず測位も間引かない） */
+    private void startSteps(boolean fresh) {
+        Sensor sensor = sensors != null && activityAllowed() ? sensors.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) : null;
+        stepSensor = sensor;
+        motionSensor = sensors != null ? sensors.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION) : null;
+        still = false;
+        long now = SystemClock.elapsedRealtime();
+        steppedAt = now;
+        movedAt = now;
+        anchor = null;
+        if (sensor == null) {
+            steps = -1;
+            TrackingStore.log(this, "歩数計: " + (sensors != null && sensors.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null ? "身体活動の許可がないので使わない" : "なし") + "（測位は間引かない）");
+            return;
+        }
+        SharedPreferences p = prefs(this);
+        if (fresh) {
+            p.edit().remove("stepCounterBase").remove("stepsBase").remove("steps").apply();
+            steps = 0;
+            stepCounterBase = -1;
+            stepsBase = 0;
+        } else {
+            // 続き：前に残した歩数から
+            steps = p.getLong("steps", 0);
+            stepCounterBase = p.getLong("stepCounterBase", -1);
+            stepsBase = p.getLong("stepsBase", 0);
+        }
+        // 歩数はゆっくりでよいので、最大10秒まとめて届けてもらう
+        sensors.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL, 10_000_000, handler);
+        handler.removeCallbacks(stillTask);
+        handler.postDelayed(stillTask, STILL_CHECK_MS);
+        TrackingStore.log(this, "歩数計: あり（止まっているあいだは測位を間引く" + (motionSensor != null ? "" : "。動きのセンサーがないので、戻るのは歩数か測位で") + "）");
+    }
+
+    /** 歩数計の値（端末を起動してからの歩数）から、記録を始めてからの歩数にする */
+    private void onSteps(long counter) {
+        if (stepCounterBase < 0 || counter < stepCounterBase) {
+            // 始めて読んだ・端末が再起動して歩数計が数え直された：ここからの増えた分を、今の歩数に足していく
+            stepsBase = Math.max(0, steps);
+            stepCounterBase = counter;
+            prefs(this).edit().putLong("stepCounterBase", stepCounterBase).putLong("stepsBase", stepsBase).apply();
+        }
+        long now = stepsBase + (counter - stepCounterBase);
+        if (now > steps) {
+            steppedAt = SystemClock.elapsedRealtime();
+            if (still && now - stepsAtStill >= RESUME_STEPS) {
+                steps = now;
+                setStill(false, "歩き出した");
+            }
+        }
+        steps = Math.max(steps, now);
+    }
+
+    /** GPS で STILL_RADIUS_M 以上動いたか（止まっているあいだは、遠くの測位で戻す） */
+    private void trackMovement(Location loc) {
+        if (anchor == null) {
+            anchor = loc;
+            movedAt = SystemClock.elapsedRealtime();
+            return;
+        }
+        float d = loc.distanceTo(anchor);
+        if (d < STILL_RADIUS_M) return;
+        anchor = loc;
+        movedAt = SystemClock.elapsedRealtime();
+        if (still && d >= RESUME_DISTANCE_M) setStill(false, "離れた所の測位が届いた");
+    }
+
+    /** 歩数が増えず、GPS でも動いていない時間が続いたら、止まっているとみなす */
+    private void checkStill() {
+        if (track == null || stepSensor == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (!still && now - steppedAt >= STILL_AFTER_MS && now - movedAt >= STILL_AFTER_MS) setStill(true, null);
+        handler.removeCallbacks(stillTask);
+        handler.postDelayed(stillTask, STILL_CHECK_MS);
+    }
+
+    /** 止まっている（測位を間引く）・動き出した（もとの測位に戻す）を切り替える */
+    private void setStill(boolean on, String why) {
+        if (still == on || track == null) return;
+        long now = SystemClock.elapsedRealtime();
+        still = on;
+        if (on) {
+            stillSince = now;
+            stepsAtStill = steps;
+            if (motionSensor != null) sensors.requestTriggerSensor(motionListener, motionSensor);
+            TrackingStore.log(this, "止まっているので測位を間引いた（3分間 歩数が増えず、30m以上動いていない）");
+        } else {
+            stillMs += now - stillSince;
+            if (motionSensor != null) sensors.cancelTriggerSensor(motionListener, motionSensor);
+            steppedAt = now;
+            movedAt = now;
+            TrackingStore.log(this, String.format(Locale.JAPAN, "%sので測位を戻した（%.0f分 間引いた）", why, (now - stillSince) / 60_000.0));
+        }
+        requestUpdates();
+    }
+
     @Override
     public void onSensorChanged(SensorEvent event) {
+        if (event.sensor.getType() == Sensor.TYPE_STEP_COUNTER) {
+            onSteps((long) event.values[0]);
+            return;
+        }
         double v = event.values[0];
         // 1秒ごとの小さな揺れをならす（約5秒の移動平均に相当）
         hPa = Double.isNaN(hPa) ? v : hPa + (v - hPa) * 0.2;
@@ -415,7 +615,8 @@ public class TrackingService extends Service implements SensorEventListener {
                 latestHPa = Double.NaN;
                 hPa = Double.NaN;
                 SharedPreferences.Editor e = prefs(this).edit()
-                    .remove("track").remove("startedAt").remove("startBattery").remove("startBatteryAt");
+                    .remove("track").remove("startedAt").remove("startBattery").remove("startBatteryAt")
+                    .remove("steps").remove("stepCounterBase").remove("stepsBase");
                 if (byUser && t != null) e.putString("stoppedTrack", t).putLong("stoppedAt", System.currentTimeMillis());
                 e.apply();
                 if (byUser) TrackingPlugin.signal("stopped");
@@ -452,18 +653,12 @@ public class TrackingService extends Service implements SensorEventListener {
     }
 
     @Override
-    public void onTrimMemory(int level) {
-        // メモリが足りなくなってきた（このあとシステムに止められることがある）
-        if (level >= TRIM_MEMORY_RUNNING_LOW && track != null) TrackingStore.log(this, "メモリ不足の知らせ（level " + level + "）");
-        super.onTrimMemory(level);
-    }
-
-    @Override
     public void onDestroy() {
         if (track != null) TrackingStore.log(this, "記録中に記録のサービスが終了した");
         if (running == this) running = null;
         fused.removeLocationUpdates(callback);
         if (sensors != null) sensors.unregisterListener(this);
+        if (sensors != null && motionSensor != null) sensors.cancelTriggerSensor(motionListener, motionSensor);
         try {
             unregisterReceiver(screenReceiver);
         } catch (IllegalArgumentException ignored) {

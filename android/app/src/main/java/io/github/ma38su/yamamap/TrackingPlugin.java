@@ -1,11 +1,15 @@
 package io.github.ma38su.yamamap;
 
 import android.Manifest;
+import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
+import android.hardware.Sensor;
+import android.hardware.SensorManager;
 import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
@@ -14,11 +18,13 @@ import android.provider.Settings;
 import android.webkit.WebView;
 
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.pm.PackageInfoCompat;
 import androidx.core.location.LocationManagerCompat;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
@@ -31,12 +37,14 @@ import com.getcapacitor.annotation.Permission;
  * 軌跡の記録（src/track/location.ts から使う）。記録そのものは TrackingService がする。
  * JS は start / stop で記録を始め・止め、getFixes でたまった測位を取り込む。
  * WebView が動いていれば（裏に回っていても）、測位を保存するたびに "fixes"、通知の「停止」で止めたら "stopped" を知らせる。
- * 位置情報の許可は Capacitor の checkPermissions / requestPermissions（別名 location）で求める
+ * 位置情報の許可は Capacitor の checkPermissions / requestPermissions（別名 location）、歩数計の身体活動の許可は別名 activity で求める
  */
 @CapacitorPlugin(
     name = "Tracking",
     permissions = {
-        @Permission(alias = "location", strings = { Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION })
+        @Permission(alias = "location", strings = { Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION }),
+        // 歩数計（記録に歩数を残し、止まっているあいだは測位を間引く）。Android 10 から許可が要る
+        @Permission(alias = "activity", strings = { Manifest.permission.ACTIVITY_RECOGNITION })
     }
 )
 public class TrackingPlugin extends Plugin {
@@ -186,7 +194,7 @@ public class TrackingPlugin extends Plugin {
         ret.put("android", Build.VERSION.RELEASE + "（API " + Build.VERSION.SDK_INT + "）");
         try {
             PackageInfo pi = ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0);
-            long code = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? pi.getLongVersionCode() : pi.versionCode;
+            long code = PackageInfoCompat.getLongVersionCode(pi);
             ret.put("app", pi.versionName + "（" + code + "）");
         } catch (Exception e) {
             ret.put("app", "不明");
@@ -204,7 +212,64 @@ public class TrackingPlugin extends Plugin {
         ret.put("serviceRunning", TrackingService.running != null);
         ret.put("serviceTrack", track != null ? track : JSObject.NULL);
         ret.put("pendingFixes", TrackingStore.get(ctx).pendingFixes());
+        SensorManager sm = (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE);
+        ret.put("stepCounter", sm != null && sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null);
+        ret.put("motionSensor", sm != null && sm.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION) != null);
+        ret.put("activity", Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || getPermissionState("activity") == PermissionState.GRANTED);
+        ret.put("exits", recentExits(ctx));
         call.resolve(ret);
+    }
+
+    /**
+     * アプリ（画面・記録のサービス）が最近終了した理由（新しい順に5回。Android 11 から）。
+     * メモリ不足の知らせ（onTrimMemory）は Android 14 から届かなくなったので、止められたあとに理由を見る
+     */
+    private static JSArray recentExits(Context ctx) {
+        JSArray out = new JSArray();
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return out;
+        ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+        if (am == null) return out;
+        try {
+            for (ApplicationExitInfo e : am.getHistoricalProcessExitReasons(ctx.getPackageName(), 0, 20)) {
+                // WebView の描画用の別プロセス（isolated）の終了は除き、アプリ本体（画面と記録のサービス）だけ
+                if (!ctx.getPackageName().equals(e.getProcessName())) continue;
+                JSObject o = new JSObject();
+                o.put("t", e.getTimestamp());
+                o.put("reason", exitReason(e.getReason()));
+                String desc = e.getDescription();
+                o.put("description", desc != null ? desc : JSObject.NULL);
+                o.put("importance", e.getImportance() <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE ? "表" : "裏");
+                out.put(o);
+                if (out.length() >= 5) break;
+            }
+        } catch (Exception e) {
+            // 端末によっては読めない
+        }
+        return out;
+    }
+
+    /** 終了した理由（ApplicationExitInfo.REASON_*）を日本語に */
+    private static String exitReason(int reason) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return String.valueOf(reason);
+        switch (reason) {
+            case ApplicationExitInfo.REASON_EXIT_SELF: return "自分で終了";
+            case ApplicationExitInfo.REASON_SIGNALED: return "シグナルで終了";
+            case ApplicationExitInfo.REASON_LOW_MEMORY: return "メモリ不足";
+            case ApplicationExitInfo.REASON_CRASH: return "異常終了（Java）";
+            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "異常終了（ネイティブ）";
+            case ApplicationExitInfo.REASON_ANR: return "応答なし（ANR）";
+            case ApplicationExitInfo.REASON_INITIALIZATION_FAILURE: return "起動に失敗";
+            case ApplicationExitInfo.REASON_PERMISSION_CHANGE: return "許可が変わった";
+            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "電池・CPU の使いすぎ";
+            case ApplicationExitInfo.REASON_USER_REQUESTED: return "利用者が止めた（強制停止など）";
+            case ApplicationExitInfo.REASON_USER_STOPPED: return "利用者が止めた（ユーザー切り替えなど）";
+            case ApplicationExitInfo.REASON_DEPENDENCY_DIED: return "依存先が終了";
+            case ApplicationExitInfo.REASON_OTHER: return "その他（システムによる終了）";
+            case ApplicationExitInfo.REASON_FREEZER: return "凍結中に終了";
+            case ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE: return "アプリの状態が変わった";
+            case ApplicationExitInfo.REASON_PACKAGE_UPDATED: return "アプリを更新した";
+            default: return "不明（" + reason + "）";
+        }
     }
 
     /** 記録のサービスのログ（新しい順に limit 行） */

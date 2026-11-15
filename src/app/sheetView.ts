@@ -1,7 +1,7 @@
 /** 下から出るシート：カード（到着予想の要約）と、詳細のタブ（行程／標高・ペース） */
 import { formatDistance, formatDuration, type LngLat } from '../geo';
 import { PACE_PRESETS, estimate } from '../nav/eta';
-import { routeSpan } from '../nav/plan';
+import { DEPART_DATE_TIME, DEPART_TIME, routeSpan } from '../nav/plan';
 import { saveSettings, settings } from '../settings';
 import { $, onLongPress, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
 import { BottomSheet } from '../ui/sheet';
@@ -38,8 +38,18 @@ function navRow(label: string, row: Row, primary: boolean, sunset: number | null
 }
 
 /** 出発時刻の表示：「5:00」、翌日なら「明日 5:00」 */
-const isTomorrow = (ms: number) => new Date(ms).toDateString() !== new Date().toDateString();
-const departLabel = (ms: number) => `${isTomorrow(ms) ? '明日 ' : ''}${fmtClock(ms)}`;
+/** 今日から何日後か（0 = 今日、1 = 明日） */
+const daysFromToday = (ms: number) => {
+  const day = (t: number) => new Date(t).setHours(0, 0, 0, 0);
+  return Math.round((day(ms) - day(Date.now())) / 86_400_000);
+};
+/** 出発の日時の表示：今日なら「5:00」、明日なら「明日 5:00」、それより先は「11/20(金) 5:00」 */
+const departLabel = (ms: number) => {
+  const n = daysFromToday(ms);
+  const d = new Date(ms);
+  const day = n === 0 ? '' : n === 1 ? '明日 ' : `${d.getMonth() + 1}/${d.getDate()}(${'日月火水木金土'[d.getDay()]}) `;
+  return `${day}${fmtClock(ms)}`;
+};
 
 /** 天気の一行「🌤️ 晴れ時々曇り · 降水 20% · 12℃」（head は「予報」などの見出し） */
 function wxRow(w: WeatherAt, head = ''): HTMLElement {
@@ -172,6 +182,7 @@ function renderActualCard(card: HTMLElement) {
   if (first && last) sub.append(h('span', '', `所要 ${fmtHM((last.t - first.t) / 60_000)} · ${formatDistance(track.distance)}`));
   if (p) sub.append(h('span', '', `歩行 ${fmtHM(p.movingMs / 60_000)} · 休憩 ${fmtHM(p.restMs / 60_000)}`));
   sub.append(h('span', '', `登り ${fmtM(track.ascent)} · 下り ${fmtM(track.descent)}`));
+  if (track.steps) sub.append(h('span', '', `${track.steps.toLocaleString('ja-JP')}歩`));
   if (p && p.evidenceMin > 10) sub.append(h('span', '', `標準の${p.overall.toFixed(2)}倍`));
   // 記録した実際の天気のまとめ：雨の量（解析雨量）と気温（アメダスを、歩いた標高のまんなかに補正）
   const rec = showingPlan() ? null : shownWeather();
@@ -396,23 +407,38 @@ export function renderBody(nav: Nav | null) {
     : '記録を開始すると、歩いた実績（登り・平坦・下りの速さ、休憩の取り方）から到着予想を自動で調整します。';
 }
 
+const pad2 = (n: number) => String(n).padStart(2, '0');
 /** "HH:MM" */
-const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+const hhmm = (d: Date) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+/** "YYYY-MM-DD"（端末の日付） */
+const ymd = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+/** 日付を選んだ出発か（時刻だけなら日付は自動） */
+const dateChosen = () => !!settings.departAt && DEPART_DATE_TIME.test(settings.departAt);
 
-/** 行程の「出発」：「今すぐ」なら時刻欄は現在時刻、時刻を変えると「今すぐ」が外れる */
+/**
+ * 行程の「出発」：「今すぐ」なら日付・時刻の欄は今。時刻を変えると「今すぐ」が外れる（日付は自動：今より6時間以上前なら明日）。
+ * 日付を選ぶと、その日の出発にする
+ */
 function renderDeparture() {
   const now = !settings.departAt || recorder.recording;
   const btn = $<HTMLButtonElement>('depart-now');
   btn.setAttribute('aria-pressed', String(now));
   btn.disabled = recorder.recording;
+  const dep = new Date(now ? Date.now() : departureTime());
+  const date = $<HTMLInputElement>('depart-date');
+  date.disabled = recorder.recording;
+  date.min = ymd(new Date());
+  if (document.activeElement !== date) date.value = ymd(dep);
   const input = $<HTMLInputElement>('depart-time');
   input.disabled = recorder.recording;
-  if (document.activeElement !== input) input.value = now ? hhmm(new Date()) : settings.departAt!;
+  if (document.activeElement !== input) input.value = hhmm(dep);
   $('depart-note').textContent = recorder.recording
     ? '記録中は現在時刻から到着予想を出します'
-    : !now && isTomorrow(departureTime())
+    : !now && !dateChosen() && daysFromToday(dep.getTime()) === 1
       ? '今より前の時刻なので、明日の出発として予想しています'
-      : '';
+      : !now && dep.getTime() - Date.now() > 3 * 86_400_000
+        ? '天気予報は3日先までなので、この日の天気は出ません'
+        : '';
 }
 
 // ---------- 詳細のタブ ----------
@@ -458,8 +484,17 @@ $('depart-now').addEventListener('click', () => {
 });
 $<HTMLInputElement>('depart-time').addEventListener('change', (e) => {
   const v = (e.target as HTMLInputElement).value;
-  if (!/^\d{2}:\d{2}$/.test(v)) return;
-  settings.departAt = v;
+  if (!DEPART_TIME.test(v)) return;
+  // 日付を選んでいればその日のまま、そうでなければ時刻だけ（日付は自動）
+  settings.departAt = dateChosen() ? `${settings.departAt!.slice(0, 10)}T${v}` : v;
+  saveSettings();
+  updateNav();
+});
+$<HTMLInputElement>('depart-date').addEventListener('change', (e) => {
+  const v = (e.target as HTMLInputElement).value;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+  const time = $<HTMLInputElement>('depart-time').value;
+  settings.departAt = `${v}T${DEPART_TIME.test(time) ? time : hhmm(new Date())}`;
   saveSettings();
   updateNav();
 });

@@ -27,15 +27,28 @@ export function pointsIn(points: TrackPoint[], trim?: TrimRange): TrackPoint[] {
   return points.filter((p) => p.t >= start && p.t <= end);
 }
 
-/** 点から、距離・登り・下りを数える（記録しているときと同じ数え方） */
-export function summarize(points: TrackPoint[]): { distance: number; ascent: number; descent: number } {
+/** 点の歩数（記録を始めてからの歩数）の差から、点のあいだの歩数（歩数がなければ undefined） */
+export function stepsBetween(points: TrackPoint[]): number | undefined {
+  let first: number | undefined;
+  let last: number | undefined;
+  for (const p of points) {
+    if (p.steps == null) continue;
+    first ??= p.steps;
+    last = p.steps;
+  }
+  return first != null && last != null ? Math.max(0, last - first) : undefined;
+}
+
+/** 点から、距離・登り・下り・歩数を数える（記録しているときと同じ数え方。歩数は歩数計があったときだけ） */
+export function summarize(points: TrackPoint[]): { distance: number; ascent: number; descent: number; steps?: number } {
   const gain = new GainCounter();
   let dist = 0;
   for (let i = 0; i < points.length; i++) {
     if (i > 0) dist += distance(ll(points[i - 1]), ll(points[i]));
     gain.push(points[i].ele);
   }
-  return { distance: dist, ascent: gain.ascent, descent: gain.descent };
+  const steps = stepsBetween(points);
+  return { distance: dist, ascent: gain.ascent, descent: gain.descent, ...(steps != null ? { steps } : {}) };
 }
 
 /** 記録の上の始めと終わりの時刻 */
@@ -52,7 +65,7 @@ export function applyTrim(track: Track, all: TrackPoint[], range: TrimRange | nu
   const last = all.at(-1)?.t ?? Infinity;
   const start = range?.start != null && range.start > first ? range.start : undefined;
   const end = range?.end != null && range.end < last ? range.end : undefined;
-  const { trim: _old, ...rest } = track;
+  const { trim: _old, steps: _steps, ...rest } = track;
   const trim = start != null || end != null ? { ...(start != null ? { start } : {}), ...(end != null ? { end } : {}) } : undefined;
   return { ...rest, ...summarize(pointsIn(all, trim)), ...(trim ? { trim } : {}) };
 }

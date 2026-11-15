@@ -337,7 +337,8 @@ button,
   color: var(--accent-ink);
   font-weight: 700;
 }
-#depart-time {
+#depart-time,
+#depart-date {
   min-height: 40px;
   padding: 4px 10px;
   border: 1.5px solid var(--line);

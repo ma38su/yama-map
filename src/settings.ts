@@ -2,7 +2,7 @@
 import type { LngLat } from './geo';
 import { BASE_LAYERS, TERRAIN_EXAGGERATION, TERRAIN_EXAGGERATION_RANGE, type BaseLayerId } from './map/style';
 import { PACE_PRESETS, type PacePreset } from './nav/eta';
-import { ROUTE_PREFS, type RoutePref } from './nav/plan';
+import { DEPART_DATE_TIME, DEPART_TIME, ROUTE_PREFS, departureAt, type RoutePref } from './nav/plan';
 import { backgroundCapable } from './track/location';
 
 export interface Settings {
@@ -24,7 +24,7 @@ export interface Settings {
   pace: PacePreset;
   /** ルートの探し方 */
   routePref: RoutePref;
-  /** 出発時刻 "HH:MM"。null なら現在時刻に出発する想定 */
+  /** 出発の日時。日付を選んだら "YYYY-MM-DDTHH:MM"、時刻だけなら "HH:MM"（日付は自動）。null なら現在時刻に出発する想定 */
   departAt: string | null;
   view?: { center: LngLat; zoom: number; pitch: number; bearing: number };
   /** 最初から入れている「予定」の記録を入れ終えたか（消したあとに戻さないため） */
@@ -52,7 +52,9 @@ settings.terrainExaggeration = Number.isFinite(settings.terrainExaggeration)
   : TERRAIN_EXAGGERATION;
 if (!(settings.pace in PACE_PRESETS)) settings.pace = 'normal';
 if (!(settings.routePref in ROUTE_PREFS)) settings.routePref = 'trail';
-if (settings.departAt != null && !/^\d{2}:\d{2}$/.test(settings.departAt)) settings.departAt = null;
+if (settings.departAt != null && !DEPART_TIME.test(settings.departAt) && !DEPART_DATE_TIME.test(settings.departAt)) settings.departAt = null;
+// 日付を選んだ出発が半日以上前に過ぎていたら、今すぐに戻す（前の山行の計画が残っているだけなので）
+if (settings.departAt && DEPART_DATE_TIME.test(settings.departAt) && departureAt(settings.departAt, Date.now()) < Date.now() - 12 * 3_600_000) settings.departAt = null;
 /**
  * 保存するときだけ差し替える値。リプレイで一時的に 3D にしているあいだ、元の 2D のほうを保存するのに使う
  * （途中でアプリを閉じても、次の起動が 3D にならないように）

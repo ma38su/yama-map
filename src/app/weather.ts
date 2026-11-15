@@ -86,9 +86,16 @@ function request(key: string) {
   flushTimer = window.setTimeout(() => void flush(), 200);
 }
 
+/**
+ * 続けて取れなかった回数と、次に問い合わせてよい時刻。電波が弱い山の中では1回に15秒待って取れないことが続くので、
+ * 取れないあいだは1分・2分・4分…（最大30分）と間を空け、ログにも最初の1回と5回ごとだけ書く
+ */
+let failStreak = 0;
+let pauseUntil = 0;
+
 async function flush() {
-  // 圏外なら問い合わせない（電波を探して電池を使わないように）。つながったら頼み直される
-  if (!navigator.onLine) {
+  // 圏外・取れない日が続いているときは問い合わせない（電波を探して電池を使わないように）。つながったら頼み直される
+  if (!navigator.onLine || Date.now() < pauseUntil) {
     queue.clear();
     return;
   }
@@ -101,11 +108,16 @@ async function flush() {
   try {
     const list = await fetchForecast(keys.map(cellCenter), AbortSignal.timeout(15_000));
     keys.forEach((k, i) => list[i] && cache.set(k, { h: list[i], at: Date.now() }));
+    failStreak = 0;
     schedulePersist();
     updateNav();
     updateWeatherLayers(true);
   } catch (e) {
-    console.warn('天気予報を取得できませんでした', e);
+    failStreak++;
+    pauseUntil = Date.now() + Math.min(30, 2 ** (failStreak - 1)) * 60_000;
+    if (failStreak === 1 || failStreak % 5 === 0) console.warn(`天気予報を取得できませんでした（${failStreak}回続けて）`, e);
+    queue.clear();
+    return;
   }
   if (queue.size) void flush();
 }

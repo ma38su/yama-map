@@ -33,22 +33,25 @@ class TrackingStore extends SQLiteOpenHelper {
     private int logAdded = 0;
 
     private TrackingStore(Context context) {
-        super(context, "tracking.db", null, 2);
+        super(context, "tracking.db", null, 3);
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
         db.execSQL(
             "CREATE TABLE fixes (id INTEGER PRIMARY KEY AUTOINCREMENT, track TEXT NOT NULL, t INTEGER NOT NULL," +
-            " lat REAL NOT NULL, lng REAL NOT NULL, acc REAL NOT NULL, alt REAL, hpa REAL)"
+            " lat REAL NOT NULL, lng REAL NOT NULL, acc REAL NOT NULL, alt REAL, hpa REAL, steps INTEGER)"
         );
         db.execSQL("CREATE INDEX fixes_track ON fixes (track, id)");
         createLog(db);
     }
 
+    /** 版を上げるときは、表・列を足すだけにする（アプリを更新しても、取り込む前の測位が消えないように） */
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         if (oldVersion < 2) createLog(db);
+        // 版3：測位のときの歩数（記録を始めてからの歩数）
+        if (oldVersion < 3) db.execSQL("ALTER TABLE fixes ADD COLUMN steps INTEGER");
     }
 
     private static void createLog(SQLiteDatabase db) {
@@ -100,8 +103,11 @@ class TrackingStore extends SQLiteOpenHelper {
         }
     }
 
-    /** 1回に届いた測位をまとめて保存する。hpa は気圧 (hPa)。気圧計がない・値が古ければ null */
-    void addAll(String track, List<Location> locations, Double hpa) {
+    /**
+     * 1回に届いた測位をまとめて保存する。hpa は気圧 (hPa)。気圧計がない・値が古ければ null。
+     * steps は記録を始めてからの歩数（歩数計がない・許可がなければ null）
+     */
+    void addAll(String track, List<Location> locations, Double hpa, Long steps) {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
@@ -114,6 +120,7 @@ class TrackingStore extends SQLiteOpenHelper {
                 v.put("acc", loc.hasAccuracy() ? loc.getAccuracy() : 9999);
                 if (loc.hasAltitude()) v.put("alt", loc.getAltitude());
                 if (hpa != null) v.put("hpa", hpa);
+                if (steps != null) v.put("steps", steps);
                 db.insert("fixes", null, v);
             }
             db.setTransactionSuccessful();
@@ -165,7 +172,7 @@ class TrackingStore extends SQLiteOpenHelper {
         JSArray out = new JSArray();
         try (Cursor c = getReadableDatabase().query(
             "fixes",
-            new String[] { "id", "t", "lat", "lng", "acc", "alt", "hpa" },
+            new String[] { "id", "t", "lat", "lng", "acc", "alt", "hpa", "steps" },
             "track = ? AND id > ?",
             new String[] { track, String.valueOf(afterId) },
             null,
@@ -182,6 +189,7 @@ class TrackingStore extends SQLiteOpenHelper {
                 f.put("acc", c.getDouble(4));
                 f.put("alt", c.isNull(5) ? JSObject.NULL : c.getDouble(5));
                 f.put("hpa", c.isNull(6) ? JSObject.NULL : c.getDouble(6));
+                f.put("steps", c.isNull(7) ? JSObject.NULL : c.getLong(7));
                 out.put(f);
             }
         }

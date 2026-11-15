@@ -256,7 +256,11 @@ function trackItem(t: Track): HTMLElement {
   head.append(h('div', 'title', trackTitle(t)), lock);
   li.append(
     head,
-    h('div', 'meta', `${trackWhen(t)}・${formatDuration(times.end - times.start)}・${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}${recording ? '・記録中' : ''}`),
+    h(
+      'div',
+      'meta',
+      `${trackWhen(t)}・${formatDuration(times.end - times.start)}・${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}${t.steps ? `・${t.steps.toLocaleString('ja-JP')}歩` : ''}${recording ? '・記録中' : ''}`,
+    ),
   );
   const row = h('div', 'row');
   const btn = (label: string, fn: () => void, cls = '') => {

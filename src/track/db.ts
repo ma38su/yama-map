@@ -24,6 +24,8 @@ export interface TrackPoint {
   hpa?: number | null;
   /** 標高タイルから求めた標高 (m)。気圧で補ったときに、元の値を残しておく（記録の再開で補い直すため） */
   dem?: number | null;
+  /** 記録を始めてからの歩数。アプリ版で歩数計があるときだけ（区間の歩数は差で出す） */
+  steps?: number;
 }
 
 /** 記録に残した写真 */
@@ -54,6 +56,8 @@ export interface Track {
   descent: number;
   /** 点の数（範囲の外も含めた全部） */
   pointCount: number;
+  /** 歩数（記録の範囲 trim があれば、その中の点で数えたもの）。歩数計がなければない */
+  steps?: number;
   /** 記録の範囲（記録の上の開始・終了の時刻）。点は消さずに、出発前・到着後に止まっていた時間を除く（./trim.ts） */
   trim?: TrimRange;
   /**

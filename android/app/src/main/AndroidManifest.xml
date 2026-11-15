@@ -57,6 +57,8 @@
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <!-- 道迷いアラートで振動させる -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 歩数計（記録に歩数を残し、止まっているあいだは測位を間引いて電池を節約する） -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <!-- 気圧計で標高を補う（ない端末でもインストールできるように required="false"） -->
     <uses-feature android:name="android.hardware.sensor.barometer" android:required="false" />
 </manifest>

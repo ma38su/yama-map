@@ -278,4 +278,9 @@ describe('departureAt', () => {
     expect(departureAt('05:00', at(21))).toBe(new Date(2026, 10, 16, 5, 0).getTime());
     expect(departureAt('15:00', at(21))).toBe(at(15));
   });
+
+  it('日付を選んだら、その日のその時刻（今との前後によらない）', () => {
+    expect(departureAt('2026-11-20T05:30', at(21))).toBe(new Date(2026, 10, 20, 5, 30).getTime());
+    expect(departureAt('2026-11-15T05:00', at(21))).toBe(at(5));
+  });
 });

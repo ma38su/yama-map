@@ -22,6 +22,8 @@ export interface Fix {
   timestamp: number;
   /** 気圧 (hPa)。アプリ版で測位と一緒に残したもの（undefined ならその場で気圧計を読む） */
   hpa?: number | null;
+  /** 記録を始めてからの歩数。アプリ版で歩数計があり、身体活動の許可があるときだけ */
+  steps?: number | null;
   /** まとめて取り込んでいる途中で、すぐ後に続きがある（保存は最後の1点でまとめて行う） */
   more?: boolean;
 }
@@ -58,6 +60,7 @@ interface StoredFix {
   acc: number;
   alt: number | null;
   hpa: number | null;
+  steps?: number | null;
 }
 export interface TrackingStatus {
   recording: boolean;
@@ -77,8 +80,8 @@ interface TrackingPlugin {
   pendingTracks(): Promise<{ tracks: string[] }>;
   getFixes(o: { trackId: string; afterId: number; limit: number }): Promise<{ fixes: StoredFix[] }>;
   clearFixes(o: { trackId: string }): Promise<void>;
-  checkPermissions(): Promise<{ location: PermissionState }>;
-  requestPermissions(o?: { permissions: 'location'[] }): Promise<{ location: PermissionState }>;
+  checkPermissions(): Promise<{ location: PermissionState; activity: PermissionState }>;
+  requestPermissions(o?: { permissions: ('location' | 'activity')[] }): Promise<{ location: PermissionState; activity: PermissionState }>;
   /** fixes: 測位を保存した / stopped: 通知の「停止」で止めた */
   addListener(event: 'fixes' | 'stopped', fn: () => void): Promise<PluginListenerHandle>;
   batteryOptimization(): Promise<{ ignoring: boolean }>;
@@ -103,6 +106,12 @@ export interface NativeDiagnostics {
   serviceRunning: boolean;
   serviceTrack: string | null;
   pendingFixes: number;
+  /** 歩数計・大きな動きのセンサーがあるか、身体活動の許可があるか */
+  stepCounter: boolean;
+  motionSensor: boolean;
+  activity: boolean;
+  /** アプリが最近終了した理由（新しい順に5回。Android 11 から） */
+  exits?: { t: number; reason: string; description: string | null; importance: string }[];
 }
 const Tracking = registerPlugin<TrackingPlugin>('Tracking');
 
@@ -130,10 +139,24 @@ export async function requestTrackingPermissions(): Promise<boolean> {
   try {
     let { location } = await Tracking.checkPermissions();
     if (location !== 'granted') ({ location } = await Tracking.requestPermissions({ permissions: ['location'] }));
+    if (location === 'granted') await requestActivityPermission();
     return location === 'granted';
   } catch (e) {
     console.error(e);
     return true;
+  }
+}
+
+/**
+ * 歩数計の身体活動の許可を求める（記録に歩数を残し、止まっているあいだは測位を間引いて電池を節約する）。
+ * 断られても記録はできる（歩数は残さず、測位も間引かない）。一度断られたら聞き直さない
+ */
+async function requestActivityPermission(): Promise<void> {
+  try {
+    const { activity } = await Tracking.checkPermissions();
+    if (activity === 'prompt' || activity === 'prompt-with-rationale') await Tracking.requestPermissions({ permissions: ['activity'] });
+  } catch (e) {
+    console.warn('身体活動の許可を求められませんでした', e);
   }
 }
 
@@ -186,6 +209,7 @@ async function drainFixes(
         altitude: f.alt,
         timestamp: f.t,
         hpa: f.hpa,
+        steps: f.steps ?? null,
         more: i < fresh.length - 1,
       }),
     );

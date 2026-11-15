@@ -56,6 +56,8 @@ export class TrackRecorder {
   private lastFix: Fix | null = null;
   private error: string | null = null;
   private rejectedJumps = 0;
+  /** 最初の点の歩数（記録の歩数はそこからの差）。歩数がまだなければ null */
+  private firstSteps: number | null = null;
   /** まだ端末に保存していない点（まとめて取り込んでいる途中のもの・保存に失敗したもの）。次の保存でまとめて書く */
   private unsaved: TrackPoint[] = [];
   /** 最後の保存が失敗した */
@@ -133,6 +135,7 @@ export class TrackRecorder {
     this.points = [];
     this.unsaved = [];
     this.saveFailed = false;
+    this.firstSteps = null;
     this.gain = new GainCounter();
     this.baro = new BaroFusion();
     this.error = null;
@@ -217,6 +220,7 @@ export class TrackRecorder {
   private async load(track: Track): Promise<void> {
     this.track = { ...track, status: 'recording' };
     this.points = await getPoints(track.id);
+    this.firstSteps = this.points.find((p) => p.steps != null)?.steps ?? null;
     this.unsaved = [];
     this.saveFailed = false;
     this.rejectedJumps = 0;
@@ -328,6 +332,7 @@ export class TrackRecorder {
       acc: accuracy,
       ele,
       ...(hpa != null ? { hpa, dem } : {}),
+      ...(pos.steps != null ? { steps: pos.steps } : {}),
     };
     this.points.push(point);
     this.gain.push(ele);
@@ -337,6 +342,8 @@ export class TrackRecorder {
       ascent: this.gain.ascent,
       descent: this.gain.descent,
       pointCount: this.points.length,
+      // 歩数は、最初の点からの歩数（点の歩数は記録を始めてからの歩数なので、範囲を変えたときと同じく差を取る）
+      ...(pos.steps != null ? { steps: Math.max(0, pos.steps - (this.firstSteps ??= pos.steps)) } : {}),
     };
     this.unsaved.push(point);
     await this.settle(pos);

@@ -109,7 +109,7 @@ android/              Capacitor の Android プロジェクト（docs/android.md
 
 到着予想の時刻は、`Nav.startAt`（この時刻に今の位置＝計画なら出発地を出るとして数える）から数えます。
 行程・カード・地図をタップしたときの吹き出し・標高グラフの時刻の軸は、どれもこの値を使います。
-出発時刻を指定したとき、今より6時間以上前の時刻は翌日の出発とみなします（`nav/plan.ts` の `departureAt`。夜に翌朝の出発時刻を入れたとき）。
+出発時刻だけを指定したとき（`settings.departAt` が "HH:MM"）は、今より6時間以上前の時刻を翌日の出発とみなします（`nav/plan.ts` の `departureAt`。夜に翌朝の出発時刻を入れたとき）。日付も選んだとき（"YYYY-MM-DDTHH:MM"）は、その日のその時刻です。半日以上過ぎた日付の出発は、起動したときに「今すぐ」に戻します。
 
 ## 主な仕組み
 
@@ -146,7 +146,7 @@ android/              Capacitor の Android プロジェクト（docs/android.md
 - `names.ts`：記録の名前。経路名（ルートの名前のうち「出発地 → 目的地」のようにどこか分からないものは使わない。`routeNameOf`）、
   出発地・到着地の300m以内の名前のある場所からの名付け（`guessRouteName`、往復は一番遠いところの名前もはさむ）、一覧の日時（`trackWhen`）
 - `actual.ts`：記録の実績。ルートの地点を80m以内で通った時刻、3分以上の休憩、区間ごとの距離・登り下り・所要時間を出す
-- `trim.ts`：記録の範囲（`Track.trim`、開始・終了の時刻）。点は消さない。範囲を変えたら距離・登り下りを範囲の中で数え直して概要に入れる（`applyTrim`）。
+- `trim.ts`：記録の範囲（`Track.trim`、開始・終了の時刻）。点は消さない。範囲を変えたら距離・登り下り・歩数を範囲の中で数え直して概要に入れる（`applyTrim`。歩数は点の `steps`（記録を始めてからの歩数）の差）。
   `state.shown` は範囲の中の点（`points`）と全部の点（`all`）を持ち、ペース・実績・グラフ・リプレイは `points`、写真の置き場所と標高の埋め直しは `all` を使う。
   出発前・到着後に止まっていた時間は、端から続けて半径50mの中にいた点で見つける（場所は、いた時間の重み付きの真ん中に置き直してもう一度数える。`detectIdle`）
 - `baroAltitude.ts`：気圧高度で標高タイルの標高を補う計算（`BaroFusion`）。気圧はアプリ版の記録のサービスが測位と一緒に残し（`Fix.hpa`）、今の気圧は `location.ts` の `currentPressure`。記録の点に気圧（`hpa`）と元の標高（`dem`）を残す
@@ -250,14 +250,14 @@ MapLibre を更新したときは、この仕組みが残っているか確か�
 
 | 場所 | キー | 中身 |
 |---|---|---|
-| localStorage | `yama-map:settings` | 設定（背景地図・陰影・空の色・3D と起伏の強調・天気・画面を点けたまま・道迷いアラート・ペース・ルートの探し方・出発時刻・地図の位置・予定の記録を入れたか・電池の最適化を聞いたか・重ねる情報の種類ごとの表示・ルート沿いの保存の幅） |
+| localStorage | `yama-map:settings` | 設定（背景地図・陰影・空の色・3D と起伏の強調・天気・画面を点けたまま・道迷いアラート・ペース・ルートの探し方・出発の日時・地図の位置・予定の記録を入れたか・電池の最適化を聞いたか・重ねる情報の種類ごとの表示・ルート沿いの保存の幅） |
 | localStorage | `yama-map:places-pruned` | 古い場所の情報を最後に消した時刻 |
 | localStorage | `yama-map:route` | 表示中のルート |
 | localStorage | `yama-map:weather` | 天気予報（マス目ごと、3日分） |
 | localStorage | `yama-map:log` | 動作のログ（最新1500行） |
 | localStorage | `yama-map:osm-tiles` | OpenFreeMap のタイルの URL（圏外でも道データを探せるように） |
 | IndexedDB | `yama-map`（`tracks` / `points` / `photos` / `places` / `imports` / `areas`） | 記録・記録の写真・場所の情報（マス目ごと）・読み込んだ場所のファイル・オフライン用に保存した範囲（版3。版を上げるときはストアを足すだけ） |
-| SQLite（アプリ版） | `tracking.db`（`fixes` / `log`） | 記録中の測位（取り込んだら消す）・記録のサービスのログ（最新2000行） |
+| SQLite（アプリ版） | `tracking.db`（`fixes` / `log`） | 記録中の測位（気圧・歩数つき。取り込んだら消す）・記録のサービスのログ（最新2000行） |
 | SharedPreferences（アプリ版） | `tracking` | 記録中の記録・始めた時刻・距離・電池残量、通知の「停止」で止めた記録 |
 | Cache Storage | `yama-map-shell-<版>` / `yama-map-tiles-v1` / `yama-map-browse-v1` | アプリ本体・保存した地図と写真・表示しただけの地図と写真 |
 

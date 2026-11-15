@@ -90,6 +90,18 @@ describe('記録の範囲', () => {
     expect(trackTimes(endOnly).start).toBe(t.startedAt);
   });
 
+  it('歩数は点の歩数（記録を始めてからの歩数）の差。範囲を変えたら範囲の中で数え直す', () => {
+    const pts = hike().map((p, i) => ({ ...p, steps: i * 30 }));
+    const t = { ...track(pts), ...summarize(pts) };
+    expect(t.steps).toBe((pts.length - 1) * 30);
+    const trimmed = applyTrim(t, pts, { start: pts[5].t, end: pts[50].t });
+    expect(trimmed.steps).toBe(45 * 30);
+    // 全体に戻したら全部の歩数
+    expect(applyTrim(trimmed, pts, null).steps).toBe((pts.length - 1) * 30);
+    // 歩数計がない記録には歩数を付けない
+    expect('steps' in applyTrim(track(hike()), hike(), { start: pts[5].t })).toBe(false);
+  });
+
   it('止まっていなければ・ずっと同じところにいたら、勧めない', () => {
     const walk = hike().slice(3, 104);
     expect(detectIdle(walk, walk[0].t, walk.at(-1)!.t)).toBeNull();

@@ -382,12 +382,21 @@ export function placeOnRoute(route: ActiveRoute, point: PlanPoint, maxOffset = 2
 /** 今より前の出発時刻をこれ以上さかのぼったら、翌日の出発とみなす */
 const PAST_DEPARTURE_MS = 6 * 3_600_000;
 
+/** 出発の日時の書き方：日付を選んだとき "YYYY-MM-DDTHH:MM"、時刻だけのとき "HH:MM"（端末の時刻で） */
+export const DEPART_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+export const DEPART_TIME = /^(\d{2}):(\d{2})$/;
+
 /**
- * 出発時刻 "HH:MM" を、now の日のその時刻 (ms) にする。
- * 今より6時間以上前の時刻は翌日とみなす（夜に翌朝の出発時刻を入れたとき）
+ * 出発の日時 (ms)。日付を選んでいればその日のその時刻。
+ * 時刻 "HH:MM" だけなら now の日のその時刻にし、今より6時間以上前の時刻は翌日とみなす（夜に翌朝の出発時刻を入れたとき）
  */
-export function departureAt(hhmm: string, now: number): number {
-  const [hh, mm] = hhmm.split(':').map(Number);
+export function departureAt(departAt: string, now: number): number {
+  const full = DEPART_DATE_TIME.exec(departAt);
+  if (full) {
+    const [y, mo, day, hh, mm] = full.slice(1).map(Number);
+    return new Date(y, mo - 1, day, hh, mm).getTime();
+  }
+  const [hh, mm] = departAt.split(':').map(Number);
   const d = new Date(now);
   d.setHours(hh, mm, 0, 0);
   if (d.getTime() < now - PAST_DEPARTURE_MS) d.setDate(d.getDate() + 1);
