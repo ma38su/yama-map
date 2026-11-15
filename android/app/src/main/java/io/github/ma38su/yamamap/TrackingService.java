@@ -1,6 +1,7 @@
 package io.github.ma38su.yamamap;
 
 import android.Manifest;
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -58,7 +59,8 @@ import java.util.Locale;
  *    低電力の測位（5分おき）にする。大きな動きを感じた（significant motion）・歩数が増えた・遠くの測位が届いたら、すぐ元に戻す
  *    （車やバスでは歩数が増えなくても GPS の位置が動くので、間引かない）
  *  - システムに止められて再起動されたら（START_STICKY）、記録中だった記録を続ける
- *  - あとでパフォーマンスを分析できるよう、10分ごとに「計測」の1行をログに残す（電池・温度・測位の届き具合・画面が点いていた時間など）
+ *  - あとでパフォーマンスを分析できるよう、10分ごとに「計測」の1行をログに残す（電池・温度・測位の届き具合・画面が点いていた時間など）。
+ *    handler の時間は端末が眠っているあいだ進まないので（測位を間引いているときなど）、アラームでも起こしてもらう
  * スレッド：onStartCommand と止める依頼はメインスレッドなどから来るが、測位・気圧・画面のオン/オフ・計測の値は
  * すべて記録用のスレッド（handler）で扱う。track だけはどこからでも読むので volatile にしている
  */
@@ -76,6 +78,8 @@ public class TrackingService extends Service implements SensorEventListener {
     private static final int ALERT_ID = 2;
     /** 測位の届き具合をログにまとめて書く間隔 */
     private static final long SUMMARY_MS = 10 * 60_000;
+    /** 端末が眠っていても計測を書くためのアラーム（このサービスが受け取る） */
+    private static final String ACTION_SUMMARY = "io.github.ma38su.yamamap.TRACKING_SUMMARY";
     private static final long INTERVAL_MS = 1000;
     private static final float MIN_DISTANCE_M = 5;
     private static final long MAX_DELAY_MS = 20_000;
@@ -136,6 +140,15 @@ public class TrackingService extends Service implements SensorEventListener {
     private long screenOnMs;
     private long screenOnSince;
     private final Runnable summaryTask = this::summarize;
+    /** 前の計測のときの電池の残り (mAh。測れなければ -1)。10分ごとの減りを出す */
+    private int summarizedMah = -1;
+    private final BroadcastReceiver summaryReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            // 端末が起きていれば handler がもう書いている（そのあとに届いた古いアラームは捨てる）
+            if (track != null && SystemClock.elapsedRealtime() - summarizedAt >= SUMMARY_MS / 2) summarize();
+        }
+    };
     /** 測位が使えない状態になった回数（10分ごとの計測に書く）と、使えなくなった時刻（ログに書いたら記録しておく） */
     private int unavailableCount;
     private long unavailableSince;
@@ -358,22 +371,53 @@ public class TrackingService extends Service implements SensorEventListener {
         stillMs = 0;
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         screenOnSince = pm != null && pm.isInteractive() ? summarizedAt : 0;
+        summarizedMah = batteryMah();
         IntentFilter f = new IntentFilter(Intent.ACTION_SCREEN_ON);
         f.addAction(Intent.ACTION_SCREEN_OFF);
-        try {
-            unregisterReceiver(screenReceiver);
-        } catch (IllegalArgumentException ignored) {
-            // まだ登録していない
-        }
-        // 画面のオン/オフも記録用のスレッドで受け取る
+        unregister(screenReceiver);
+        unregister(summaryReceiver);
+        // 画面のオン/オフと計測のアラームも記録用のスレッドで受け取る
         ContextCompat.registerReceiver(this, screenReceiver, f, null, handler, ContextCompat.RECEIVER_NOT_EXPORTED);
+        ContextCompat.registerReceiver(this, summaryReceiver, new IntentFilter(ACTION_SUMMARY), null, handler, ContextCompat.RECEIVER_NOT_EXPORTED);
         SharedPreferences p = prefs(this);
         if (fresh || !p.contains("startBattery")) {
-            p.edit().putInt("startBattery", batteryPercent()).putLong("startBatteryAt", System.currentTimeMillis()).apply();
+            p.edit()
+                .putInt("startBattery", batteryPercent())
+                .putInt("startMah", summarizedMah)
+                .putLong("startBatteryAt", System.currentTimeMillis())
+                .apply();
         }
+        scheduleSummary();
+        TrackingStore.log(this, "計測 開始 " + deviceState());
+    }
+
+    /**
+     * 次の計測を頼む。handler の時間（uptimeMillis）は端末が眠っているあいだ進まないので、
+     * 眠っていても起こしてもらえるアラームも掛けておく（Android 12 からは数分遅れることがある。区間は実際の時間で書く）。
+     * 起きていれば handler が先に書いて、アラームを掛け直す
+     */
+    private void scheduleSummary() {
         handler.removeCallbacks(summaryTask);
         handler.postDelayed(summaryTask, SUMMARY_MS);
-        TrackingStore.log(this, "計測 開始 " + deviceState());
+        AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (am != null) am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, summarizedAt + SUMMARY_MS, summaryAlarm());
+    }
+
+    private PendingIntent summaryAlarm() {
+        return PendingIntent.getBroadcast(
+            this,
+            3,
+            new Intent(ACTION_SUMMARY).setPackage(getPackageName()),
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+        );
+    }
+
+    private void unregister(BroadcastReceiver receiver) {
+        try {
+            unregisterReceiver(receiver);
+        } catch (IllegalArgumentException ignored) {
+            // 登録していない
+        }
     }
 
     /** 10分ごとの計測の1行。あとで分析しやすいよう「名前=値」を空白で区切る */
@@ -390,12 +434,14 @@ public class TrackingService extends Service implements SensorEventListener {
         }
         long stillNow = stillMs + (still ? now - stillSince : 0);
         if (still) stillSince = now;
+        int mah = batteryMah();
         TrackingStore.log(this, String.format(Locale.JAPAN,
-            "計測 区間=%d分 測位=%d件 受信=%d回 精度(中央/最大)=%s 測位なし=%d回 画面オン=%.1f分 距離=%.0fm 歩数=%s 間引き=%.1f分 気圧=%s %s",
+            "計測 区間=%d分 測位=%d件 受信=%d回 精度(中央/最大)=%s 測位なし=%d回 画面オン=%.1f分 距離=%.0fm 歩数=%s 間引き=%.1f分 気圧=%s 消費=%s %s",
             Math.round((now - summarizedAt) / 60_000.0), received, deliveries, acc, unavailableCount, screen / 60_000.0, distance,
             steps >= 0 ? String.valueOf(steps) : "なし", stillNow / 60_000.0,
-            !Double.isNaN(hPa) ? String.format(Locale.JAPAN, "%.1fhPa", hPa) : "なし", deviceState()));
+            !Double.isNaN(hPa) ? String.format(Locale.JAPAN, "%.1fhPa", hPa) : "なし", usage(summarizedMah, mah, now - summarizedAt), deviceState()));
         summarizedAt = now;
+        summarizedMah = mah;
         received = 0;
         deliveries = 0;
         accuracies.clear();
@@ -403,19 +449,19 @@ public class TrackingService extends Service implements SensorEventListener {
         stillMs = 0;
         // 端末が再起動して記録のサービスも始め直したときに、歩数を続きから数えられるように
         if (steps >= 0) prefs(this).edit().putLong("steps", steps).apply();
-        handler.removeCallbacks(summaryTask);
-        handler.postDelayed(summaryTask, SUMMARY_MS);
+        scheduleSummary();
     }
 
-    /** 電池残量・温度・充電・発熱・省電力モード */
+    /** 電池残量（% と mAh）・温度・充電・発熱・省電力モード */
     private String deviceState() {
         Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         float temp = b != null ? b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10f : Float.NaN;
         boolean plugged = b != null && b.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         String thermal = pm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? String.valueOf(pm.getCurrentThermalStatus()) : "-";
-        return String.format(Locale.JAPAN, "電池=%d%% 温度=%.1f℃ 充電=%s 発熱=%s 省電力=%s",
-            batteryPercent(), temp, plugged ? "中" : "なし", thermal, pm != null && pm.isPowerSaveMode() ? "オン" : "オフ");
+        int mah = batteryMah();
+        return String.format(Locale.JAPAN, "電池=%d%% 残量=%s 温度=%.1f℃ 充電=%s 発熱=%s 省電力=%s",
+            batteryPercent(), mah >= 0 ? mah + "mAh" : "なし", temp, plugged ? "中" : "なし", thermal, pm != null && pm.isPowerSaveMode() ? "オン" : "オフ");
     }
 
     private int batteryPercent() {
@@ -423,30 +469,54 @@ public class TrackingService extends Service implements SensorEventListener {
         return bm != null ? bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) : -1;
     }
 
+    /** 電池の残り (mAh。電池の残量計の値。測れない端末は -1)。% より細かいので、短い時間の減りも比べられる */
+    private int batteryMah() {
+        BatteryManager bm = (BatteryManager) getSystemService(Context.BATTERY_SERVICE);
+        // µAh。測れない端末は Integer.MIN_VALUE か 0
+        int uah = bm != null ? bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER) : 0;
+        return uah > 0 ? uah / 1000 : -1;
+    }
+
+    /** 電池の減り (mAh) と1時間あたり。1時間あたりは1分以上のときだけ（短いと大きくぶれる） */
+    private static String usage(int fromMah, int toMah, long ms) {
+        if (fromMah < 0 || toMah < 0) return "なし";
+        int used = fromMah - toMah;
+        return ms >= 60_000
+            ? String.format(Locale.JAPAN, "%dmAh(1時間あたり%.0fmAh)", used, used * 3_600_000.0 / ms)
+            : used + "mAh";
+    }
+
     /** 記録全体の電池の減り（記録を終えたとき） */
     private void logBatteryUsage() {
         SharedPreferences p = prefs(this);
         int start = p.getInt("startBattery", -1);
+        int startMah = p.getInt("startMah", -1);
         long at = p.getLong("startBatteryAt", 0);
         int end = batteryPercent();
-        double hours = (System.currentTimeMillis() - at) / 3_600_000.0;
+        int endMah = batteryMah();
+        long ms = System.currentTimeMillis() - at;
+        double hours = ms / 3_600_000.0;
         if (start < 0 || end < 0 || hours <= 0) return;
         TrackingStore.log(this, String.format(Locale.JAPAN,
-            "計測 記録全体 電池=%d%%→%d%% 時間=%.1f時間 1時間あたり=%.1f%% 距離=%.0fm（途中で充電していれば正しくない）",
-            start, end, hours, (start - end) / hours, distance));
+            "計測 記録全体 電池=%d%%→%d%% 残量=%s 時間=%.1f時間 1時間あたり=%.1f%% 消費=%s 距離=%.0fm（途中で充電していれば正しくない）",
+            start, end, startMah >= 0 && endMah >= 0 ? startMah + "→" + endMah + "mAh" : "なし", hours, (start - end) / hours,
+            usage(startMah, endMah, ms), distance));
     }
 
     private void stopMeasuring() {
         handler.removeCallbacks(summaryTask);
         handler.removeCallbacks(unavailableTask);
         handler.removeCallbacks(stillTask);
+        cancelSummaryAlarm();
         if (motionSensor != null) sensors.cancelTriggerSensor(motionListener, motionSensor);
         still = false;
-        try {
-            unregisterReceiver(screenReceiver);
-        } catch (IllegalArgumentException ignored) {
-            // 登録していない
-        }
+        unregister(screenReceiver);
+        unregister(summaryReceiver);
+    }
+
+    private void cancelSummaryAlarm() {
+        AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (am != null) am.cancel(summaryAlarm());
     }
 
     private void startPressure() {
@@ -615,7 +685,7 @@ public class TrackingService extends Service implements SensorEventListener {
                 latestHPa = Double.NaN;
                 hPa = Double.NaN;
                 SharedPreferences.Editor e = prefs(this).edit()
-                    .remove("track").remove("startedAt").remove("startBattery").remove("startBatteryAt")
+                    .remove("track").remove("startedAt").remove("startBattery").remove("startMah").remove("startBatteryAt")
                     .remove("steps").remove("stepCounterBase").remove("stepsBase");
                 if (byUser && t != null) e.putString("stoppedTrack", t).putLong("stoppedAt", System.currentTimeMillis());
                 e.apply();
@@ -659,11 +729,9 @@ public class TrackingService extends Service implements SensorEventListener {
         fused.removeLocationUpdates(callback);
         if (sensors != null) sensors.unregisterListener(this);
         if (sensors != null && motionSensor != null) sensors.cancelTriggerSensor(motionListener, motionSensor);
-        try {
-            unregisterReceiver(screenReceiver);
-        } catch (IllegalArgumentException ignored) {
-            // 登録していない
-        }
+        unregister(screenReceiver);
+        unregister(summaryReceiver);
+        cancelSummaryAlarm();
         thread.quitSafely();
         // 止める処理を待っている呼び出しがあれば返す
         runStopWaiters();
