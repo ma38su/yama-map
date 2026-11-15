@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cumulativeDistances, type LngLat } from '../src/geo';
-import { departureAt, detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, preferredOption, routeSpan, trailShare, type ActiveRoute, type RouteOption } from '../src/nav/plan';
+import { departureAt, detectPassPoints, insertVia, makePoint, normalizePoints, placeOnRoute, preferredOption, reverseRoute, routeSpan, trailShare, type ActiveRoute, type RouteOption } from '../src/nav/plan';
 import { clipLine, gsiKind, osmKind } from '../src/route/roadTiles';
 import { PROFILES, TrailGraph, overlapRatio, type RouteLine } from '../src/route/trailRouter';
 
@@ -164,6 +164,54 @@ describe('plan', () => {
     const r3 = placeOnRoute(r2, makePoint('via', P(50, 2)))!;
     expect(r3.marks.map((m) => m.kind)).toEqual(['start', 'via', 'dest']);
     expect(placeOnRoute(route, makePoint('via', P(50, 500)))).toBeNull();
+  });
+
+  it('逆向き（帰り道）：道の形・距離・地点の位置・候補・名前を入れ替える', () => {
+    const coords = [P(0, 0), P(100, 0), P(300, 0)];
+    const dists = cumulativeDistances(coords);
+    const total = dists[2];
+    const s = makePoint('start', coords[0], '女夫渕');
+    const v = makePoint('via', coords[1], '八丁の湯');
+    const d = makePoint('dest', coords[2], '手白澤温泉');
+    const opt: RouteOption = {
+      label: '登山道優先',
+      source: 'gsi',
+      byKind: { trail: total, track: 0, road: 0, major: 0 },
+      coords,
+      eles: [1000, 1100, 1400],
+      dists,
+      straightLegs: 0,
+      marks: [
+        { ...s, along: 0 },
+        { ...v, along: dists[1] },
+        { id: 'p', kind: 'pass', name: '加仁湯', lngLat: P(200, 0), along: dists[1] + 100 },
+        { ...d, along: total },
+      ],
+    };
+    const route: ActiveRoute = { ...opt, name: '女夫渕 → 手白澤温泉', kind: 'auto', points: [s, v, d], options: [opt], chosen: 0 };
+    const back = reverseRoute(route);
+    expect(back.name).toBe('手白澤温泉 → 女夫渕');
+    expect(back.coords[0]).toEqual(coords[2]);
+    expect(back.eles).toEqual([1400, 1100, 1000]);
+    expect(back.dists[0]).toBe(0);
+    expect(back.dists[2]).toBeCloseTo(total, 6);
+    expect(back.marks.map((m) => [m.kind, m.name])).toEqual([
+      ['start', '手白澤温泉'],
+      ['pass', '加仁湯'],
+      ['via', '八丁の湯'],
+      ['dest', '女夫渕'],
+    ]);
+    expect(back.marks[1].along).toBeCloseTo(total - dists[1] - 100, 6);
+    expect(routeSpan(back)).toEqual({ from: 0, to: total });
+    expect(back.points!.map((p) => [p.kind, p.name])).toEqual([
+      ['start', '手白澤温泉'],
+      ['via', '八丁の湯'],
+      ['dest', '女夫渕'],
+    ]);
+    expect(back.options![0].coords[0]).toEqual(coords[2]);
+    // 元のルートは変えない・2回で元に戻る
+    expect(route.coords[0]).toEqual(coords[0]);
+    expect(reverseRoute(back).marks.map((m) => m.kind)).toEqual(['start', 'via', 'pass', 'dest']);
   });
 });
 

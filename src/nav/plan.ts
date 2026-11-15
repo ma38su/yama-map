@@ -305,6 +305,35 @@ export function chooseOption(r: Pick<ActiveRoute, 'name' | 'kind' | 'points' | '
   return { ...r, ...opt, name: r.name, kind: r.kind, chosen: i };
 }
 
+/** 出発地と目的地を入れ替える（経由地はそのまま、通過点も変えない） */
+const swapKind = <K extends MarkKind>(k: K): K => (k === 'start' ? 'dest' : k === 'dest' ? 'start' : k) as K;
+
+/** 候補を逆向きにする（帰り道）。道の形はそのままで、距離・地点の位置を目的地側から数え直す */
+function reverseOption<T extends RouteOption>(o: T): T {
+  const total = o.dists[o.dists.length - 1] ?? 0;
+  return {
+    ...o,
+    coords: [...o.coords].reverse(),
+    eles: [...o.eles].reverse(),
+    dists: o.dists.map((d) => total - d).reverse(),
+    marks: o.marks.map((m) => ({ ...m, kind: swapKind(m.kind), along: total - m.along })).reverse(),
+  };
+}
+
+/**
+ * ルートを逆向き（帰り道）にする。道を探し直さないので圏外でもでき、行きと同じ道を通る。
+ * 名前の「A → B」は「B → A」に
+ */
+export function reverseRoute(r: ActiveRoute): ActiveRoute {
+  const parts = r.name.split(' → ');
+  return {
+    ...reverseOption(r),
+    name: parts.length === 2 ? `${parts[1]} → ${parts[0]}` : `${r.name}（逆向き）`,
+    points: r.points && normalizePoints([...r.points].reverse().map((p) => ({ ...p, kind: swapKind(p.kind) }))),
+    options: r.options?.map(reverseOption),
+  };
+}
+
 /** GPX からルートを作る。地点（wpt）は経路に近いものだけ経由地として使う */
 export async function buildGpxRoute(gpx: GpxData, elevation: ElevationFn): Promise<ActiveRoute> {
   const pts = gpx.lines.flatMap((l) => l.points);

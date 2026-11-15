@@ -998,6 +998,45 @@ dialog.photo-view::backdrop {
   padding: 6px 12px;
   font-size: 14px;
 }
+/* 記録の一覧：経路名とロック */
+.trk-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.trk-head[hidden] {
+  display: none;
+}
+.trk-head .title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.lock-btn {
+  flex: none;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.trk-rename {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.trk-rename .note {
+  margin: 0;
+}
+.lock-btn[aria-pressed='true'] {
+  border-color: #b7791f;
+  background: #fff7e6;
+  color: #8a5a00;
+  font-weight: 600;
+}
 .about a {
   color: var(--accent);
 }
@@ -1467,4 +1506,92 @@ dialog.photo-view {
   font: 11px/1.45 ui-monospace, Menlo, monospace;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ---------- 記録の始めと終わり ---------- */
+.trim-row {
+  display: grid;
+  grid-template-columns: 3.5em 1fr 3.2em;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+.trim-row .field-label {
+  margin: 0;
+}
+.trim-row output {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.trim-suggest {
+  color: var(--ink);
+  font-weight: 600;
+}
+/* 地図の「開始」「終了」の印（開いている記録） */
+.trk-end {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+.trk-end .pin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  background: var(--accent);
+}
+.trk-end.end .pin {
+  background: #7a1424;
+}
+.trk-end .tag {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* ---------- 開いている記録のカード：出発・到着の1行と小さな標高グラフ ---------- */
+.nav-row.act-line {
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+}
+.act-clock {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.act-clock small {
+  margin-left: 1px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.act-line .act-clock:last-child {
+  color: var(--accent);
+}
+.act-names {
+  overflow: hidden;
+  min-width: 0;
+  font-size: 14px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.act-arrow {
+  color: var(--muted);
+}
+.mini-profile {
+  display: block;
+  width: 100%;
+  height: 92px;
+  margin: 2px 0 2px;
+  pointer-events: none; /* 触るとシートの上げ下げ（グラフで調べるのは「標高・ペース」タブで） */
 }

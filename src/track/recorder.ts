@@ -17,6 +17,7 @@ import { log } from '../log';
 import type { DemSampler } from '../map/gsiDem';
 import { BaroFusion } from './baroAltitude';
 import { appendPoints, getPoints, putTrack, updateElevations, type Track, type TrackPoint } from './db';
+import { pointsIn } from './trim';
 import {
   backgroundCapable,
   clearRecordedFixes,
@@ -101,18 +102,18 @@ export class TrackRecorder {
     };
   }
 
-  /** 記録を始める。位置情報が許可されていなければ始めずに false */
-  async start(): Promise<boolean> {
+  /** 記録を始める（route は経路名）。位置情報が許可されていなければ始めずに false */
+  async start(route?: string): Promise<boolean> {
     if (this.recording || this.starting) return true;
     this.starting = true;
     try {
-      return await this.begin();
+      return await this.begin(route);
     } finally {
       this.starting = false;
     }
   }
 
-  private async begin(): Promise<boolean> {
+  private async begin(route?: string): Promise<boolean> {
     // 許可を先に求める（拒否されたときに、点のない「記録中」の記録を残さないように）
     if (!(await requestTrackingPermissions())) return false;
     const now = Date.now();
@@ -127,6 +128,7 @@ export class TrackRecorder {
       ascent: 0,
       descent: 0,
       pointCount: 0,
+      ...(route ? { route } : {}),
     };
     this.points = [];
     this.unsaved = [];
@@ -232,6 +234,13 @@ export class TrackRecorder {
     if (!this.recording) return null;
     const hpa = await currentPressure();
     return hpa != null ? this.baro.altitude(hpa) : null;
+  }
+
+  /** 経路名・ロックなど、記録の仕組みの外で変えて保存したものを、持っている記録にも入れる（保存はしない） */
+  relabel(id: string, patch: Partial<Pick<Track, 'route' | 'locked'>>): void {
+    if (this.track?.id !== id) return;
+    this.track = { ...this.track, ...patch };
+    this.emit();
   }
 
   /** 記録終了後の表示をクリア */
@@ -423,11 +432,10 @@ export async function fillMissingElevations(
     if (ele != null) eles.set(p.t, ele);
   }
   if (!eles.size) return null;
+  for (const p of points) p.ele ??= eles.get(p.t) ?? null;
+  // 登り・下りは記録の範囲（trim）の中で数え直す
   const gain = new GainCounter();
-  for (const p of points) {
-    p.ele ??= eles.get(p.t) ?? null;
-    gain.push(p.ele);
-  }
+  for (const p of pointsIn(points, track.trim)) gain.push(p.ele);
   const updated = { ...track, ascent: gain.ascent, descent: gain.descent };
   await updateElevations(track.id, eles);
   await putTrack(updated);

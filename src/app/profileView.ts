@@ -5,11 +5,12 @@ import { routeSpan } from '../nav/plan';
 import type { TrackPoint } from '../track/db';
 import { settings } from '../settings';
 import { $, checkSeg, segButtons } from '../ui/dom';
-import { ElevationProfile, type ProfileAxis } from '../ui/profile';
+import { ElevationProfile, type ProfileAxis, type ProfileSeries } from '../ui/profile';
 import { pointFC, src } from './mapView';
 import { departureTime, type Nav } from './nav';
 import { recorder } from './recording';
 import { replayIndex } from './replay';
+import { shownActual } from './sheetView';
 import { state } from './state';
 
 // ---------- 標高グラフ ----------
@@ -39,6 +40,40 @@ profilePos.addEventListener('input', () => {
 $('zoom-in').addEventListener('click', () => profile.zoom(2));
 $('zoom-out').addEventListener('click', () => profile.zoom(0.5));
 $('zoom-reset').addEventListener('click', () => profile.resetView());
+
+/** 開いている記録の、通った地点（経由地・目的地）をグラフの目盛りにする（記録中は出さない） */
+function actualTicks(dists: number[]): ProfileSeries['ticks'] {
+  if (recorder.recording || !state.shown) return undefined;
+  return shownActual()
+    .filter((r) => r.kind === 'via' || r.kind === 'dest')
+    .map((r) => ({ d: dists[r.index] ?? 0, kind: r.kind, label: r.name }));
+}
+
+// ---------- カードの小さな標高グラフ（開いている記録・リプレイ中） ----------
+/** 見るだけ（触るとシートの上げ下げになるよう、CSS で指を通さない） */
+const miniCanvas = document.createElement('canvas');
+miniCanvas.className = 'mini-profile';
+miniCanvas.setAttribute('aria-hidden', 'true');
+const miniProfile = new ElevationProfile(miniCanvas, () => undefined);
+let miniKey = '';
+/** カードに出す小さな標高グラフ（点が2つ未満なら null）。点が変わったときだけ作り直す */
+export function miniProfileFor(points: TrackPoint[]): HTMLCanvasElement | null {
+  if (points.length < 2) return null;
+  const key = `mini:${points[0].trackId}:${points.length}:${points[0].t}:${state.revision}:${state.route?.name ?? ''}`;
+  if (key !== miniKey) {
+    miniKey = key;
+    const dists = cumulativeDistances(points.map((p): LngLat => [p.lng, p.lat]));
+    miniProfile.setSeries({ dists, eles: points.map((p) => p.ele), times: points.map((p) => p.t), ticks: actualTicks(dists) }, key);
+  }
+  miniProfile.setMarker(replayIndex());
+  return miniCanvas;
+}
+
+/** リプレイの位置を、標高グラフとカードの小さなグラフに出す */
+export function setReplayMarker(i: number | null) {
+  profile.setMarker(i);
+  miniProfile.setMarker(i);
+}
 
 /** グラフに出せる記録：記録中ならその記録、なければ地図に表示している保存した記録 */
 function profileTrack(): TrackPoint[] | null {
@@ -72,12 +107,14 @@ export function updateProfile(nav: Nav | null) {
   profileCanvas.hidden = !(state.route || track);
   if (useTrack) {
     profileCoords = track.map((p) => [p.lng, p.lat]);
+    const dists = cumulativeDistances(profileCoords);
     profile.setSeries({
-      dists: cumulativeDistances(profileCoords),
+      dists,
       eles: track.map((p) => p.ele),
       times: track.map((p) => p.t),
       pace: cachedPace(track),
-    }, `track:${track[0].trackId}`);
+      ticks: actualTicks(dists),
+    }, `track:${track[0].trackId}:${track[0].t}`);
     // 記録中は最後の点（今いるところ）、リプレイ中はその位置
     if (recorder.recording) profile.setMarker(track.length - 1, '現在地');
     else profile.setMarker(replayIndex());

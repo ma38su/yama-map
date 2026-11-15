@@ -60,7 +60,8 @@ async function addPhotos(files: File[]) {
       setProgress(`写真を取り込み中… ${i + 1}/${files.length}`);
       const head = await file.slice(0, 256 * 1024).arrayBuffer();
       const meta = readExif(head);
-      const placed = placePhoto(meta, file.lastModified, shown.points, here);
+      // 記録の範囲の外（到着後の山小屋など）で撮った写真も置けるよう、全部の点から探す
+      const placed = placePhoto(meta, file.lastModified, shown.all, here);
       if (!placed) {
         unplaced++;
         continue;

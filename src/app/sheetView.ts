@@ -6,13 +6,16 @@ import { saveSettings, settings } from '../settings';
 import { $, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
 import { BottomSheet } from '../ui/sheet';
 import { actualRows, type ActualRow } from '../track/actual';
+import { trackTitle } from '../track/names';
+import { trackTimes } from '../track/trim';
 import { weatherLabel } from '../nav/weather';
 import { emptyFC, fitTo, src } from './mapView';
 import { departureTime, isLate, paceOf, updateNav, type Nav, type Row } from './nav';
-import { profile, updateProfile } from './profileView';
+import { miniProfileFor, profile, updateProfile } from './profileView';
 import { recorder, viewingTrack } from './recording';
-import { clearRoute, exportRoute, removeMark, searchAlternativesForGpx } from './route';
+import { clearRoute, exportRoute, removeMark, reverseCurrentRoute, searchAlternativesForGpx } from './route';
 import { state } from './state';
+import { renderTrimEditor } from './trimView';
 import { weatherFor } from './weather';
 
 function navRow(label: string, row: Row, primary: boolean, sunset: number | null): HTMLElement {
@@ -57,17 +60,6 @@ function maxPop(nav: Nav): number | null {
     if (pop != null) max = Math.max(max ?? 0, pop);
   }
   return max;
-}
-
-/** 実績の一行：出発・目的地の時刻 */
-function actualRow(label: string, row: ActualRow, remain: string, primary: boolean): HTMLElement {
-  const el = h('div', `nav-row${primary ? ' primary' : ''}`);
-  const lab = h('div', 'nav-label');
-  lab.append(`${label} · `, h('b', '', row.name));
-  const clock = h('div', 'nav-clock');
-  clock.append(fmtClock(row.t), h('small', '', row.kind === 'start' ? '発' : '着'));
-  el.append(lab, h('div', 'nav-remain', remain), clock);
-  return el;
 }
 
 /** 歩いている途中か（ルートの上にいる・ルートから離れて戻る途中）。行程の中の現在地を示すとき */
@@ -117,32 +109,46 @@ function hereRow(nav: Nav & { pos: NonNullable<Nav['pos']> }, span: { from: numb
 
 /** 開いている記録の実績（ルートの地点を通った時刻など）。点が増えたときだけ計算し直す */
 let actualCache: { key: string; rows: ActualRow[] } | null = null;
-function shownActual(): ActualRow[] {
+export function shownActual(): ActualRow[] {
   const shown = state.shown!;
   const key = `${shown.track.id}:${shown.points.length}:${state.revision}:${state.route?.name ?? ''}:${state.route?.marks.length ?? 0}`;
   if (actualCache?.key !== key) actualCache = { key, rows: actualRows(shown.points, state.route?.marks) };
   return actualCache.rows;
 }
 
-/** 開いている記録のカード：出発と目的地（到着）の実績 */
+/** 開いている記録のカードの1行：「7:20発 女夫渕 → 手白澤温泉 9:05着」 */
+function actualLine(first: ActualRow, last: ActualRow): HTMLElement {
+  const el = h('div', 'nav-row primary act-line');
+  const clock = (row: ActualRow, label: string) => {
+    const c = h('div', 'act-clock');
+    c.append(fmtClock(row.t), h('small', '', label));
+    return c;
+  };
+  const names = h('div', 'act-names');
+  names.append(h('b', '', first.name), h('span', 'act-arrow', ' → '), h('b', '', last.name));
+  el.append(clock(first, '発'), names, clock(last, '着'));
+  return el;
+}
+
+/** 開いている記録のカード：出発と到着を1行にまとめ、所要・ペースと、地点の入った小さな標高グラフ */
 function renderActualCard(card: HTMLElement) {
   const { track, points } = state.shown!;
   const rows = shownActual();
   const first = rows[0];
   const last = rows.at(-1);
   const title = h('div', 'nav-title');
-  title.append(h('b', '', track.name), h('span', '', ` · ${new Date(track.startedAt).toLocaleDateString('ja-JP')}の${track.id.startsWith('plan-') ? '予定' : '記録'}`));
+  title.append(h('b', '', trackTitle(track)), h('span', '', ` · ${new Date(track.startedAt).toLocaleDateString('ja-JP')}の${track.id.startsWith('plan-') ? '予定' : '記録'}`));
   card.append(title);
-  if (first && last) {
-    card.append(actualRow('出発', first, '', false));
-    card.append(actualRow('目的地', last, `所要 ${fmtHM((last.t - first.t) / 60_000)} · ${formatDistance(track.distance)}`, true));
-  }
+  if (first && last) card.append(actualLine(first, last));
   const p = points.length > 1 ? paceOf(points, true) : null;
   const sub = h('div', 'nav-sub');
-  if (p) sub.append(h('span', '', `歩行 ${fmtHM(p.movingMs / 60_000)}`), h('span', '', `休憩 ${fmtHM(p.restMs / 60_000)}`));
+  if (first && last) sub.append(h('span', '', `所要 ${fmtHM((last.t - first.t) / 60_000)} · ${formatDistance(track.distance)}`));
+  if (p) sub.append(h('span', '', `歩行 ${fmtHM(p.movingMs / 60_000)} · 休憩 ${fmtHM(p.restMs / 60_000)}`));
   sub.append(h('span', '', `登り ${fmtM(track.ascent)} · 下り ${fmtM(track.descent)}`));
   if (p && p.evidenceMin > 10) sub.append(h('span', '', `標準の${p.overall.toFixed(2)}倍`));
   card.append(sub);
+  const mini = miniProfileFor(points);
+  if (mini) card.append(mini);
 }
 
 /** 開いている記録の行程：出発・通った地点・休憩・到着の実績 */
@@ -202,10 +208,10 @@ export function renderCard(nav: Nav | null) {
   }
   if (state.shown) {
     const t = state.shown.track;
-    const end = t.status === 'recording' ? Date.now() : (t.endedAt ?? Date.now());
+    const times = trackTimes(t);
     const tiles = h('div', 'tiles');
     for (const [label, value] of [
-      ['時間', formatDuration(end - t.startedAt)],
+      ['時間', formatDuration((t.status === 'recording' ? Date.now() : times.end) - times.start)],
       ['距離', formatDistance(t.distance)],
       ['登り', fmtM(t.ascent)],
       ['標高', fmtM(state.currentEle ?? state.shown.points.at(-1)?.ele)],
@@ -301,10 +307,13 @@ export function renderBody(nav: Nav | null) {
       actions.append(b);
     };
     if (state.route.kind === 'gpx') btn('道沿いのルート候補を探す', () => void searchAlternativesForGpx(), 'primary');
+    // 記録中は行程の向きを変えない（歩いた分の到着予想が崩れるため）
+    if (!recorder.recording) btn('逆向き（帰り道）にする', reverseCurrentRoute);
     btn('GPXで保存', exportRoute);
     btn('ルートを消す', clearRoute, 'danger');
   }
   renderDeparture();
+  renderTrimEditor();
 
   updateProfile(nav);
 

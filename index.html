@@ -25,6 +25,7 @@
         <input id="replay-seek" type="range" min="0" max="1000" value="0" aria-label="再生位置" />
         <span id="replay-clock" class="replay-clock"></span>
         <button id="replay-speed" class="btn small" type="button" aria-label="再生の速さ">×300</button>
+        <button id="replay-view" class="btn small" type="button" aria-label="視点">追う</button>
         <button id="replay-rec" class="icon-btn small replay-rec" type="button" aria-label="録画" aria-pressed="false"><span></span></button>
         <button id="replay-close" class="icon-btn small" type="button" aria-label="リプレイを終える">✕</button>
       </div>
@@ -47,6 +48,19 @@
             <div class="row" id="plan-actions"></div>
           </section>
           <p class="note" id="plan-empty" hidden>目的地を設定すると、ここに行程と到着予想が出ます。</p>
+          <section id="sec-trim" hidden>
+            <h3>記録の始めと終わり</h3>
+            <p class="note trim-suggest" id="trim-suggest" hidden></p>
+            <label class="trim-row"><span class="field-label">始め</span><input type="range" class="range" id="trim-start" min="0" max="1" value="0" step="1" /><output id="trim-start-out"></output></label>
+            <label class="trim-row"><span class="field-label">終わり</span><input type="range" class="range" id="trim-end" min="0" max="1" value="1" step="1" /><output id="trim-end-out"></output></label>
+            <p class="note" id="trim-info"></p>
+            <div class="row">
+              <button type="button" class="btn" id="trim-auto" hidden>止まっていた時間を除く</button>
+              <button type="button" class="btn" id="trim-full">全体</button>
+              <button type="button" class="btn primary" id="trim-save" disabled>この範囲にする</button>
+            </div>
+            <p class="note">点は消さずに残し、記録の上の開始・終了の位置だけを変えます。距離・時間・ペース・リプレイ・GPX の書き出しは、この範囲で数えます。</p>
+          </section>
         </div>
         <div id="panel-profile" role="tabpanel" aria-labelledby="tab-profile" hidden>
           <section id="sec-profile">

@@ -3,10 +3,11 @@ import { distance, formatDistance, type LngLat } from '../geo';
 import { log } from '../log';
 import { listTracks, type Track } from '../track/db';
 import { backgroundCapable, pendingRecordedTracks, stopTrackingService, trackingStatus, type Fix } from '../track/location';
+import { routeNameOf, trackTitle } from '../track/names';
 import { TrackRecorder, fillMissingElevations } from '../track/recorder';
 import { saveSettings, settings } from '../settings';
 import { $, fmtM } from '../ui/dom';
-import { dem, geolocate, lineFC, map, src } from './mapView';
+import { dem, geolocate, map } from './mapView';
 import { refreshTrackList } from './menu';
 import { setProfileSource } from './profileView';
 import { replayActive, startReplay, stopReplay } from './replay';
@@ -18,6 +19,8 @@ import { checkOffRoute } from './offRouteAlert';
 import { renderPhotos } from './photos';
 import { state } from './state';
 import { status } from './status';
+import { nameFinishedTrack } from './trackNames';
+import { drawTrackLine, offerTrim } from './trimView';
 
 // ---------- 現在地 ----------
 let lastEleAt: { coords: LngLat; t: number } | null = null;
@@ -112,7 +115,7 @@ export const recorder = new TrackRecorder(dem, (s) => {
   // 記録を終えたとき（「記録終了」ボタン、またはアプリ版の通知の「停止」）
   const ended = wasRecording && !recorder.recording && s.track?.status === 'done';
   wasRecording = recorder.recording;
-  if (s.track) state.shown = { track: s.track, points: s.points };
+  if (s.track) state.shown = { track: s.track, points: s.points, all: s.points };
   else if (state.shown && !recorder.recording) state.shown = null;
   // 開始・終了・エラーなどはすぐ画面に出す。点が増えただけなら、次にまとめて描き直す
   // （記録中は測位のたびに呼ばれ、アプリ版では画面を消していても届くため）
@@ -135,8 +138,18 @@ function onRecordingEnded(t: Track) {
   exitPocket();
   stopGeolocate();
   status(`記録を保存しました：${formatDistance(t.distance)}・登り ${fmtM(t.ascent)}`);
+  offerTrim(t);
   void fillShownElevations();
   void refreshTrackList();
+  // 経路名がなければ付ける（今のルートの名前、なければ近くの山小屋・温泉などの名前）
+  void nameFinishedTrack(t, recorder.state.points)
+    .then((named) => {
+      if (!named) return;
+      state.revision++;
+      updateNav();
+      void refreshTrackList();
+    })
+    .catch((e) => console.warn('経路名を付けられませんでした', e));
 }
 recorder.keepScreenOn = settings.wakeLock;
 
@@ -162,7 +175,7 @@ async function onRecButton() {
       alert('この端末・ブラウザでは位置情報が使えません');
       return;
     }
-    if (!(await recorder.start())) {
+    if (!(await recorder.start(routeNameOf(state.route?.name) ?? undefined))) {
       log('位置情報が許可されていないため、記録を始められなかった');
       status('位置情報が許可されていないため、記録を始められません。端末の設定で許可してください', true);
       return;
@@ -228,19 +241,19 @@ $('btn-replay').addEventListener('click', () => {
 export async function fillShownElevations() {
   const shown = state.shown;
   if (!shown || recorder.recording) return;
-  const updated = await fillMissingElevations(shown.track, shown.points, (lng, lat) => dem.elevation(lng, lat)).catch((e) => {
+  const updated = await fillMissingElevations(shown.track, shown.all, (lng, lat) => dem.elevation(lng, lat)).catch((e) => {
     console.warn('標高を埋められませんでした', e);
     return null;
   });
   if (!updated || state.shown?.track.id !== updated.id) return;
-  state.shown = { track: updated, points: state.shown.points };
+  state.shown = { ...state.shown, track: updated };
   state.revision++;
   updateNav();
   void refreshTrackList();
 }
 
 export function renderTrack() {
-  src('track')?.setData(lineFC((state.shown?.points ?? []).map((p): LngLat => [p.lng, p.lat])));
+  drawTrackLine();
   void renderPhotos();
 }
 
@@ -290,7 +303,7 @@ async function resumeOrFinish(open: Track, native: Awaited<ReturnType<typeof tra
   } else if (native && native.stoppedTrack === open.id) {
     await recorder.finish(open, native.stoppedAt ?? undefined);
     void refreshTrackList();
-  } else if (confirm(`「${open.name}」の記録が途中です。続きを記録しますか？\n（キャンセルするとここまでで保存します）`)) {
+  } else if (confirm(`「${trackTitle(open)}」の記録が途中です。続きを記録しますか？\n（キャンセルするとここまでで保存します）`)) {
     await recorder.resume(open);
     startGeolocate();
   } else {

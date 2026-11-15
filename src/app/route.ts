@@ -11,6 +11,7 @@ import {
   normalizePoints,
   placeOnRoute,
   preferredOption,
+  reverseRoute,
   routeSpan,
   saveRoute,
   type ActiveRoute,
@@ -149,6 +150,14 @@ export async function removeMark(id: string) {
   if (!state.route) return;
   if (state.route.kind === 'auto' && state.route.points) await rebuild(state.route.points.filter((p) => p.id !== id));
   else setRoute({ ...state.route, marks: state.route.marks.filter((m) => m.id !== id) });
+}
+
+/** 今のルートを逆向き（帰り道）にする */
+export function reverseCurrentRoute() {
+  if (!state.route) return;
+  setRoute(reverseRoute(state.route), true);
+  const span = routeSpan(state.route);
+  status(`逆向きにしました（${state.route.name}）：${formatDistance(span.to - span.from)}`);
 }
 
 export function clearRoute() {

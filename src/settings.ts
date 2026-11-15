@@ -35,6 +35,8 @@ export interface Settings {
   layers?: Partial<Record<string, boolean>>;
   /** ルート沿いのオフライン保存で、ルートの片側に保存する幅 (m) */
   offlineBufferM?: number;
+  /** リプレイの視点：後ろから追う・少し高くから俯瞰して追う・全体を見る（app/replay.ts） */
+  replayView?: 'chase' | 'bird' | 'whole';
 }
 const SETTINGS_KEY = 'yama-map:settings';
 export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, terrainExaggeration: TERRAIN_EXAGGERATION, weather: true, weatherFx: true, wakeLock: !backgroundCapable, offRouteAlert: true, pace: 'normal', routePref: 'trail', departAt: null };

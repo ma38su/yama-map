@@ -318,6 +318,19 @@ export function decodeLabels(buf: ArrayBuffer | Uint8Array, x: number, y: number
   return out;
 }
 
+/** 地点の近く（radiusM 以内を含むタイル）の地名。圏外などで読めなかったタイルは飛ばす */
+export async function placeLabelsNear(points: LngLat[], radiusM: number): Promise<PlaceLabel[]> {
+  const tiles = new Map<string, { url: string; x: number; y: number }>();
+  for (const [lng, lat] of points) {
+    const dLat = radiusM / 110_574;
+    const dLng = radiusM / (111_320 * Math.cos((lat * Math.PI) / 180));
+    for (const t of roadTileUrls([lng - dLng, lat - dLat, lng + dLng, lat + dLat])) tiles.set(t.url, t);
+  }
+  const labels: PlaceLabel[] = [];
+  await fetchTiles([...tiles.values()], (buf, x, y) => labels.push(...decodeLabels(buf, x, y, ROAD_TILE_ZOOM)));
+  return labels;
+}
+
 /** 地点の近く（maxM 以内）にある地名。見つからなければ null（圏外などでも null） */
 export async function nearestPlaceName(p: LngLat, maxM = 250): Promise<string | null> {
   const t = lngLatToTile(p[0], p[1], ROAD_TILE_ZOOM);

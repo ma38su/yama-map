@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  arrowPolygon,
   bbox,
+  bearing,
   cumulativeDistances,
   densify,
   distance,
@@ -8,6 +10,7 @@ import {
   formatDistance,
   formatDuration,
   maskLocation,
+  metersPerPixel,
   lngLatToTile,
   tileCount,
   tileRange,
@@ -137,5 +140,29 @@ describe('maskLocation', () => {
   it('版の番号・時刻・標高は伏せない', () => {
     expect(maskLocation('WebView 133.0.6943.137')).toBe('WebView 133.0.6943.137');
     expect(maskLocation('08:47:20.933 標高 1543.6m 気圧 1013.25hPa')).toBe('08:47:20.933 標高 1543.6m 気圧 1013.25hPa');
+  });
+});
+
+describe('向きと矢じり', () => {
+  const c: [number, number] = [139.4, 36.85];
+  it('方位：北・東・南西', () => {
+    expect(bearing(c, [139.4, 36.86])).toBeCloseTo(0, 3);
+    expect(bearing(c, [139.41, 36.85])).toBeCloseTo(90, 1);
+    // 経度 0.01° は緯度 0.01° より短い（約 0.89 km と 1.11 km）ので、真南西（-135°）より南寄り
+    expect(bearing(c, [139.39, 36.84])).toBeCloseTo(-141.3, 0);
+  });
+  it('1px の長さ：ズームが1上がると半分', () => {
+    expect(metersPerPixel(36.85, 15)).toBeCloseTo(metersPerPixel(36.85, 14) / 2, 6);
+    expect(metersPerPixel(0, 0)).toBeCloseTo(78271.5, 0);
+  });
+  it('矢じりは向いた方へ尖り、閉じた形', () => {
+    const ring = arrowPolygon(c, 90, 10);
+    expect(ring[0]).toEqual(ring[ring.length - 1]);
+    // 先端は中心から東へ 10m
+    expect(distance(c, ring[0])).toBeCloseTo(10, 1);
+    expect(bearing(c, ring[0])).toBeCloseTo(90, 0);
+    // 後ろの角は西側
+    expect(ring[1][0]).toBeLessThan(c[0]);
+    expect(ring[3][0]).toBeLessThan(c[0]);
   });
 });

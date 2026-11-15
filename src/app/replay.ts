@@ -1,16 +1,18 @@
 /**
- * 記録のリプレイ：歩いた位置を時間を縮めて動かし、地図（3D）のカメラが後ろから追いかける。
- * 休憩（点と点のあいだが空いているところ）は速く送る。
+ * 記録のリプレイ：歩いた位置を時間を縮めて動かし、地図（3D）のカメラが追いかける。
+ * 視点は、後ろから追う・少し高くから俯瞰して追う・全体を見る、の3つから選ぶ（操作バーのボタン）。
+ * 今の位置は赤い丸で、歩いているあいだは進む向きの矢じりを重ねる。休憩（点と点のあいだが空いているところ）は速く送る。
  */
-import { cumulativeDistances, distance, type LngLat } from '../geo';
+import { arrowPolygon, bbox, bearing as bearingTo, cumulativeDistances, distance, metersPerPixel, type LngLat } from '../geo';
 import { angleDiff } from '../nav/heading';
 import type { TrackPoint } from '../track/db';
+import { trackTitle } from '../track/names';
 import { $, fileStamp, fmtClock } from '../ui/dom';
-import { lineFC, map, pointFC, replayDoneGradient, setTerrain, src, updateDaylight } from './mapView';
-import { profile } from './profileView';
+import { emptyFC, lineFC, map, pointFC, replayDoneGradient, setTerrain, src, updateDaylight } from './mapView';
+import { setReplayMarker } from './profileView';
 import { updateRecButton } from './recording';
 import { captureSupported, capturing, startCapture, stopCapture } from './replayVideo';
-import { saveSettings, savedOverrides, settings } from '../settings';
+import { saveSettings, savedOverrides, settings, type Settings } from '../settings';
 import { state } from './state';
 
 /** 再生の速さ（実際の何倍か） */
@@ -20,8 +22,20 @@ const REST_GAP_MS = 90_000;
 const REST_BOOST = 10;
 /** 空と地図の色を合わせ直す間隔（再生中の時刻で） */
 const DAYLIGHT_STEP_MS = 2 * 60_000;
-/** カメラの向きを合わせる先：何m先の点の方を向くか */
-const LOOK_AHEAD_M = 120;
+/** 視点ごとのカメラ：ズーム・傾き・何m先の点の方を向くか・向きを合わせる速さ（1コマで差の何割） */
+type ReplayView = NonNullable<Settings['replayView']>;
+const VIEWS: Record<ReplayView, { label: string; desc: string; zoom: number; pitch: number; lookAhead: number; turn: number }> = {
+  chase: { label: '追う', desc: '後ろから追う', zoom: 15.5, pitch: 65, lookAhead: 120, turn: 0.06 },
+  // 高めから、先の道が見えるように。向きはゆっくり変える
+  bird: { label: '俯瞰', desc: '高くから俯瞰して追う', zoom: 13.6, pitch: 50, lookAhead: 400, turn: 0.02 },
+  // カメラは動かさない（地図は指で動かせる）
+  whole: { label: '全体', desc: '記録の全体を見る', zoom: 0, pitch: 45, lookAhead: 0, turn: 0 },
+};
+const VIEW_ORDER: ReplayView[] = ['chase', 'bird', 'whole'];
+/** 進む向きの矢じり：何m先の点の方を向くか・丸の中に収まる大きさ (px)・向きを合わせる速さ */
+const DIR_AHEAD_M = 25;
+const DIR_SIZE_PX = 8;
+const DIR_TURN = 0.2;
 /**
  * 1コマの最短の間隔 (ms)。120Hz の画面（Pixel 8a・9 Pro など）では requestAnimationFrame が1秒に120回来るが、
  * リプレイは60コマで十分なので、それより速くは地図を動かさない（地図の描き直しが半分になる）
@@ -39,6 +53,11 @@ let playing = false;
 let raf = 0;
 let lastFrame = 0;
 let bearing = 0;
+/** 矢じりの向き（なめらかに変える）。分からなければ null */
+let dirBearing: number | null = null;
+let view: ReplayView = settings.replayView ?? 'chase';
+/** 視点を変えるカメラの動きが終わる時刻（それまでは追いかけない。追いかけると動きが止まるため） */
+let easingUntil = 0;
 let lastIndex = -1;
 /** リプレイを始めるたびに増やす（前のリプレイの開始待ちを無効にする） */
 let session = 0;
@@ -71,19 +90,52 @@ function locate(time: number): { i: number; f: number } {
 
 const lngLat = (p: TrackPoint): LngLat => [p.lng, p.lat];
 
-function headingAt(i: number): number | null {
+/** 点 i から ahead m 先の点への方位（近すぎて分からなければ null） */
+function headingAt(i: number, ahead: number): number | null {
   const a = lngLat(pts[i]);
   for (let j = i + 1; j < pts.length; j++) {
     const b = lngLat(pts[j]);
-    if (distance(a, b) >= LOOK_AHEAD_M || j === pts.length - 1) {
-      const y = Math.sin(((b[0] - a[0]) * Math.PI) / 180) * Math.cos((b[1] * Math.PI) / 180);
-      const x =
-        Math.cos((a[1] * Math.PI) / 180) * Math.sin((b[1] * Math.PI) / 180) -
-        Math.sin((a[1] * Math.PI) / 180) * Math.cos((b[1] * Math.PI) / 180) * Math.cos(((b[0] - a[0]) * Math.PI) / 180);
-      return distance(a, b) > 5 ? (Math.atan2(y, x) * 180) / Math.PI : null;
-    }
+    const d = distance(a, b);
+    if (d >= ahead || j === pts.length - 1) return d > 5 ? bearingTo(a, b) : null;
   }
   return null;
+}
+
+/** 時刻 t の位置 */
+function positionAt(time: number): LngLat {
+  const { i, f } = locate(time);
+  const a = pts[i];
+  const b = pts[Math.min(i + 1, pts.length - 1)];
+  return [a.lng + (b.lng - a.lng) * f, a.lat + (b.lat - a.lat) * f];
+}
+
+/** 今の位置の矢じり。止まっている（休憩中・最後まで来た）ときは出さない。smooth なら向きをなめらかに変える */
+function drawDirection(here: LngLat, i: number, moving: boolean, smooth: boolean) {
+  const h = moving ? headingAt(i, DIR_AHEAD_M) : null;
+  if (h != null) dirBearing = dirBearing == null || !smooth ? h : dirBearing + angleDiff(dirBearing, h) * DIR_TURN;
+  const show = moving && dirBearing != null;
+  src('replay-dir')?.setData(show ? polygonFC(arrowPolygon(here, dirBearing!, DIR_SIZE_PX * metersPerPixel(here[1], map.getZoom()))) : emptyFC);
+}
+const polygonFC = (ring: LngLat[]) => ({ type: 'FeatureCollection' as const, features: [{ type: 'Feature' as const, properties: {}, geometry: { type: 'Polygon' as const, coordinates: [ring] } }] });
+
+/** 視点に合わせてカメラを動かす（duration ms かけて） */
+function aimCamera(duration: number) {
+  if (pts.length < 2) return;
+  const v = VIEWS[view];
+  easingUntil = performance.now() + duration + 50;
+  if (view === 'whole') {
+    // 記録全体を、出発地から到着地の方を向いて斜めから見る（出発地と到着地が近い周回なら北を上）
+    const [w, s, e, n] = bbox(pts.map(lngLat));
+    const a = lngLat(pts[0]);
+    const b = lngLat(pts[pts.length - 1]);
+    bearing = distance(a, b) > 500 ? bearingTo(a, b) : 0;
+    map.fitBounds([[w, s], [e, n]], { padding: 40, pitch: v.pitch, bearing, maxZoom: 16, duration });
+    return;
+  }
+  const { i } = locate(t);
+  bearing = headingAt(i, v.lookAhead) ?? map.getBearing();
+  const zoom = view === 'chase' ? Math.max(map.getZoom(), v.zoom) : v.zoom;
+  map.easeTo({ center: positionAt(t), bearing, pitch: v.pitch, zoom, duration });
 }
 
 /** 位置・カメラ・時刻の表示を t に合わせる */
@@ -94,15 +146,15 @@ function render(follow: boolean) {
   const here: LngLat = [a.lng + (b.lng - a.lng) * f, a.lat + (b.lat - a.lat) * f];
   src('replay')?.setData(pointFC(here));
   const resting = b.t - a.t > REST_GAP_MS && f > 0 && f < 1;
+  drawDirection(here, i, !resting && t < pts[pts.length - 1].t, follow);
   clock.textContent = `${fmtClock(t)}${resting ? ` 休憩中（${Math.round((b.t - a.t) / 60_000)}分）` : ''}`;
   seek.value = String(Math.round(((t - pts[0].t) / (pts[pts.length - 1].t - pts[0].t)) * 1000));
-  if (follow) {
-    const h = headingAt(i);
-    if (h != null) {
-      // 向きはなめらかに変える（細かい曲がりで画面が揺れないように）
-      const diff = angleDiff(bearing, h);
-      bearing += diff * 0.06;
-    }
+  // 視点を変えている途中と「全体」のときは、カメラを動かさない
+  if (follow && view !== 'whole' && performance.now() >= easingUntil) {
+    const v = VIEWS[view];
+    const h = headingAt(i, v.lookAhead);
+    // 向きはなめらかに変える（細かい曲がりで画面が揺れないように）
+    if (h != null) bearing += angleDiff(bearing, h) * v.turn;
     map.jumpTo({ center: here, bearing });
   }
   // 空と地図の色は再生中の時刻に合わせる（毎フレームだと重いので、時刻が2分動いたら）
@@ -120,7 +172,7 @@ function render(follow: boolean) {
   // グラフの印は、点を一つ進んだときだけ描き直す
   if (i !== lastIndex) {
     lastIndex = i;
-    profile.setMarker(i);
+    setReplayMarker(i);
   }
 }
 
@@ -167,7 +219,12 @@ function pause() {
 /** シートに隠れない部分の真ん中で追いかけるように、地図の下の余白をシートの高さに合わせる */
 function fitPadding() {
   const covered = Math.max(0, window.innerHeight - $('sheet').getBoundingClientRect().top);
+  // 変わっていなければ設定しない（設定するとカメラの動きが止まるため。リプレイを始めたときの視点の移動など）
+  if (Math.abs((map.getPadding().bottom ?? 0) - covered) < 1) return;
+  const easing = performance.now() < easingUntil;
   map.setPadding({ top: 0, bottom: covered, left: 0, right: 0 });
+  // 視点を変えている途中なら、止まった動きをやり直す
+  if (easing) aimCamera(500);
 }
 // リプレイ中にシートを最小にしたり開いたりしたら、追いかける位置も合わせる
 new ResizeObserver(() => replayActive() && fitPadding()).observe($('sheet'));
@@ -186,11 +243,11 @@ export function startReplay() {
   terrainBefore = settings.terrain;
   savedOverrides.terrain = terrainBefore;
   setTerrain(true);
-  bearing = headingAt(0) ?? map.getBearing();
+  dirBearing = null;
   const intro = 1200;
   // シートに隠れない部分の真ん中で追いかける
   fitPadding();
-  map.easeTo({ center: lngLat(pts[0]), bearing, pitch: 65, zoom: Math.max(map.getZoom(), 15.5), duration: intro });
+  aimCamera(intro);
   // カメラが出発地に着いてから動かし始める
   const token = ++session;
   setTimeout(() => {
@@ -213,10 +270,11 @@ export function stopReplay() {
   else saveSettings();
   updateDaylight();
   src('replay')?.setData(pointFC(null));
+  src('replay-dir')?.setData(emptyFC);
   src('replay-done')?.setData(lineFC([]));
   if (map.getLayer('replay-done')) map.setPaintProperty('replay-done', 'line-gradient', replayDoneGradient(0));
   lastIndex = -1;
-  profile.setMarker(null);
+  setReplayMarker(null);
 }
 
 playBtn.addEventListener('click', () => (playing ? pause() : play()));
@@ -244,7 +302,7 @@ recBtn.addEventListener('click', () => {
   if (!track || pts.length < 2) return;
   startCapture(
     `yama-replay-${fileStamp(track.startedAt)}`,
-    () => [track.name, clock.textContent ?? ''],
+    () => [trackTitle(track), `${track.route ? `${new Date(track.startedAt).toLocaleDateString('ja-JP')} ` : ''}${clock.textContent ?? ''}`],
     () => $('sheet').getBoundingClientRect().top,
   );
   updateRecBtn();
@@ -260,6 +318,21 @@ speedBtn.addEventListener('click', () => {
   speedBtn.textContent = `×${SPEEDS[speedIdx]}`;
 });
 speedBtn.textContent = `×${SPEEDS[speedIdx]}`;
+const viewBtn = $<HTMLButtonElement>('replay-view');
+function updateViewBtn() {
+  viewBtn.textContent = VIEWS[view].label;
+  viewBtn.setAttribute('aria-label', `視点：${VIEWS[view].desc}（押すと切り替え）`);
+}
+viewBtn.addEventListener('click', () => {
+  view = VIEW_ORDER[(VIEW_ORDER.indexOf(view) + 1) % VIEW_ORDER.length];
+  settings.replayView = view;
+  saveSettings();
+  updateViewBtn();
+  if (replayActive()) aimCamera(700);
+});
+updateViewBtn();
+// 止めているあいだに拡大・縮小したら、矢じりの大きさを丸に合わせ直す
+map.on('zoom', () => replayActive() && !playing && pts.length > 1 && render(false));
 seek.addEventListener('input', () => {
   t = pts[0].t + (Number(seek.value) / 1000) * (pts[pts.length - 1].t - pts[0].t);
   render(true);

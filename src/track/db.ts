@@ -5,6 +5,7 @@
  * 版を上げるときは、ストアを足すだけにする（アプリを更新しても記録が消えないように）
  */
 import type { PlaceItem, PlaceSource } from '../places/sources';
+import type { TrimRange } from './trim';
 
 export interface TrackPoint {
   trackId: string;
@@ -46,10 +47,21 @@ export interface Track {
   startedAt: number;
   endedAt?: number;
   status: 'recording' | 'done';
+  /** 距離・登り・下り（記録の範囲 trim があれば、その中の点で数えたもの） */
   distance: number;
   ascent: number;
   descent: number;
+  /** 点の数（範囲の外も含めた全部） */
   pointCount: number;
+  /** 記録の範囲（記録の上の開始・終了の時刻）。点は消さずに、出発前・到着後に止まっていた時間を除く（./trim.ts） */
+  trim?: TrimRange;
+  /**
+   * 経路名「女夫渕 → 手白澤温泉」。記録を始めたときのルートの名前か、出発地・到着地の近くの場所の名前（./names.ts）。
+   * 自分で変えられる。空の文字列は「経路名なし」（場所の名前から付け直さない）
+   */
+  route?: string;
+  /** ロック（削除できない） */
+  locked?: boolean;
 }
 
 /** 場所の情報：1つのマス目・1つの出どころの分 */
@@ -170,11 +182,42 @@ function done(tx: IDBTransaction): Promise<void> {
   });
 }
 
+/**
+ * 記録を書く。自分で付けたもの（経路名・ロック）は、渡した記録に無ければ保存してあるものを残す
+ * （記録の仕組みや標高の埋め直しが持っている古い写しで書いても、消えないように）
+ */
+function putKeepingLabels(store: IDBObjectStore, track: Track) {
+  const req = store.get(track.id);
+  req.onsuccess = () => {
+    const old = req.result as Track | undefined;
+    const route = track.route ?? old?.route;
+    const locked = track.locked ?? old?.locked;
+    store.put({ ...track, ...(route != null ? { route } : {}), ...(locked != null ? { locked } : {}) });
+  };
+}
+
 export function putTrack(track: Track): Promise<void> {
   return withDb((db) => {
     const tx = db.transaction('tracks', 'readwrite');
-    tx.objectStore('tracks').put(track);
+    putKeepingLabels(tx.objectStore('tracks'), track);
     return done(tx);
+  });
+}
+
+/** 保存してある記録の一部（経路名・ロックなど）を書き換えて、書き換えた記録を返す（なければ null） */
+export function updateTrack(id: string, patch: Partial<Pick<Track, 'route' | 'locked'>>): Promise<Track | null> {
+  return withDb((db) => {
+    const tx = db.transaction('tracks', 'readwrite');
+    const store = tx.objectStore('tracks');
+    let updated: Track | null = null;
+    const req = store.get(id);
+    req.onsuccess = () => {
+      const old = req.result as Track | undefined;
+      if (!old) return;
+      updated = { ...old, ...patch };
+      store.put(updated);
+    };
+    return done(tx).then(() => updated);
   });
 }
 
@@ -184,7 +227,7 @@ export function appendPoints(track: Track, points: TrackPoint[]): Promise<void> 
     const tx = db.transaction(['tracks', 'points'], 'readwrite');
     const store = tx.objectStore('points');
     for (const p of points) store.add(p);
-    tx.objectStore('tracks').put(track);
+    putKeepingLabels(tx.objectStore('tracks'), track);
     return done(tx);
   });
 }
@@ -219,22 +262,47 @@ export async function getPoints(trackId: string): Promise<TrackPoint[]> {
   return pts.sort((a, b) => a.t - b.t);
 }
 
+/** ロックしている記録を消そうとしたときのエラー */
+export class LockedTrackError extends Error {
+  constructor() {
+    super('ロックしている記録は削除できません');
+  }
+}
+
+/** 記録を点・写真ごと消す。ロックしている記録は消さずに LockedTrackError */
 export function deleteTrack(id: string): Promise<void> {
   return withDb((db) => {
     const tx = db.transaction(['tracks', 'points', 'photos'], 'readwrite');
-    tx.objectStore('tracks').delete(id);
-    for (const name of ['points', 'photos']) {
-      const store = tx.objectStore(name);
-      const cursorReq = store.index('trackId').openKeyCursor(IDBKeyRange.only(id));
-      cursorReq.onsuccess = () => {
-        const cursor = cursorReq.result;
-        if (!cursor) return;
-        store.delete(cursor.primaryKey);
-        cursor.continue();
-      };
-    }
-    return done(tx);
+    const tracks = tx.objectStore('tracks');
+    let locked = false;
+    const req = tracks.get(id);
+    req.onsuccess = () => {
+      if ((req.result as Track | undefined)?.locked) {
+        locked = true;
+        tx.abort();
+        return;
+      }
+      tracks.delete(id);
+      for (const name of ['points', 'photos']) {
+        const store = tx.objectStore(name);
+        const cursorReq = store.index('trackId').openKeyCursor(IDBKeyRange.only(id));
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (!cursor) return;
+          store.delete(cursor.primaryKey);
+          cursor.continue();
+        };
+      }
+    };
+    return done(tx).catch((e) => {
+      throw locked ? new LockedTrackError() : e;
+    });
   });
+}
+
+/** 記録の写真の枚数 */
+export function countPhotos(trackId: string): Promise<number> {
+  return withDb((db) => wrap<number>(db.transaction('photos').objectStore('photos').index('trackId').count(trackId)));
 }
 
 export function putPhoto(photo: TrackPhoto): Promise<void> {

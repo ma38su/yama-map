@@ -197,7 +197,7 @@ function arrowImage(): ImageData {
 
 /** ルート・記録・グラフのカーソルを描く層（地図の読み込み後に一度だけ） */
 export function addOverlayLayers() {
-  for (const id of ['route', 'route-done', 'route-ahead', 'track', 'cursor', 'replay']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  for (const id of ['route', 'route-done', 'route-ahead', 'track', 'track-out', 'cursor', 'replay', 'replay-dir']) map.addSource(id, { type: 'geojson', data: emptyFC });
   // リプレイの歩き終えた線は、記録の線全体を置いておき、line-progress で途中まで塗る（進むたびに線を作り直さない）
   map.addSource('replay-done', { type: 'geojson', data: emptyFC, lineMetrics: true });
   // OpenStreetMap 由来のルートを表示しているときだけ出典を出すためのソース
@@ -224,16 +224,26 @@ export function addOverlayLayers() {
       'icon-ignore-placement': true,
     },
   });
+  // 記録の範囲の外（出発前・到着後に止まっていたところ）：灰色の点線
+  map.addLayer({
+    id: 'track-out',
+    type: 'line',
+    source: 'track-out',
+    layout: { 'line-join': 'round' },
+    paint: { 'line-color': '#7b8794', 'line-width': lineWidth(2.5, 4), 'line-dasharray': [1.2, 1.4], 'line-opacity': 0.85 },
+  });
   // 歩いた記録：太めの赤い線（白い縁取りで、灰色の歩き終えたルートや地図の上でも見分けやすく）
   map.addLayer({ id: 'track-casing', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#ffffff', 'line-width': lineWidth(6, 10), 'line-opacity': 0.95 } });
   map.addLayer({ id: 'track-line', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#d6334a', 'line-width': lineWidth(3.5, 6) } });
   map.addLayer({ id: 'replay-done', type: 'line', source: 'replay-done', layout: round, paint: { 'line-gradient': replayDoneGradient(0), 'line-width': 4.5 } });
+  // リプレイの今の位置：赤い丸に、歩いているあいだは進む向きの白い矢じり（地面に置く形。録画にも写るよう地図の層で描く）
   map.addLayer({
     id: 'replay',
     type: 'circle',
     source: 'replay',
-    paint: { 'circle-radius': 9, 'circle-color': '#d6334a', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3, 'circle-pitch-alignment': 'map' },
+    paint: { 'circle-radius': 12, 'circle-color': '#d6334a', 'circle-stroke-color': '#fff', 'circle-stroke-width': 3, 'circle-pitch-alignment': 'map' },
   });
+  map.addLayer({ id: 'replay-dir', type: 'fill', source: 'replay-dir', paint: { 'fill-color': '#ffffff', 'fill-antialias': true } });
   map.addLayer({
     id: 'cursor',
     type: 'circle',

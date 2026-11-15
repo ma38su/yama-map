@@ -14,6 +14,40 @@ export function distance(a: LngLat, b: LngLat): number {
   return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 
+/** a から b への方位（北から時計回りの度、-180〜180） */
+export function bearing(a: LngLat, b: LngLat): number {
+  const y = Math.sin(toRad(b[0] - a[0])) * Math.cos(toRad(b[1]));
+  const x = Math.cos(toRad(a[1])) * Math.sin(toRad(b[1])) - Math.sin(toRad(a[1])) * Math.cos(toRad(b[1])) * Math.cos(toRad(b[0] - a[0]));
+  return (Math.atan2(y, x) * 180) / Math.PI;
+}
+
+/** 地図のズーム z・緯度 lat で、画面の1px が何 m か（MapLibre の 512px のタイル） */
+export const metersPerPixel = (lat: number, z: number) => (2 * Math.PI * 6378137 * Math.cos(toRad(lat))) / (512 * 2 ** z);
+
+/**
+ * 進む向きの矢印の形（地面に置く多角形）。center を中心に、向き deg（北から時計回り）へ尖った矢じり。
+ * size は先端から中心までの長さ (m)
+ */
+export function arrowPolygon(center: LngLat, deg: number, size: number): LngLat[] {
+  const r = toRad(deg);
+  const cos = Math.cos(r);
+  const sin = Math.sin(r);
+  const mLng = 111_320 * Math.cos(toRad(center[1]));
+  // 北向きの矢じり（x 東・y 北、m）を時計回りに回す
+  const shape: [number, number][] = [
+    [0, 1],
+    [0.72, -0.62],
+    [0, -0.3],
+    [-0.72, -0.62],
+    [0, 1],
+  ];
+  return shape.map(([x, y]): LngLat => {
+    const e = (x * cos + y * sin) * size;
+    const n = (-x * sin + y * cos) * size;
+    return [center[0] + e / mLng, center[1] + n / 110_574];
+  });
+}
+
 /** Webメルカトルのタイル座標（小数あり）。整数部がタイル番号、小数部がタイル内位置 */
 export function lngLatToTile(lng: number, lat: number, z: number): { x: number; y: number } {
   const n = 2 ** z;
