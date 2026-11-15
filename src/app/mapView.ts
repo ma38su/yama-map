@@ -18,7 +18,7 @@ import { DemSampler, registerGsiDemProtocol } from '../map/gsiDem';
 import { createStyle, set3D } from '../map/style';
 import { sunPosition } from '../nav/sun';
 import { OSM_ATTRIBUTION } from '../route/roadTiles';
-import { daylightTime, saveSettings, settings } from '../settings';
+import { daylightTime, saveSettings, settings, timePreview } from '../settings';
 import { $, h } from '../ui/dom';
 import { state } from './state';
 
@@ -30,8 +30,13 @@ registerGsiDemProtocol();
 export const dem = new DemSampler(48);
 export const elevation = (lng: number, lat: number) => dem.elevation(lng, lat);
 const initialCenter: LngLat = settings.view?.center ?? [139.4165, 36.8705]; // 初期表示：奥鬼怒
+/**
+ * 空と地図の色を時刻に合わせるか。リプレイのときだけで、ふだんの地図は昼の色のまま（夕方や夜に色が変わると読みにくいので）。
+ * URL の ?time= で時刻を決めたときは、その時刻の見え方を確かめられるように合わせる
+ */
+const toneOn = () => settings.dayTone && (state.daylightAt != null || timePreview);
 const initialSun = sunPosition(daylightTime(), initialCenter[1], initialCenter[0]);
-const initialStyle = toneStyle(createStyle(settings.base, settings.hillshade), settings.dayTone ? initialSun.altitude : 90);
+const initialStyle = toneStyle(createStyle(settings.base, settings.hillshade), toneOn() ? initialSun.altitude : 90);
 export const map = new MlMap({
   container: 'map',
   style: initialStyle,
@@ -123,13 +128,13 @@ export function hookDaylight(hooks: Partial<typeof daylightHooks>) {
   Object.assign(daylightHooks, hooks);
 }
 
-/** 今の時刻（リプレイ中は再生中の時刻）・地図の中心での太陽と雲に、空・地図の色と陰影を合わせる */
+/** 今の時刻（リプレイ中は再生中の時刻）・地図の中心での太陽と雲に、空・地図の色（リプレイ中だけ）と陰影を合わせる */
 export function updateDaylight() {
   // 地図の読み込み前は空を変えられない（読み込んだら main.ts の load で合わせる）。雨などはそのまま合わせる
   if (styleReady) {
     const c = map.getCenter();
     const when = state.daylightAt != null ? new Date(state.daylightAt) : daylightTime();
-    applyDaylight(map, sunPosition(when, c.lat, c.lng), { terrain: settings.terrain, tone: settings.dayTone, cloud: daylightHooks.cloud() });
+    applyDaylight(map, sunPosition(when, c.lat, c.lng), { terrain: settings.terrain, tone: toneOn(), cloud: daylightHooks.cloud() });
   }
   daylightHooks.after();
 }

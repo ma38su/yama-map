@@ -8,7 +8,7 @@ import { backgroundCapable } from './track/location';
 export interface Settings {
   base: BaseLayerId;
   hillshade: boolean;
-  /** 空と地図の色を時刻に合わせる（夜は暗め） */
+  /** リプレイのとき、空と地図の色を再生中の時刻に合わせる（夜は暗め）。ふだんの地図は昼の色のまま */
   dayTone: boolean;
   terrain: boolean;
   /** 3D の起伏の強調（1 = 実際の高さ。大きいほど勾配が急に見える） */
@@ -70,6 +70,8 @@ export function saveSettings() {
 
 /** 空や地図の色を決める時刻。URL に ?time=18:30 を付けると、その時刻の見え方を確かめられる */
 const timeOverride = /^(\d{1,2}):(\d{2})$/.exec(new URLSearchParams(location.search).get('time') ?? '');
+/** ?time= で時刻を決めているか（ふだんの地図も、その時刻の色にして確かめる） */
+export const timePreview = timeOverride != null;
 export function daylightTime(): Date {
   const now = new Date();
   if (timeOverride) now.setHours(Number(timeOverride[1]), Number(timeOverride[2]), 0, 0);
