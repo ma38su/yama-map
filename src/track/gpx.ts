@@ -15,6 +15,10 @@ export interface GpxLine {
 
 export interface GpxWaypoint extends GpxPoint {
   name?: string;
+  /** 説明（desc、なければ cmt） */
+  desc?: string;
+  /** 関連するページ（link の href） */
+  link?: string;
 }
 
 export interface GpxData {
@@ -69,7 +73,9 @@ export function parseGpx(xml: string): GpxData {
   const waypoints: GpxWaypoint[] = [];
   for (const wpt of byTag(root, 'wpt')) {
     const p = readPoint(wpt);
-    if (p) waypoints.push({ ...p, name: childText(wpt, 'name') });
+    if (!p) continue;
+    const link = Array.from(wpt.children).find((c) => c.localName === 'link')?.getAttribute('href') ?? undefined;
+    waypoints.push({ ...p, name: childText(wpt, 'name'), desc: childText(wpt, 'desc') ?? childText(wpt, 'cmt'), link });
   }
   if (lines.length === 0 && waypoints.length === 0) {
     throw new Error('GPXに経路・地点が含まれていません');

@@ -1,7 +1,10 @@
 /**
  * 記録した軌跡の保存先 (IndexedDB)。
  * 点は1つずつ追記するので、ブラウザが落ちても直前までの記録が残る。
+ * 地図に重ねる場所の情報（マス目ごと）と、オフライン用に保存した範囲もここに置く。
+ * 版を上げるときは、ストアを足すだけにする（アプリを更新しても記録が消えないように）
  */
+import type { PlaceItem, PlaceSource } from '../places/sources';
 
 export interface TrackPoint {
   trackId: string;
@@ -49,8 +52,49 @@ export interface Track {
   pointCount: number;
 }
 
+/** 場所の情報：1つのマス目・1つの出どころの分 */
+export interface PlaceCell {
+  /** `${source}|${cell}` */
+  key: string;
+  source: PlaceSource;
+  cell: string;
+  /** 取ってきた時刻 (ms) */
+  fetchedAt: number;
+  items: PlaceItem[];
+  /** 名前と種類だけ（Overpass から取れず、OpenFreeMap の地図データから出したもの）。あとで取り直す */
+  partial?: boolean;
+}
+
+/** 自分で読み込んだ場所のファイル（GeoJSON・GPX） */
+export interface PlaceImport {
+  id: string;
+  /** ファイル名 */
+  name: string;
+  importedAt: number;
+  items: PlaceItem[];
+}
+
+/** オフライン用に保存した範囲 */
+export interface SavedArea {
+  id: string;
+  name: string;
+  createdAt: number;
+  /** ルート沿い / 表示中の範囲 */
+  kind: 'route' | 'view';
+  /** ルート沿いのとき、片側の幅 (m) */
+  bufferM?: number;
+  /** 範囲 (west, south, east, north)（地図で見るとき用） */
+  bounds: [number, number, number, number];
+  /** 保存したタイル・写真の URL（この範囲を消すとき、ほかの範囲で使っていないものを消す） */
+  urls: string[];
+  /** 場所の情報のマス目 */
+  cells: string[];
+  /** 保存できなかった枚数 */
+  failed: number;
+}
+
 const DB_NAME = 'yama-map';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -71,6 +115,9 @@ function open(): Promise<IDBDatabase> {
         const photos = db.createObjectStore('photos', { keyPath: 'id' });
         photos.createIndex('trackId', 'trackId');
       }
+      if (!db.objectStoreNames.contains('places')) db.createObjectStore('places', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('areas')) db.createObjectStore('areas', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('imports')) db.createObjectStore('imports', { keyPath: 'id' });
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -207,6 +254,96 @@ export function deletePhoto(id: string): Promise<void> {
   return withDb((db) => {
     const tx = db.transaction('photos', 'readwrite');
     tx.objectStore('photos').delete(id);
+    return done(tx);
+  });
+}
+
+// ---------- 場所の情報 ----------
+export const placeKey = (source: PlaceSource, cell: string) => `${source}|${cell}`;
+
+export function putPlaceCell(c: PlaceCell): Promise<void> {
+  return withDb((db) => {
+    const tx = db.transaction('places', 'readwrite');
+    tx.objectStore('places').put(c);
+    return done(tx);
+  });
+}
+
+/** マス目の場所の情報（keys の順。ないものは undefined） */
+export function getPlaceCells(keys: string[]): Promise<(PlaceCell | undefined)[]> {
+  return withDb(async (db) => {
+    const store = db.transaction('places').objectStore('places');
+    return Promise.all(keys.map((k) => wrap<PlaceCell | undefined>(store.get(k))));
+  });
+}
+
+/** keep に入っていない、before より前に取ってきたマス目を消す（増えすぎないように） */
+export function prunePlaceCells(before: number, keep: Set<string>): Promise<number> {
+  return withDb((db) => {
+    const tx = db.transaction('places', 'readwrite');
+    let n = 0;
+    const req = tx.objectStore('places').openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      const c = cursor.value as PlaceCell;
+      if (c.fetchedAt < before && !keep.has(c.cell)) {
+        cursor.delete();
+        n++;
+      }
+      cursor.continue();
+    };
+    return done(tx).then(() => n);
+  });
+}
+
+export function putImport(i: PlaceImport): Promise<void> {
+  return withDb((db) => {
+    const tx = db.transaction('imports', 'readwrite');
+    tx.objectStore('imports').put(i);
+    return done(tx);
+  });
+}
+
+export async function listImports(): Promise<PlaceImport[]> {
+  const all = await withDb((db) => wrap<PlaceImport[]>(db.transaction('imports').objectStore('imports').getAll()));
+  return all.sort((a, b) => b.importedAt - a.importedAt);
+}
+
+export function deleteImport(id: string): Promise<void> {
+  return withDb((db) => {
+    const tx = db.transaction('imports', 'readwrite');
+    tx.objectStore('imports').delete(id);
+    return done(tx);
+  });
+}
+
+// ---------- 保存した範囲 ----------
+export function putArea(a: SavedArea): Promise<void> {
+  return withDb((db) => {
+    const tx = db.transaction('areas', 'readwrite');
+    tx.objectStore('areas').put(a);
+    return done(tx);
+  });
+}
+
+export async function listAreas(): Promise<SavedArea[]> {
+  const all = await withDb((db) => wrap<SavedArea[]>(db.transaction('areas').objectStore('areas').getAll()));
+  return all.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function deleteArea(id: string): Promise<void> {
+  return withDb((db) => {
+    const tx = db.transaction('areas', 'readwrite');
+    tx.objectStore('areas').delete(id);
+    return done(tx);
+  });
+}
+
+export function clearAreas(): Promise<void> {
+  return withDb((db) => {
+    const tx = db.transaction('areas', 'readwrite');
+    tx.objectStore('areas').clear();
     return done(tx);
   });
 }

@@ -186,12 +186,21 @@
 
         <section>
           <h3>オフライン</h3>
-          <div class="row">
-            <button type="button" class="btn" id="btn-offline">表示中の範囲を保存</button>
-            <button type="button" class="btn" id="btn-cache-clear">保存した地図を削除</button>
+          <div class="field" id="offline-buffer-field">
+            <span class="field-label">ルートの両側に保存する幅</span>
+            <div class="segmented" id="offline-buffer" role="radiogroup" aria-label="ルートの両側に保存する幅"></div>
           </div>
-          <p class="note" id="offline-info">山では電波が届かないことが多いので、出発前に保存しておくと安心です（ルート検索用の道データも保存します）。</p>
+          <div class="row">
+            <button type="button" class="btn primary" id="btn-offline-route">ルート沿いを保存</button>
+            <button type="button" class="btn" id="btn-offline">表示中の範囲を保存</button>
+          </div>
+          <p class="note" id="offline-info">山では電波が届かないことが多いので、出発前に保存しておくと安心です。ルート沿いの地図・標高・道データと、山小屋・水場・写真などの情報も保存します。</p>
           <progress id="offline-progress" hidden></progress>
+          <ul id="area-list" class="list"></ul>
+          <p class="note">保存した範囲は、地図の右上の「重ねる情報」ボタン →「保存した範囲」で、地図に緑で塗って確かめられます。</p>
+          <div class="row">
+            <button type="button" class="btn danger" id="btn-cache-clear">保存した地図をすべて削除</button>
+          </div>
           <p class="note" id="storage-info"></p>
         </section>
 
@@ -218,6 +227,9 @@
           </p>
           <p>
             道データ（ルート候補）: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>（<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> / OpenMapTiles）
+          </p>
+          <p>
+            山小屋・水場など: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>（ODbL、Overpass API）・写真: <a href="https://commons.wikimedia.org/" target="_blank" rel="noopener">Wikimedia Commons</a>・生きもの: <a href="https://www.inaturalist.org/" target="_blank" rel="noopener">iNaturalist</a>（撮影者とライセンスは各写真に表示）
           </p>
           <p class="note">到着予想は目安です。道の状況・天候・体調で大きく変わります。紙の地図とコンパス、登山届の提出もお忘れなく。</p>
         </section>
@@ -259,6 +271,47 @@
         <button type="button" class="btn" id="photo-prev" aria-label="前の写真">‹</button>
         <button type="button" class="btn" id="photo-next" aria-label="次の写真">›</button>
         <button type="button" class="btn danger" id="photo-delete">削除</button>
+        <button type="button" class="btn" data-close>閉じる</button>
+      </div>
+    </dialog>
+
+    <dialog id="layers" class="sheet-dlg" aria-label="地図に重ねる情報">
+      <div class="dlg">
+        <header>
+          <h2>地図に重ねる情報</h2>
+          <button class="close" type="button" data-close aria-label="閉じる">✕</button>
+        </header>
+        <p class="note">地図を拡大すると（ズーム11から）、種類ごとの色とアイコンで出ます。アイコンをタップすると詳しく見られます。一度見た場所は端末に残り、圏外でも出ます。</p>
+        <section>
+          <h3>山の施設（OpenStreetMap）</h3>
+          <div id="layers-osm" class="layer-list"></div>
+          <div class="row"><button type="button" class="btn small" id="layers-all">山の施設をすべて隠す</button></div>
+        </section>
+        <section>
+          <h3>写真・生きもの</h3>
+          <div id="layers-photo" class="layer-list"></div>
+          <p class="note">自由なライセンスで公開されている写真だけを出します。撮影者とライセンスは、それぞれの写真に出ます。</p>
+        </section>
+        <section>
+          <h3>自分で読み込んだ場所</h3>
+          <div id="layers-mine" class="layer-list"></div>
+          <ul id="import-list" class="list"></ul>
+          <div class="row">
+            <label class="btn"><input type="file" id="places-file" accept=".geojson,.json,.gpx,application/geo+json,application/json,application/gpx+xml" hidden />場所のファイルを読み込む</label>
+          </div>
+          <p class="note">GeoJSON（Point の地点。name・comment・photo・time・url・author などを読みます）と、GPX のウェイポイント（名前・説明・リンク）を読み込めます。形式の詳しい説明は docs/places.md にあります。</p>
+        </section>
+        <section>
+          <h3>オフライン</h3>
+          <div id="layers-saved" class="layer-list"></div>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog id="place-view" class="photo-view" aria-label="写真">
+      <img id="place-view-img" alt="" />
+      <p id="place-view-caption" class="photo-caption"></p>
+      <div class="row photo-actions">
         <button type="button" class="btn" data-close>閉じる</button>
       </div>
     </dialog>

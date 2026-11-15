@@ -3,8 +3,8 @@
  * 下の VERSION・PRECACHE に埋め込んで dist/sw.js に出す。
  *  - アプリ本体: インストール時にこの版のファイルをすべてキャッシュする。ページはネットワーク優先（4秒でキャッシュへ切替）、
  *    ほかはキャッシュ優先。版ごとにキャッシュを分け、新しい版が有効になったら古い版は消す
- *  - 地図・標高・道データのタイル（地理院・OpenFreeMap）はキャッシュ優先で、2つに分ける
- *      保存した地図（yama-map-tiles-v1）: メニューの「地図を保存」で入れたもの。消すまで残す
+ *  - 地図・標高・道データのタイル（地理院・OpenFreeMap）と、場所の情報の写真（Wikimedia Commons・iNaturalist）はキャッシュ優先で、2つに分ける
+ *      保存した地図（yama-map-tiles-v1）: メニューの「ルート沿いを保存」などで入れたもの。消すまで残す
  *      表示しただけの地図（yama-map-browse-v1）: 最大 BROWSE_MAX 枚（古いものから消す）。30日経ったら、つながるときに取り直す
  *  - アプリ版（?native=1 で登録）: アプリ本体は APK に入っているので扱わず、地図タイルだけを扱う
  */
@@ -18,7 +18,15 @@ const BROWSE_MAX = 3000;
 const BROWSE_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 /** 表示しただけの地図に付ける、取ってきた時刻のヘッダー（地理院の Date ヘッダーはページから読めないため） */
 const FETCHED_AT = 'x-yama-fetched';
-const TILE_HOSTS = new Set(['cyberjapandata.gsi.go.jp', 'tiles.openfreemap.org']);
+const TILE_HOSTS = new Set([
+  'cyberjapandata.gsi.go.jp',
+  'tiles.openfreemap.org',
+  // 場所の情報の写真（CORS で読んだものだけ残せる。app/places.ts は CORS で読む）
+  'upload.wikimedia.org',
+  'thumb.wikimedia.org',
+  'inaturalist-open-data.s3.amazonaws.com',
+  'static.inaturalist.org',
+]);
 const NATIVE = new URL(self.location.href).searchParams.has('native');
 
 self.addEventListener('install', (event) => {

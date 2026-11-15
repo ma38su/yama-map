@@ -155,6 +155,35 @@ export const decodeRoadTile = (buf: ArrayBuffer | Uint8Array, x: number, y: numb
 export const decodeOsmTile = (buf: ArrayBuffer | Uint8Array, x: number, y: number, z: number) =>
   decodeLines(buf, x, y, z, 'transportation', osmKind);
 
+/** OpenFreeMap（OpenMapTiles）のタイルの poi 層の点（山小屋・トイレなど。場所の情報を Overpass から取れないときに使う） */
+export interface TilePoi {
+  cls: string;
+  subclass: string;
+  name?: string;
+  lngLat: LngLat;
+}
+
+export function decodeOsmPois(buf: ArrayBuffer | Uint8Array, x: number, y: number, z: number): TilePoi[] {
+  const tile = new VectorTile(new PbfReader(buf instanceof Uint8Array ? buf : new Uint8Array(buf)));
+  const layer = tile.layers.poi;
+  if (!layer) return [];
+  const out: TilePoi[] = [];
+  for (let i = 0; i < layer.length; i++) {
+    const f = layer.feature(i);
+    const p = f.loadGeometry()[0]?.[0];
+    // タイルの外（となりのタイルと重なる部分）の点は、となりのタイルで数える
+    if (f.type !== 1 || !p || p.x < 0 || p.y < 0 || p.x >= f.extent || p.y >= f.extent) continue;
+    const name = f.properties['name:ja'] ?? f.properties.name;
+    out.push({
+      cls: String(f.properties.class ?? ''),
+      subclass: String(f.properties.subclass ?? ''),
+      name: name ? String(name) : undefined,
+      lngLat: toLngLat(p, x, y, z, f.extent),
+    });
+  }
+  return out;
+}
+
 function tileUrls(template: string, z: number, bounds: [number, number, number, number]) {
   const r = tileRange(bounds, z);
   const out: { url: string; x: number; y: number }[] = [];

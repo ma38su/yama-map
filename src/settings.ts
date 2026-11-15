@@ -31,6 +31,10 @@ export interface Settings {
   builtinPlan?: boolean;
   /** 電池の最適化から外すか、記録を始めたときに一度聞いたか（アプリ版） */
   batteryAsked?: boolean;
+  /** 地図に重ねる情報の種類ごとの表示（app/places.ts の LayerId → 出すか。ないものは初期値） */
+  layers?: Partial<Record<string, boolean>>;
+  /** ルート沿いのオフライン保存で、ルートの片側に保存する幅 (m) */
+  offlineBufferM?: number;
 }
 const SETTINGS_KEY = 'yama-map:settings';
 export const settings: Settings = { base: 'std', hillshade: true, dayTone: true, terrain: false, terrainExaggeration: TERRAIN_EXAGGERATION, weather: true, weatherFx: true, wakeLock: !backgroundCapable, offRouteAlert: true, pace: 'normal', routePref: 'trail', departAt: null };

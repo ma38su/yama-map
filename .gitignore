@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.local
 .DS_Store
+# 個人用のデータ・メモ（読み込む場所のファイルなど。git では管理しない）
+/local/

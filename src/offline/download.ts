@@ -1,9 +1,10 @@
 /**
- * 表示中の範囲の地図タイルを端末に保存する（山の中の圏外対策）。
- * 保存先は Service Worker と共有の Cache Storage（src/sw.js）。
+ * 地図タイルを端末に保存する（山の中の圏外対策）。ルート沿い（両側の帯）か、表示中の範囲。
+ * 保存先は Service Worker と共有の Cache Storage（src/sw.js）。場所の情報の写真（縮小画像）も同じところに保存する。
  * 地理院タイルのサーバーに負担をかけないよう、同時接続数と枚数に上限を設けている。
  */
-import { tileCount, tileRange, tileUrl, type TileRange } from '../geo';
+import { tileCount, tileRange, tileUrl, type LngLat, type TileRange } from '../geo';
+import { corridorTiles } from './corridor';
 
 /** 保存した地図（消すまで残す） */
 export const TILE_CACHE = 'yama-map-tiles-v1';
@@ -12,7 +13,7 @@ export const BROWSE_CACHE = 'yama-map-browse-v1';
 export const MAX_TILES = 4000;
 const CONCURRENCY = 4;
 
-interface LayerPlan {
+export interface LayerPlan {
   template: string;
   minZoom: number;
   maxZoom: number;
@@ -41,6 +42,20 @@ export function planTiles(bounds: [number, number, number, number], layers: Laye
         for (let y = r.minY; y <= r.maxY; y++) {
           urls.push(tileUrl(layer.template, z, x, y));
         }
+      }
+    }
+  }
+  return urls;
+}
+
+/** ルートの両側 bufferM の帯を覆うタイルの URL */
+export function planCorridorTiles(coords: LngLat[], bufferM: number, layers: LayerPlan[]): string[] {
+  const urls: string[] = [];
+  for (const layer of layers) {
+    for (let z = layer.minZoom; z <= layer.maxZoom; z++) {
+      for (const key of corridorTiles(coords, bufferM, z)) {
+        const [x, y] = key.split('/').map(Number);
+        urls.push(tileUrl(layer.template, z, x, y));
       }
     }
   }
@@ -95,6 +110,14 @@ export async function downloadTiles(
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   return progress;
+}
+
+/** 保存した地図・写真のうち、urls を消す */
+export async function deleteSaved(urls: Iterable<string>): Promise<number> {
+  const cache = await caches.open(TILE_CACHE);
+  let n = 0;
+  for (const url of urls) if (await cache.delete(url, { ignoreVary: true })) n++;
+  return n;
 }
 
 /** 保存した地図と、表示しただけの地図をすべて消す */

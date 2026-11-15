@@ -14,7 +14,13 @@
 - **天気予報**：3D では予報の雲量に合わせて地形に雲がかかり、予報で雨・雪が降っている場所にだけ雨粒・雪を降らせる。曇りの予報では空も灰色に寄せる（[Open-Meteo](https://open-meteo.com/)。予報の表示と、雲・雨のアニメーションは、メニューでそれぞれオフにできる）
 - 現在地（GPS）の表示と追従。現在地の印に向いている方向の扇を出し、「進む向きを上」にすると向きに合わせて地図を回す（方位センサー、なければ GPS の進行方向）
 - **地名の検索**：山・沢・温泉などの名前で探し、選ぶとその場所の吹き出し（出発地・経由地・目的地）を出す（国土地理院の地名検索）
-- **オフライン保存**：表示範囲の地図・標高・道データを端末に保存（山の中の圏外対策）
+- **山小屋・水場・写真などを地図に重ねる**：種類ごとに色とアイコンの違う吹き出しで出し、タップで詳しく見る（その場所を出発地・目的地にもできる）。地図の右上の「重ねる情報」ボタンで、種類ごとに表示・非表示を切り替えられる
+  - 山の施設（山小屋・避難小屋・水場・トイレ・キャンプ場・展望地・温泉・滝）：[OpenStreetMap](https://www.openstreetmap.org/)（Overpass API。混んでいて取れないときは、端末に残っている OpenFreeMap の地図データから名前と種類だけ）
+  - 写真：[Wikimedia Commons](https://commons.wikimedia.org/) の位置付きの写真、生きもの：[iNaturalist](https://www.inaturalist.org/) の写真付きの観察記録（どちらも自由なライセンスのものだけ。撮影者とライセンスを表示）
+  - **自分の場所のファイル**（GeoJSON の点・GPX のウェイポイント）を読み込んで、コメントや写真付きで出せる（形式は [docs/places.md](docs/places.md)）
+  - 一度見た場所は端末に残り、圏外でも出る
+- **オフライン保存**：**ルート沿い**（ルートの両側 500m・1km・2km の帯）か表示中の範囲の地図・標高・道データを端末に保存（山の中の圏外対策）。山小屋・水場などの情報と写真（縮小画像）も一緒に保存する。
+  保存した範囲は、メニューの一覧（地図で見る・範囲ごとに削除）と、地図の緑の塗り（「重ねる情報」→「保存した範囲」）で確かめられる
 
 ### ルートと到着予想
 - 地図をタップ →「出発地 / 経由地 / 目的地」で、**道・登山道沿いのルートを自動作成**（地名も自動で付く）
@@ -118,12 +124,15 @@ Web版との違い、ビルド環境の準備、エミュレータ、デバッ�
 - [x] 気圧センサー（ネイティブ）で標高・累積標高の精度向上
 - [ ] 出発時刻を好きな日に指定できるようにする（今は今日か、今より6時間以上前の時刻なら明日）
 - [x] アプリを履歴から消しても記録が続くようにする（記録の点をネイティブ側で保存）
-- [ ] OpenStreetMap の登山道レイヤー、山小屋・水場などの POI
+- [x] 山小屋・水場などの POI（OpenStreetMap）、写真（Wikimedia Commons・iNaturalist）、自分の場所のファイルの読み込み
+- [ ] OpenStreetMap の登山道レイヤー
 - [x] ルートからの逸脱アラート（バイブと通知）
-- [ ] 保存済みエリアの一覧・個別削除
+- [x] 保存済みエリアの一覧・個別削除、ルート沿いの保存
 
 ## データの出典
 
 - 地図・標高・道データ：[国土地理院（地理院タイル）](https://maps.gsi.go.jp/development/ichiran.html)
 - 天気予報：[Open-Meteo](https://open-meteo.com/)（気象庁などの予報モデル、CC BY 4.0）
 - 道データ（ルート候補）：[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)（[OpenFreeMap](https://openfreemap.org) / OpenMapTiles）
+- 山小屋・水場など：[© OpenStreetMap contributors](https://www.openstreetmap.org/copyright)（ODbL、[Overpass API](https://overpass-api.de/)）
+- 写真：[Wikimedia Commons](https://commons.wikimedia.org/)、生きもの：[iNaturalist](https://www.inaturalist.org/)（撮影者とライセンスは各写真に表示）
