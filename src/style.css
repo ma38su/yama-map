@@ -1416,6 +1416,14 @@ dialog.photo-view {
   font-size: 30px;
   color: #b9c0c8;
 }
+.pocket-stat .value.muted {
+  font-size: 20px;
+  line-height: 1.5;
+  color: #8f98a3;
+}
+.pocket-stat small {
+  font-size: 13px;
+}
 .pocket-rows {
   display: flex;
   flex-direction: column;
@@ -1465,6 +1473,8 @@ dialog.photo-view {
   font-size: 15px;
 }
 .pocket-row.late .time,
+.pocket-stat.late .value,
+.pocket-stat.late small,
 .pocket-sun.late,
 .pocket-warn {
   color: #c98a6b;

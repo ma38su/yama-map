@@ -9,7 +9,7 @@ import { putTrack, type Track, type TrackPoint } from '../track/db';
 import { applyTrim, detectIdle, shownOf, suggestedRange, summarize, trackTimes, type IdleSuggestion, type TrimRange } from '../track/trim';
 import { $, fmtClock, fmtM, fmtMin, h } from '../ui/dom';
 import { emptyFC, lineFC, map, src } from './mapView';
-import { refreshTrackList } from './menu';
+import { refreshTrackList } from './tracks';
 import { updateNav } from './nav';
 import { recorder, renderTrack, updateRecButton, viewingTrack } from './recording';
 import { stopReplay } from './replay';

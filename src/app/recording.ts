@@ -8,7 +8,7 @@ import { TrackRecorder, fillMissingElevations } from '../track/recorder';
 import { saveSettings, settings } from '../settings';
 import { $, fmtM, onLongPress } from '../ui/dom';
 import { dem, geolocate, map } from './mapView';
-import { refreshTrackList } from './menu';
+import { refreshTrackList } from './tracks';
 import { setProfileSource } from './profileView';
 import { onReplayStopped, replayActive, startReplay, stopReplay } from './replay';
 import { sheet } from './sheetView';
@@ -208,11 +208,12 @@ export function updateRecButton() {
   const viewing = viewingTrack();
   recBtn.hidden = viewing;
   $('view-actions').hidden = !viewing;
-  // 記録中・記録を開いているときは写真、それ以外（計画）は地名の検索を同じ場所に出す
+  // 記録中・記録を開いているときは写真、それ以外（計画）は地名の検索と記録の画面のボタンを同じ場所に出す
   $('btn-photo').hidden = !rec && !viewing;
   // ポケット表示は記録中だけ
   $('btn-pocket').hidden = !rec;
   $('btn-search').hidden = rec || viewing;
+  $('btn-tracks').hidden = rec || viewing;
   const replay = $('btn-replay');
   replay.querySelector('span:first-child')!.textContent = replayActive() ? '■' : '▶';
   replay.querySelector('span:last-child')!.textContent = replayActive() ? '終了' : 'リプレイ';

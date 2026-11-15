@@ -1,5 +1,5 @@
 /**
- * ポケット表示：記録中に画面を点けたままにするとき、黒い画面に時刻・経過・距離・ペース・到着予想・日没だけを大きく出し、地図の描画を止める。
+ * ポケット表示：記録中に画面を点けたままにするとき、黒い画面に時刻・経過・距離・電池・ペース・到着予想・日没だけを大きく出し、地図の描画を止める。
  * 有機ELの画面では黒い部分はほとんど電気を使わないので、画面を点けたままでも電池の減りを抑えられる（Web 版は特に）。
  * ポケットの中で触れても戻らないよう、地図に戻るのは「地図に戻る」の長押し（1秒）・戻るボタン（アプリ版）・Esc キー・記録の終了のときだけ
  */
@@ -9,8 +9,9 @@ import { paceSegments } from '../nav/eta';
 import { log } from '../log';
 import { backgroundCapable } from '../track/location';
 import { $, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
+import { batteryNow } from './batteryLevel';
 import { geolocate, map, updateDaylight } from './mapView';
-import { isLate, paceOf, type Row } from './nav';
+import { isLate, paceOf, type Nav, type Row } from './nav';
 import { recorder } from './recording';
 import { whileVisible } from './scheduler';
 import { state } from './state';
@@ -118,6 +119,42 @@ function paceLine(): HTMLElement {
   return el;
 }
 
+// ---------- 電池 ----------
+/** これより少なければ、電池の残りを注意の色にする（%） */
+const LOW_BATTERY = 20;
+/** もつ時間の丸め：1時間より先は10分、それまでは5分ごと（1% 刻みからの見積もりなので細かく出さない） */
+const roundMin = (min: number) => (min >= 60 ? Math.round(min / 10) * 10 : Math.max(5, Math.round(min / 5) * 5));
+
+/**
+ * 電池の残りと、あと何分もつか（アプリ版はポケット表示で上の電池の表示も隠すので、ここに出す）。
+ * 目的地に着くより前に切れそうなら、注意の色で知らせる
+ */
+function batteryStats(nav: Nav | null): HTMLElement[] {
+  const b = batteryNow();
+  if (!b) return [];
+  const level = statTile('電池', `${b.level}%`);
+  level.classList.toggle('late', !b.charging && b.level <= LOW_BATTERY);
+  if (b.charging) return [level, statTile('電池がもつ時間', '充電中', 'muted')];
+  if (b.remainingMs == null) return [level, statTile('電池がもつ時間', '計算中', 'muted', '2%ほど減ると分かります')];
+  const now = Date.now();
+  const empty = now + b.remainingMs;
+  const dest = nav?.dest;
+  const short = !!dest && !dest.passed && dest.time != null && empty < dest.time;
+  // 半日より先は、何時ごろかは出さない（日付が変わって分かりにくいので）
+  const note = short ? '目的地に着く前に切れそう' : b.remainingMs < 12 * 3_600_000 ? `${fmtClock(empty)}ごろまで（目安）` : '目安';
+  const tile = statTile('電池がもつ時間', `約${fmtHM(roundMin(b.remainingMs / 60_000))}`, '', note);
+  tile.classList.toggle('late', short);
+  return [level, tile];
+}
+
+/** 上の数字の1マス（cls は値の見た目、note は値の下の小さな説明） */
+function statTile(label: string, value: string, cls = '', note = ''): HTMLElement {
+  const tile = h('div', 'pocket-stat');
+  tile.append(h('span', 'label', label), h('span', `value ${cls}`.trim(), value));
+  if (note) tile.append(h('small', '', note));
+  return tile;
+}
+
 /** 次の地点・目的地の一行 */
 function rowLine(label: string, row: Row, sunset: number | null): HTMLElement {
   const el = h('div', `pocket-row${isLate(row, sunset) ? ' late' : ''}`);
@@ -136,6 +173,7 @@ function renderPocket() {
   const { track, error, saveFailed } = recorder.state;
   const now = Date.now();
   $('pocket-clock').textContent = fmtClock(now);
+  const nav = state.lastNav;
   const stats = $('pocket-stats');
   stats.replaceChildren();
   if (track) {
@@ -145,14 +183,12 @@ function renderPocket() {
       ['登り', fmtM(track.ascent)],
       ['標高', fmtM(state.currentEle ?? recorder.state.points.at(-1)?.ele)],
     ]) {
-      const tile = h('div', 'pocket-stat');
-      tile.append(h('span', 'label', label), h('span', 'value', value));
-      stats.append(tile);
+      stats.append(statTile(label, value));
     }
   }
+  stats.append(...batteryStats(nav));
   const rows = $('pocket-rows');
   rows.replaceChildren(paceLine());
-  const nav = state.lastNav;
   if (nav) {
     if (nav.next && nav.next !== nav.dest) rows.append(rowLine('次', nav.next, nav.sunset));
     if (nav.dest) rows.append(rowLine('目的地', nav.dest, nav.sunset));

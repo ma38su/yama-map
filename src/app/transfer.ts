@@ -1,5 +1,5 @@
 /**
- * メニューの「記録をまとめて書き出す」「記録を読み込む」：別の端末（Pixel 8a と 9 Pro など）へ記録を移す、バックアップにする。
+ * 記録の画面（tracks.ts）の「記録をまとめて書き出す」「記録を読み込む」：別の端末（Pixel 8a と 9 Pro など）へ記録を移す、バックアップにする。
  * 書き出したファイルは共有シート（アプリ版）から Quick Share や Google ドライブで送り、もう一方の端末で読み込む。
  * ファイルは1行に1つの記録・写真（track/backup.ts）。写真が多くても全体を1つの文字列にしないよう、書き出しも読み込みも1行ずつ扱う
  */
@@ -8,7 +8,7 @@ import { backupHeader, parseBackupHeader, parseBackupLine, prepareTrack, type Ba
 import { getPhotos, getPoints, getTrackWeather, listTracks, putPhoto, putTrackWeather, putTrackWithPoints, type Track, type TrackPoint } from '../track/db';
 import type { TrackWeather } from '../track/weatherLog';
 import { $, download, fileStamp } from '../ui/dom';
-import { refreshTrackList } from './menu';
+import { refreshTrackList } from './tracks';
 import { recorder } from './recording';
 import { setProgress, status } from './status';
 

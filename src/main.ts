@@ -1,7 +1,7 @@
 /**
  * やまマップの起動。画面の各部分は src/app/ に分けてある：
  *  mapView（地図）・mapTap（地図のタップ）・route（行程）・nav（到着予想）・sheetView（下のシート）・
- *  profileView（標高グラフ）・recording（現在地と記録）・status（上の状態表示）・menu（メニュー）・offline（地図の保存）・
+ *  profileView（標高グラフ）・recording（現在地と記録）・tracks（記録の一覧）・status（上の状態表示）・menu（メニュー）・offline（地図の保存）・
  *  places（山小屋・水場・写真などの場所の情報）・layers（地図に重ねる情報の切り替え）・savedAreas（保存した範囲）
  */
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -25,6 +25,7 @@ import './app/mapTap';
 import './app/compass';
 import './app/photos';
 import './app/search';
+import './app/tracks';
 import { ensureBuiltinPlan } from './app/menu';
 import { updateNav, type Nav } from './app/nav';
 import './app/offline';
