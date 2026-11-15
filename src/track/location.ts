@@ -78,7 +78,8 @@ interface TrackingPlugin {
   stop(o?: { trackId?: string }): Promise<void>;
   status(): Promise<TrackingStatus>;
   pendingTracks(): Promise<{ tracks: string[] }>;
-  getFixes(o: { trackId: string; afterId: number; limit: number }): Promise<{ fixes: StoredFix[] }>;
+  /** afterT を渡すと、その時刻より後の測位だけ（記録を続けるときの最初の取り込み。取り込み済みの点をブリッジに通さない） */
+  getFixes(o: { trackId: string; afterId: number; limit: number; afterT?: number }): Promise<{ fixes: StoredFix[] }>;
   clearFixes(o: { trackId: string }): Promise<void>;
   checkPermissions(): Promise<{ location: PermissionState; activity: PermissionState }>;
   requestPermissions(o?: { permissions: ('location' | 'activity')[] }): Promise<{ location: PermissionState; activity: PermissionState }>;
@@ -196,8 +197,10 @@ async function drainFixes(
   onFix: (f: Fix) => void,
 ): Promise<{ afterId: number; count: number }> {
   let count = 0;
+  // 取り込み済みの点（since より前）は、端末の側ではじく（記録を続けるたびに、記録の全部の測位をブリッジに通して捨てないように）
+  const afterT = Number.isFinite(since) ? { afterT: since } : {};
   for (;;) {
-    const { fixes } = await Tracking.getFixes({ trackId, afterId, limit: BATCH });
+    const { fixes } = await Tracking.getFixes({ trackId, afterId, limit: BATCH, ...afterT });
     // 番号が進まなければ（同じ測位が返ってくる）、同じものを何度も取り込まないようやめる
     if (fixes.length && fixes[0].id <= afterId) throw new Error(`記録の測位の取り込みが進みません（${afterId}）`);
     const fresh = fixes.filter((f) => f.t > since);

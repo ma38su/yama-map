@@ -56,17 +56,32 @@ if (settings.departAt != null && !DEPART_TIME.test(settings.departAt) && !DEPART
 // 日付を選んだ出発が半日以上前に過ぎていたら、今すぐに戻す（前の山行の計画が残っているだけなので）
 if (settings.departAt && DEPART_DATE_TIME.test(settings.departAt) && departureAt(settings.departAt, Date.now()) < Date.now() - 12 * 3_600_000) settings.departAt = null;
 /**
- * 保存するときだけ差し替える値。リプレイで一時的に 3D にしているあいだ、元の 2D のほうを保存するのに使う
- * （途中でアプリを閉じても、次の起動が 3D にならないように）
+ * 保存するときだけ差し替える値。リプレイで一時的に 3D にして視点を動かしているあいだ、始める前の 2D と地図の位置のほうを保存するのに使う
+ * （途中でアプリを閉じても、次の起動が 3D や傾いた地図にならないように）
  */
 export const savedOverrides: Partial<Settings> = {};
+let pendingSave = 0;
 export function saveSettings() {
+  clearTimeout(pendingSave);
+  pendingSave = 0;
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings, ...savedOverrides }));
   } catch {
     /* noop */
   }
 }
+/**
+ * すぐ保存しなくてよい変更（地図の位置など）。変わらなくなってから少し待って書く。
+ * 地図の moveend はリプレイや3Dの指の操作で1秒に何十回も来るので、そのたびに書かないように
+ */
+export function saveSettingsSoon() {
+  clearTimeout(pendingSave);
+  pendingSave = window.setTimeout(saveSettings, 2000);
+}
+// 待っている保存は、裏に回るとき（そのまま閉じられるかもしれない）にすぐ書く
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && pendingSave) saveSettings();
+});
 
 /** 空や地図の色を決める時刻。URL に ?time=18:30 を付けると、その時刻の見え方を確かめられる */
 const timeOverride = /^(\d{1,2}):(\d{2})$/.exec(new URLSearchParams(location.search).get('time') ?? '');

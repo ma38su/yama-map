@@ -151,28 +151,39 @@ export interface DaylightOptions {
   cloud?: number;
 }
 
+type PaintName = Parameters<MlMap['setPaintProperty']>[1];
+type PaintValue = Parameters<MlMap['setPaintProperty']>[2];
+/**
+ * 値が変わったときだけ設定する。MapLibre の setter は同じ値でも地図全体の計算し直しと描き直しを起こすが、
+ * 毎分の更新ではほとんどの値が前と同じ（ふだんは昼の色のままで、変わるのは 3D の陰影の向きくらい）
+ */
+function setPaint(map: MlMap, layer: string, name: PaintName, value: PaintValue) {
+  if (map.getPaintProperty(layer, name) !== value) map.setPaintProperty(layer, name, value);
+}
+
 /** 空・地図の色と陰影の光を太陽に合わせる */
 export function applyDaylight(map: MlMap, sun: SunPosition, { terrain, tone, cloud = 0 }: DaylightOptions): void {
   const colorAltitude = tone ? sun.altitude : 90;
-  map.setSky(overcastSky(skyAt(colorAltitude), cloud));
+  const sky = overcastSky(skyAt(colorAltitude), cloud);
+  if (JSON.stringify(map.getSky()) !== JSON.stringify(sky)) map.setSky(sky);
   const t = toneAt(colorAltitude);
   // getStyle() はスタイル全体を作り直すので使わず、レイヤーの名前と種類だけを見る
   for (const id of map.getLayersOrder()) {
     if (map.getLayer(id)?.type !== 'raster') continue;
-    map.setPaintProperty(id, 'raster-brightness-max', t.brightness);
-    map.setPaintProperty(id, 'raster-saturation', t.saturation);
+    setPaint(map, id, 'raster-brightness-max', t.brightness);
+    setPaint(map, id, 'raster-saturation', t.saturation);
   }
   if (map.getLayer(TINT_LAYER)) {
-    map.setPaintProperty(TINT_LAYER, 'fill-color', t.tint);
-    map.setPaintProperty(TINT_LAYER, 'fill-opacity', t.tintOpacity);
+    setPaint(map, TINT_LAYER, 'fill-color', t.tint);
+    setPaint(map, TINT_LAYER, 'fill-opacity', t.tintOpacity);
   }
   if (!map.getLayer('hillshade')) return;
   const light = terrain ? sunHillshadeLight(sun) : DEFAULT_HILLSHADE_LIGHT;
-  map.setPaintProperty('hillshade', 'hillshade-method', light.method);
-  map.setPaintProperty('hillshade', 'hillshade-illumination-direction', light.direction);
-  map.setPaintProperty('hillshade', 'hillshade-illumination-altitude', light.altitude);
-  map.setPaintProperty('hillshade', 'hillshade-illumination-anchor', light.anchor);
+  setPaint(map, 'hillshade', 'hillshade-method', light.method);
+  setPaint(map, 'hillshade', 'hillshade-illumination-direction', light.direction);
+  setPaint(map, 'hillshade', 'hillshade-illumination-altitude', light.altitude);
+  setPaint(map, 'hillshade', 'hillshade-illumination-anchor', light.anchor);
   // 厚い雲の下では影がぼやける
   const shade = light.method === 'basic' ? 1 - 0.5 * Math.min(1, cloud) : 1;
-  map.setPaintProperty('hillshade', 'hillshade-exaggeration', light.exaggeration * shade);
+  setPaint(map, 'hillshade', 'hillshade-exaggeration', light.exaggeration * shade);
 }

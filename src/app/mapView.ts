@@ -18,7 +18,7 @@ import { DemSampler, registerGsiDemProtocol } from '../map/gsiDem';
 import { createStyle, set3D } from '../map/style';
 import { sunPosition } from '../nav/sun';
 import { OSM_ATTRIBUTION } from '../route/roadTiles';
-import { daylightTime, saveSettings, settings, timePreview } from '../settings';
+import { daylightTime, saveSettings, saveSettingsSoon, settings, timePreview } from '../settings';
 import { $, h } from '../ui/dom';
 import { state } from './state';
 
@@ -139,6 +139,7 @@ export function updateDaylight() {
   daylightHooks.after();
 }
 
+// 地図の位置は次の起動で戻す。moveend は jumpTo のたびにも来る（リプレイは毎コマ）ので、保存は止まってからまとめて
 map.on('moveend', () => {
   const c = map.getCenter();
   settings.view = {
@@ -147,7 +148,7 @@ map.on('moveend', () => {
     pitch: Math.round(map.getPitch()),
     bearing: Math.round(map.getBearing()),
   };
-  saveSettings();
+  saveSettingsSoon();
 });
 
 export function fitTo(coords: LngLat[]) {

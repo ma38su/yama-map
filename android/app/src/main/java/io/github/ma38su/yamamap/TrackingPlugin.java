@@ -138,9 +138,11 @@ public class TrackingPlugin extends Plugin {
         }
         // afterId は小さい数なので JSON では Integer になる。PluginCall.getLong だと読めずに 0 になり、毎回最初から返してしまう
         long afterId = call.getData().optLong("afterId", 0);
+        // afterT（この時刻より後の測位だけ）は、記録を続けるときの最初の取り込み。取り込み済みの点を JS に渡さない
+        long afterT = call.getData().optLong("afterT", Long.MIN_VALUE);
         int limit = call.getData().optInt("limit", 500);
         JSObject ret = new JSObject();
-        ret.put("fixes", TrackingStore.get(getContext()).list(track, afterId, limit));
+        ret.put("fixes", TrackingStore.get(getContext()).list(track, afterId, afterT, limit));
         call.resolve(ret);
     }
 

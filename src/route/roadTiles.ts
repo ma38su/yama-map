@@ -7,7 +7,7 @@
  */
 import { VectorTile } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
-import { lngLatToTile, tileRange, tileUrl, type LngLat } from '../geo';
+import { tileRange, tileUrl, type LngLat } from '../geo';
 import type { RouteLine, WayKind } from './trailRouter';
 
 export const ROAD_TILE_ZOOM = 16;
@@ -199,28 +199,45 @@ export function roadTileUrls(bounds: [number, number, number, number]) {
   return tileUrls(ROAD_TILE_URL, ROAD_TILE_ZOOM, bounds);
 }
 
+/**
+ * 時間切れがこの回数たまったら、残りのタイルはネットに聞かず、端末に残っているものだけを使う。
+ * つながっているのに電波が弱いと1枚に15秒ずつかかり、最大500枚では30分になるため（圏外ですぐ失敗するタイルは数えない）
+ */
+const GIVE_UP_AFTER_TIMEOUTS = 8;
+const cachedTile = (url: string) => (typeof caches === 'undefined' ? Promise.resolve(undefined) : caches.match(url, { ignoreVary: true }));
+
+/** タイルを同時4本で取って handle に渡す。取れなかった枚数を返す。signal で止めたら AbortError */
 async function fetchTiles(
   tiles: { url: string; x: number; y: number }[],
   handle: (buf: ArrayBuffer, x: number, y: number) => void,
   onProgress?: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<number> {
   let next = 0;
   let done = 0;
   let failed = 0;
+  let timeouts = 0;
   const worker = async () => {
-    while (next < tiles.length) {
+    while (next < tiles.length && !signal?.aborted) {
       const t = tiles[next++];
       try {
-        const res = await fetch(t.url, { signal: AbortSignal.timeout(15_000) });
-        if (res.ok) handle(await res.arrayBuffer(), t.x, t.y);
-        else if (res.status !== 404) failed++;
-      } catch {
+        const timeout = AbortSignal.timeout(15_000);
+        const res =
+          timeouts >= GIVE_UP_AFTER_TIMEOUTS
+            ? await cachedTile(t.url)
+            : await fetch(t.url, { signal: signal ? AbortSignal.any([timeout, signal]) : timeout });
+        if (res?.ok) handle(await res.arrayBuffer(), t.x, t.y);
+        else if (res?.status !== 404) failed++;
+      } catch (e) {
+        if (signal?.aborted) break;
         failed++;
+        if (e instanceof DOMException && e.name === 'TimeoutError') timeouts++;
       }
       onProgress?.(++done, tiles.length);
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
+  signal?.throwIfAborted();
   return failed;
 }
 
@@ -233,6 +250,7 @@ export interface PlaceLabel {
 export async function loadRoadLines(
   bounds: [number, number, number, number],
   onProgress?: (done: number, total: number) => void,
+  signal?: AbortSignal,
 ): Promise<{ lines: RouteLine[]; labels: PlaceLabel[]; failed: number }> {
   const tiles = roadTileUrls(bounds);
   if (tiles.length > MAX_ROAD_TILES) throw new Error('範囲が広すぎます（目的地が遠すぎます）');
@@ -242,11 +260,24 @@ export async function loadRoadLines(
     tiles,
     (buf, x, y) => {
       lines.push(...decodeRoadTile(buf, x, y, ROAD_TILE_ZOOM));
-      labels.push(...decodeLabels(buf, x, y, ROAD_TILE_ZOOM));
+      labels.push(...rememberLabels(x, y, decodeLabels(buf, x, y, ROAD_TILE_ZOOM)));
     },
     onProgress,
+    signal,
   );
   return { lines, labels, failed };
+}
+
+/** 読んだ地名（地理院のタイルごと）。地図をタップするたび・記録に名前を付けるたびに、同じタイルを取り直して読まないように */
+const labelCache = new Map<string, PlaceLabel[]>();
+/** 覚えておくタイルの数（ルートを作るときの範囲の上限 MAX_ROAD_TILES と同じくらい。地名は1枚に数十なので軽い） */
+const LABEL_CACHE_TILES = 600;
+function rememberLabels(x: number, y: number, labels: PlaceLabel[]): PlaceLabel[] {
+  const key = `${x}/${y}`;
+  labelCache.delete(key);
+  labelCache.set(key, labels);
+  if (labelCache.size > LABEL_CACHE_TILES) labelCache.delete(labelCache.keys().next().value!);
+  return labels;
 }
 
 // ---------- OpenStreetMap（OpenFreeMap） ----------
@@ -292,11 +323,11 @@ export async function osmTileUrls(bounds: [number, number, number, number]) {
 }
 
 /** 範囲内の OpenStreetMap の道をすべて取得。使えなければ空 */
-export async function loadOsmLines(bounds: [number, number, number, number]): Promise<RouteLine[]> {
+export async function loadOsmLines(bounds: [number, number, number, number], signal?: AbortSignal): Promise<RouteLine[]> {
   const tiles = await osmTileUrls(bounds);
   if (!tiles.length || tiles.length > 100) return [];
   const lines: RouteLine[] = [];
-  await fetchTiles(tiles, (buf, x, y) => lines.push(...decodeOsmTile(buf, x, y, OSM_ZOOM)));
+  await fetchTiles(tiles, (buf, x, y) => lines.push(...decodeOsmTile(buf, x, y, OSM_ZOOM)), undefined, signal);
   return lines;
 }
 
@@ -318,8 +349,8 @@ export function decodeLabels(buf: ArrayBuffer | Uint8Array, x: number, y: number
   return out;
 }
 
-/** 地点の近く（radiusM 以内を含むタイル）の地名。圏外などで読めなかったタイルは飛ばす */
-export async function placeLabelsNear(points: LngLat[], radiusM: number): Promise<PlaceLabel[]> {
+/** 地点の近く（radiusM 以内を含むタイル）の地名。前に読んだタイルは読み直さない。圏外などで読めなかったタイルは飛ばす */
+export async function placeLabelsNear(points: LngLat[], radiusM: number, signal?: AbortSignal): Promise<PlaceLabel[]> {
   const tiles = new Map<string, { url: string; x: number; y: number }>();
   for (const [lng, lat] of points) {
     const dLat = radiusM / 110_574;
@@ -327,32 +358,22 @@ export async function placeLabelsNear(points: LngLat[], radiusM: number): Promis
     for (const t of roadTileUrls([lng - dLng, lat - dLat, lng + dLng, lat + dLat])) tiles.set(t.url, t);
   }
   const labels: PlaceLabel[] = [];
-  await fetchTiles([...tiles.values()], (buf, x, y) => labels.push(...decodeLabels(buf, x, y, ROAD_TILE_ZOOM)));
+  const need = [...tiles.values()].filter((t) => {
+    const hit = labelCache.get(`${t.x}/${t.y}`);
+    if (hit) labels.push(...hit);
+    return !hit;
+  });
+  await fetchTiles(need, (buf, x, y) => labels.push(...rememberLabels(x, y, decodeLabels(buf, x, y, ROAD_TILE_ZOOM))), undefined, signal);
   return labels;
 }
 
-/** 地点の近く（maxM 以内）にある地名。見つからなければ null（圏外などでも null） */
-export async function nearestPlaceName(p: LngLat, maxM = 250): Promise<string | null> {
-  const t = lngLatToTile(p[0], p[1], ROAD_TILE_ZOOM);
-  const x = Math.floor(t.x);
-  const y = Math.floor(t.y);
-  let best: { text: string; d: number } | null = null;
+/** 地点の近く（maxM 以内）にある地名。見つからなければ null（圏外などでも null）。読むのは maxM の範囲にかかるタイルだけ */
+export async function nearestPlaceName(p: LngLat, maxM = 250, signal?: AbortSignal): Promise<string | null> {
   const kx = 111_320 * Math.cos((p[1] * Math.PI) / 180);
-  await Promise.all(
-    [-1, 0, 1].flatMap((dx) =>
-      [-1, 0, 1].map(async (dy) => {
-        try {
-          const res = await fetch(tileUrl(ROAD_TILE_URL, ROAD_TILE_ZOOM, x + dx, y + dy), { signal: AbortSignal.timeout(6000) });
-          if (!res.ok) return;
-          for (const l of decodeLabels(await res.arrayBuffer(), x + dx, y + dy, ROAD_TILE_ZOOM)) {
-            const d = Math.hypot((l.lngLat[0] - p[0]) * kx, (l.lngLat[1] - p[1]) * 110_574);
-            if (d <= maxM && (!best || d < best.d)) best = { text: l.text, d };
-          }
-        } catch {
-          /* 圏外など */
-        }
-      }),
-    ),
-  );
-  return (best as { text: string; d: number } | null)?.text ?? null;
+  let best: { text: string; d: number } | null = null;
+  for (const l of await placeLabelsNear([p], maxM, signal).catch(() => [] as PlaceLabel[])) {
+    const d = Math.hypot((l.lngLat[0] - p[0]) * kx, (l.lngLat[1] - p[1]) * 110_574);
+    if (d <= maxM && (!best || d < best.d)) best = { text: l.text, d };
+  }
+  return best?.text ?? null;
 }

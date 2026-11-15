@@ -126,29 +126,44 @@ export async function choosePoint(kind: PointKind, lngLat: LngLat, name?: string
   }
 }
 
+/** 作っている途中のルート（止めるため）と、その地点の並び。新しく作り始めたら前のものは止める（あとから頼んだほうを作る） */
+let building: { ctrl: AbortController; pts: PlanPoint[] } | null = null;
+
 export async function rebuild(pts: PlanPoint[]) {
+  building?.ctrl.abort();
+  const mine = { ctrl: new AbortController(), pts };
+  building = mine;
   state.building = true;
   try {
-    const r = await buildRouteOptions(pts, elevation, settings.routePref, setProgress);
+    const { failedTiles, ...r } = await buildRouteOptions(pts, elevation, settings.routePref, setProgress, mine.ctrl.signal);
+    if (mine.ctrl.signal.aborted) return;
     state.progressMsg = '';
     setRoute(r, true);
     const span = routeSpan(r);
     if (r.straightLegs) status('道が見つからない区間は直線で結んでいます（到着予想は不正確です）', true);
+    else if (failedTiles) status(`ルートを作成しました（${r.label}）：${formatDistance(span.to - span.from)}。道のデータの一部を読めませんでした（電波が弱いなど）`, true);
     else status(`ルートを作成しました（${r.label}）：${formatDistance(span.to - span.from)}`);
     openSheet();
   } catch (err) {
+    // 止めたとき（新しく作り始めた・ルートを消した）は、何もしない
+    if (mine.ctrl.signal.aborted) return;
     state.pending = pts;
     renderRoute();
     status(err instanceof Error ? err.message : 'ルートを作成できませんでした', true);
   } finally {
-    state.building = false;
-    setProgress('');
+    if (building === mine) {
+      building = null;
+      state.building = false;
+      setProgress('');
+    }
   }
 }
 
 export async function removeMark(id: string) {
   if (!state.route) return;
-  if (state.route.kind === 'auto' && state.route.points) await rebuild(state.route.points.filter((p) => p.id !== id));
+  // 作り直している途中なら、その地点の並び（前に消した地点を除いたもの）から消す。前の削除が戻らないように
+  const points = building?.pts ?? state.route.points;
+  if (state.route.kind === 'auto' && points) await rebuild(points.filter((p) => p.id !== id));
   else setRoute({ ...state.route, marks: state.route.marks.filter((m) => m.id !== id) });
 }
 
@@ -162,6 +177,7 @@ export function reverseCurrentRoute() {
 
 export function clearRoute() {
   if (!confirm('ルートと目的地を消しますか？')) return;
+  building?.ctrl.abort();
   setRoute(null);
 }
 

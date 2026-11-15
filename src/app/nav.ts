@@ -19,6 +19,7 @@ import { sunTimes } from '../nav/sun';
 import { settings } from '../settings';
 import { lineFC, emptyFC, src } from './mapView';
 import { hereLngLat, recorder, renderTrack, updateCurrentEle } from './recording';
+import { pocketActive } from './pocket';
 import { markPassed } from './route';
 import { renderBody, renderCard, sheet } from './sheetView';
 import { whileVisible } from './scheduler';
@@ -196,6 +197,8 @@ export function updateNav() {
   const arrived = recorder.recording && !!nav?.dest?.passed;
   if (arrived && !arrivedNotified) status(`${nav!.dest!.mark.name}に到着しました。おつかれさまでした！`);
   arrivedNotified = arrived;
+  // ポケット表示のあいだは地図とシートを隠しているので描かない（到着予想はポケット表示が使う）。戻ったら refreshNow で描く
+  if (pocketActive()) return;
   renderDone(nav);
   renderCard(nav);
   if (sheet.isOpen) renderBody(nav);
@@ -221,9 +224,7 @@ export async function refreshNow() {
   await updateCurrentEle();
   updateNav();
 }
-// 表のときは30秒ごと、裏から戻ったらすぐ、たまった分を処理する
+// 表のときは30秒ごと、裏から戻ったらすぐ、たまった分を処理する（ルートなしで記録中の経過時間は、sheetView.ts が毎秒その数字だけ書き換える）
 whileVisible(REFRESH_MS, () => void refreshNow());
-// ルートなしで記録中は経過時間を毎秒更新
-whileVisible(1000, () => recorder.recording && !state.route && renderCard(state.lastNav));
 
 export const isLate = (row: Row, sunset: number | null) => !row.passed && !!sunset && !!row.time && row.time > sunset - 30 * 60_000;

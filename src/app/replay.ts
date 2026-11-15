@@ -24,6 +24,11 @@ const REST_GAP_MS = 90_000;
 const REST_BOOST = 10;
 /** 空と地図の色を合わせ直す間隔（再生中の時刻で） */
 const DAYLIGHT_STEP_MS = 2 * 60_000;
+/**
+ * 再生中に空の色・天気の文字を合わせ直すのは、実時間でこの間隔に1回まで。
+ * 再生中の時刻で決めた間隔は、×1000 や休憩の速送り（×10）では実時間でほぼ毎コマになるため
+ */
+const REALTIME_STEP_MS = 250;
 /** 視点ごとのカメラ：ズーム・傾き・何m先の点の方を向くか・向きを合わせる速さ（1コマで差の何割） */
 type ReplayView = NonNullable<Settings['replayView']>;
 const VIEWS: Record<ReplayView, { label: string; desc: string; zoom: number; pitch: number; lookAhead: number; turn: number }> = {
@@ -189,9 +194,12 @@ function aimCamera(duration: number) {
   map.easeTo({ center: positionAt(t), bearing, pitch: v.pitch, zoom, duration });
 }
 
-/** 時刻の横に出している天気と、それを引いた時刻 */
+/** 時刻の横に出している天気と、それを引いた時刻（再生中の時刻と実時間） */
 let wxText = '';
 let wxAt = -Infinity;
+let wxRealAt = 0;
+/** 空の色を最後に合わせた実時間 */
+let daylightRealAt = 0;
 
 /** 位置・カメラ・時刻の表示を t に合わせる */
 function render(follow: boolean) {
@@ -202,24 +210,28 @@ function render(follow: boolean) {
   src('replay')?.setData(pointFC(here));
   const resting = b.t - a.t > REST_GAP_MS && f > 0 && f < 1;
   drawDirection(here, i, !resting && t < pts[pts.length - 1].t, follow);
-  // 天気は、時刻が1分動いたら引き直す
-  if (Math.abs(t - wxAt) >= 60_000) {
+  // 天気は、時刻が1分動いたら引き直す（再生中は実時間で REALTIME_STEP_MS に1回まで。止めて動かしたときはすぐ）
+  const now = performance.now();
+  if (Math.abs(t - wxAt) >= 60_000 && (!playing || now - wxRealAt >= REALTIME_STEP_MS)) {
     wxAt = t;
+    wxRealAt = now;
     wxText = weatherShort(here, t);
   }
   clock.textContent = `${fmtClock(t)}${wxText ? ` ${wxText}` : ''}${resting ? ` 休憩中（${Math.round((b.t - a.t) / 60_000)}分）` : ''}`;
   seek.value = String(Math.round(((t - pts[0].t) / (pts[pts.length - 1].t - pts[0].t)) * 1000));
   // 視点を変えている途中と「全体」のときは、カメラを動かさない
-  if (follow && view !== 'whole' && performance.now() >= easingUntil) {
+  if (follow && view !== 'whole' && now >= easingUntil) {
     const v = VIEWS[view];
     const h = headingAt(i, v.lookAhead);
     // 向きはなめらかに変える（細かい曲がりで画面が揺れないように）
     if (h != null) bearing += angleDiff(bearing, h) * v.turn;
-    map.jumpTo({ center: here, bearing });
+    // jumpTo は毎回 moveend を出すので、印を付けて、moveend で重い処理をするところ（雨の数え直し）に飛ばさせる
+    map.jumpTo({ center: here, bearing }, { replayFollow: true });
   }
-  // 空と地図の色は再生中の時刻に合わせる（毎フレームだと重いので、時刻が2分動いたら）
-  if (state.daylightAt == null || Math.abs(t - state.daylightAt) >= DAYLIGHT_STEP_MS) {
+  // 空と地図の色は再生中の時刻に合わせる（毎フレームだと重いので、時刻が2分動いたら。再生中は実時間でも間を空ける）
+  if (state.daylightAt == null || (Math.abs(t - state.daylightAt) >= DAYLIGHT_STEP_MS && (!playing || now - daylightRealAt >= REALTIME_STEP_MS))) {
     state.daylightAt = t;
+    daylightRealAt = now;
     updateDaylight();
   }
   // 歩き終えた線は、線全体のうち歩いた距離の割合までを塗る（線を作り直さず、塗る範囲だけを変える）
@@ -308,6 +320,8 @@ export function startReplay(opts: { capture?: boolean } = {}) {
   setReplayWeather(true, showingPlan() ? cachedForecastSource : recordedWeatherSource);
   terrainBefore = settings.terrain;
   savedOverrides.terrain = terrainBefore;
+  // リプレイのカメラ（傾けて追いかける）は保存しない。途中で閉じられたら、次の起動は始める前の位置で開く
+  savedOverrides.view = settings.view;
   setTerrain(true);
   dirBearing = null;
   const intro = 1200;
@@ -343,6 +357,7 @@ export function stopReplay() {
   map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
   state.daylightAt = null;
   delete savedOverrides.terrain;
+  delete savedOverrides.view;
   // 2D から始めたリプレイなら 2D に戻す（setTerrain が空の色も合わせ直す）
   if (!terrainBefore) setTerrain(false);
   else saveSettings();

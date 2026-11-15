@@ -91,6 +91,11 @@ button,
 .maplibregl-user-location-dot::before {
   animation: none;
 }
+/* 現在地ボタンの「測位を待っている」回転も止める（谷などで測位が取れないと、そのあいだずっと回る）。待っていることは薄くして示す */
+.maplibregl-ctrl button.maplibregl-ctrl-geolocate.maplibregl-ctrl-geolocate-waiting .maplibregl-ctrl-icon {
+  animation: none;
+  opacity: 0.45;
+}
 /* 現在地の印は少し大きく、白と濃い色の二重の縁取りで、青いルートの線の上でも見分けられるように */
 .maplibregl-user-location-dot,
 .maplibregl-user-location-dot::before {

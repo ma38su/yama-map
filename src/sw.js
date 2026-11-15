@@ -79,8 +79,9 @@ async function tile(req, event) {
   if (seen && !(navigator.onLine && isOld(seen))) return seen;
   try {
     const res = await fetch(req);
-    // 404 はデータなし（海など）なので、それも覚えておく
-    if (res.ok || res.status === 404) event.waitUntil(putBrowse(browse, req.url, res.clone()));
+    // 404 はデータなし（海など）なので、それも覚えておく。
+    // オフライン保存の取得（cache: 'force-cache' で頼む。src/offline/download.ts）は、頼んだ側が保存した地図に入れるので、ここでは入れない
+    if ((res.ok || res.status === 404) && req.cache !== 'force-cache') event.waitUntil(putBrowse(browse, req.url, res.clone()));
     return res;
   } catch (e) {
     if (seen) return seen; // 取り直せなければ古いものを使う

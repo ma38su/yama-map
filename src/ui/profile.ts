@@ -61,6 +61,16 @@ export class ElevationProfile {
   private hover: number | null = null;
   private marker: number | null = null;
   private markerLabel: string | null = null;
+  /**
+   * 最後に描いたときの「点の番号 → 印を描く位置（CSS の px に丸めたもの）」と、そのとき描いた印の位置。
+   * リプレイでは点が1つ進むたびに印が動くが、同じ px に描くなら描き直さない（グラフ全体を描き直すことになるので。
+   * 1px より細かい動きは見て分からない。現在地の縦線も px に合わせて描いている）
+   */
+  private markerKeyOf: ((i: number | null) => string) | null = null;
+  private drawnMarkerKey = '';
+  /** canvas の表示の大きさ（ResizeObserver で覚える。描くたびに読むと、直前に書き換えた画面のレイアウトをやり直させるため） */
+  private cssW = 0;
+  private cssH = 0;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly pointers = new Map<number, { x: number; y: number }>();
   private pinch: { dist: number; cx: number; view: ProfileView } | null = null;
@@ -112,7 +122,11 @@ export class ElevationProfile {
       },
       { passive: false },
     );
-    new ResizeObserver(() => this.draw()).observe(canvas);
+    new ResizeObserver(() => {
+      this.cssW = canvas.clientWidth;
+      this.cssH = canvas.clientHeight;
+      this.draw();
+    }).observe(canvas);
   }
 
   /**
@@ -150,9 +164,10 @@ export class ElevationProfile {
   /** 現在地をグラフ上に示す（何番目の点か）。label があれば縦線と名前も出す（リプレイの位置は点だけ） */
   setMarker(index: number | null, label: string | null = null): void {
     if (index === this.marker && label === this.markerLabel) return;
+    const moved = label !== this.markerLabel || !this.markerKeyOf || this.markerKeyOf(index) !== this.drawnMarkerKey;
     this.marker = index;
     this.markerLabel = label;
-    this.draw();
+    if (moved) this.draw();
   }
 
   /** factor 倍に拡大（1未満で縮小）。center は拡大の中心（表示範囲の中の位置 0〜1） */
@@ -207,7 +222,7 @@ export class ElevationProfile {
 
   private plotWidth(): number {
     const { left, right } = this.plotArea();
-    return Math.max(1, this.canvas.clientWidth - left - right);
+    return Math.max(1, (this.cssW || this.canvas.clientWidth) - left - right);
   }
 
   /** 画面の x 座標が、表示範囲の中のどこか（0〜1） */
@@ -241,6 +256,8 @@ export class ElevationProfile {
       if (xs[mid] < target) lo = mid + 1;
       else hi = mid;
     }
+    // なぞっていても同じ点なら、描き直しも地図のカーソルの更新もしない
+    if (lo === this.hover) return;
     this.hover = lo;
     this.draw();
     this.onHover(lo);
@@ -249,8 +266,9 @@ export class ElevationProfile {
   draw(): void {
     const { canvas, ctx } = this;
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
+    const w = this.cssW;
+    const h = this.cssH;
+    this.markerKeyOf = null;
     if (w === 0 || h === 0) return;
     // 大きさが変わったときだけ設定し直す（設定するたびに描画用のメモリが取り直される）
     const cw = Math.round(w * dpr);
@@ -292,6 +310,13 @@ export class ElevationProfile {
     const sy = (e: number) => pad.top + (1 - (e - min) / (max - min)) * ph;
     /** 距離 d (m) の横軸の値 */
     const xOfDist = (d: number) => (isTime ? interp(dists, xs, d) : d);
+    // 印を描く位置（px）。setMarker で、印が同じ位置のままなら描き直さないのに使う
+    this.markerKeyOf = (i) => {
+      if (i == null || i >= dists.length) return '';
+      const e = nearestValid(eles, i);
+      return `${Math.round(sx(xs[i]))},${e == null ? '' : Math.round(sy(e))}`;
+    };
+    this.drawnMarkerKey = this.markerKeyOf(this.marker);
 
     // 標高の目盛り
     ctx.strokeStyle = COLORS.grid;

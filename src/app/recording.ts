@@ -14,7 +14,7 @@ import { onReplayStopped, replayActive, startReplay, stopReplay } from './replay
 import { sheet } from './sheetView';
 import { PLAN_REPLAY_ID, markTrackStale, planTrack, refreshNow, updateNav } from './nav';
 import { suggestBatteryExemption } from './battery';
-import { exitPocket } from './pocket';
+import { exitPocket, pocketActive } from './pocket';
 import { checkOffRoute } from './offRouteAlert';
 import { renderPhotos } from './photos';
 import { state } from './state';
@@ -293,6 +293,11 @@ export async function fillShownElevations() {
 }
 
 export function renderTrack() {
+  // ポケット表示のあいだは地図を隠しているので描かない（隠れていても地図は描き直すため）。戻ったときに refreshNow で描く
+  if (pocketActive()) {
+    markTrackStale();
+    return;
+  }
   drawTrackLine();
   void renderPhotos();
 }

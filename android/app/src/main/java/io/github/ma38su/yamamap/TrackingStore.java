@@ -167,14 +167,14 @@ class TrackingStore extends SQLiteOpenHelper {
         return out;
     }
 
-    /** track の測位のうち、番号が afterId より後のものを古い順に limit 件まで */
-    JSArray list(String track, long afterId, int limit) {
+    /** track の測位のうち、番号が afterId より後で、時刻が afterT より後のものを古い順に limit 件まで */
+    JSArray list(String track, long afterId, long afterT, int limit) {
         JSArray out = new JSArray();
         try (Cursor c = getReadableDatabase().query(
             "fixes",
             new String[] { "id", "t", "lat", "lng", "acc", "alt", "hpa", "steps" },
-            "track = ? AND id > ?",
-            new String[] { track, String.valueOf(afterId) },
+            "track = ? AND id > ? AND t > ?",
+            new String[] { track, String.valueOf(afterId), String.valueOf(afterT) },
             null,
             null,
             "id",

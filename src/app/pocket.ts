@@ -11,7 +11,7 @@ import { backgroundCapable } from '../track/location';
 import { $, fmtClock, fmtHM, fmtM, fmtMin, h } from '../ui/dom';
 import { batteryNow } from './batteryLevel';
 import { geolocate, map, updateDaylight } from './mapView';
-import { isLate, paceOf, type Nav, type Row } from './nav';
+import { isLate, paceOf, refreshNow, type Nav, type Row } from './nav';
 import { recorder } from './recording';
 import { whileVisible } from './scheduler';
 import { state } from './state';
@@ -59,10 +59,11 @@ export function exitPocket() {
   if (backgroundCapable) void SystemBars.show().catch(() => undefined);
   // 追いかけていたなら追いかけ直す（BACKGROUND で押すと、今の位置に戻って追いかける）
   if (wasFollowing && geolocate._watchState === 'BACKGROUND') geolocate.trigger();
-  // 止めていた空の色・雨と、地図を今に合わせる
+  // 止めていた空の色・雨と、地図を今に合わせる。描かずにいた記録の線・カード・行程もここで描く
   updateDaylight();
   updateWeatherLayers();
   map.triggerRepaint();
+  void refreshNow();
 }
 
 // ---------- ペース ----------

@@ -10,6 +10,8 @@ import { corridorTiles } from './corridor';
 export const TILE_CACHE = 'yama-map-tiles-v1';
 /** 表示しただけの地図（Service Worker が枚数を制限して残す） */
 export const BROWSE_CACHE = 'yama-map-browse-v1';
+/** 表示しただけの地図に Service Worker が付ける、取ってきた時刻のヘッダー（src/sw.js の FETCHED_AT と同じ名前） */
+const FETCHED_AT = 'x-yama-fetched';
 export const MAX_TILES = 4000;
 const CONCURRENCY = 4;
 
@@ -92,12 +94,14 @@ export async function downloadTiles(
       const url = urls[next++];
       try {
         if (!(await cache.match(url, { ignoreVary: true }))) {
-          const res = await fetch(url, { mode: 'cors', signal });
+          // force-cache は Service Worker への印：保存のための取得なので、表示しただけの地図には入れない（入れてすぐ消すことになるため）
+          const res = await fetch(url, { mode: 'cors', cache: 'force-cache', signal });
           // 404 = データなし（海など）。それも覚えておけばオフライン時に問い合わせずに済む
           if (res.ok || res.status === 404) {
+            const fromBrowse = res.headers.has(FETCHED_AT);
             await cache.put(url, res);
-            // 表示しただけの地図に同じものがあれば、そちらは消す（二重に持たない）
-            await browse.delete(url, { ignoreVary: true });
+            // 表示しただけの地図から出てきたものなら、そちらは消す（二重に持たない）
+            if (fromBrowse) await browse.delete(url, { ignoreVary: true });
           } else progress.failed++;
         }
       } catch {

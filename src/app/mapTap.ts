@@ -18,6 +18,9 @@ import { state } from './state';
 // 開いたときに中のボタン・リンクに移らない（スマホでは要らず、枠が出て目立つため）
 export const popup = new Popup({ closeButton: false, maxWidth: '300px', offset: 8, focusAfterOpen: false });
 let popupSeq = 0;
+/** 吹き出しの地名探し（道路タイルの取得）。次をタップした・閉じたら止める */
+let nameCtrl: AbortController | null = null;
+popup.on('close', () => nameCtrl?.abort());
 map.on('click', (e) => {
   const place = placeAt(e.point);
   if (place) openPlacePopup(place);
@@ -93,7 +96,10 @@ export async function openPointPopup(lngLat: LngLat, knownName?: string) {
       } else eta.textContent = '通過済み';
     }
   }
-  const [el, nm] = await Promise.all([dem.elevation(lngLat[0], lngLat[1]), knownName ? null : nearestPlaceName(lngLat, 200)]);
+  // 開き直したときの close で前の地名探しは止まっている。止めるのは前の分だけなので、ここで新しく作る
+  const ctrl = new AbortController();
+  nameCtrl = ctrl;
+  const [el, nm] = await Promise.all([dem.elevation(lngLat[0], lngLat[1]), knownName ? null : nearestPlaceName(lngLat, 200, ctrl.signal)]);
   if (seq !== popupSeq) return;
   ele.textContent = `標高 ${fmtM(el)}`;
   if (knownName) return;

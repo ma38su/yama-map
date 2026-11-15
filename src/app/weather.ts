@@ -182,7 +182,8 @@ const GRID_N = GRID_R * 2 + 1;
 const IMG = 192;
 /** 雲の模様（タイル状につながる値ノイズ）。雲量に合わせてこの模様を切り取る */
 const noise = makeNoise(IMG, 7);
-let cloudDrawn: { key: string; t: number } | null = null;
+/** 描いてある雲：中心のマス目・再生中の時刻・描いた時刻（実時間） */
+let cloudDrawn: { key: string; t: number; at: number } | null = null;
 
 function makeNoise(size: number, seed: number): Float32Array {
   let a = seed >>> 0;
@@ -229,8 +230,11 @@ function bilinear(v: number[], ix: number, iy: number, fx: number, fy: number): 
   return (at(ix, iy) * (1 - fx) + at(ix + 1, iy) * fx) * (1 - fy) + (at(ix, iy + 1) * (1 - fx) + at(ix + 1, iy + 1) * fx) * fy;
 }
 
-/** 雲の層の画像を描く。マス目ごとの雲量を補間し、風下へ流れる模様で切り取る */
-function drawClouds(center: [number, number], t: number): { url: string; coords: [[number, number], [number, number], [number, number], [number, number]] } | null {
+/**
+ * 雲の層の画像を描く。マス目ごとの雲量を補間し、風下へ流れる模様で切り取る。
+ * 画像は ImageData のまま地図に渡す（PNG にして読み直させると、圧縮と復号の分だけ重い）
+ */
+function drawClouds(center: [number, number], t: number): { image: ImageData; coords: [[number, number], [number, number], [number, number], [number, number]] } | null {
   const grid: WeatherAt[] = [];
   for (let dy = GRID_R; dy >= -GRID_R; dy--) {
     for (let dx = -GRID_R; dx <= GRID_R; dx++) {
@@ -249,10 +253,7 @@ function drawClouds(center: [number, number], t: number): { url: string; coords:
   const oy = (-Math.cos(rad) * speed * 3.6 * hours) / kmPerPx;
   const cloudGrid = grid.map((w) => w.cloud);
   const precipGrid = grid.map((w) => w.precip);
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = IMG;
-  const ctx = canvas.getContext('2d')!;
-  const img = ctx.createImageData(IMG, IMG);
+  const img = new ImageData(IMG, IMG);
   for (let y = 0; y < IMG; y++) {
     const gy = Math.max(0, Math.min(GRID_N - 1.001, (y / IMG) * GRID_N - 0.5));
     const iy = Math.floor(gy);
@@ -275,11 +276,10 @@ function drawClouds(center: [number, number], t: number): { url: string; coords:
       img.data[o + 3] = density * 160 * Math.min(1, c * 2);
     }
   }
-  ctx.putImageData(img, 0, 0);
   const half = (GRID_R + 0.5) * WEATHER_CELL_DEG;
   const [cx, cy] = [center[0] * WEATHER_CELL_DEG, center[1] * WEATHER_CELL_DEG];
   return {
-    url: canvas.toDataURL(),
+    image: img,
     coords: [
       [cx - half, cy + half],
       [cx + half, cy + half],
@@ -315,24 +315,52 @@ export function addWeatherLayers(before?: string) {
  */
 /** 雲・雨・雪を出すか：リプレイ中だけ（歩いているときは、電池と見やすさのために出さない） */
 const fxOn = () => settings.weatherFx && replay != null;
+/** 雲の層を出しているか（同じ値でも setLayoutProperty は地図を描き直させるので、変わったときだけ設定する） */
+let cloudShown = false;
+/**
+ * 時刻が進んだことで雲を描き直すのは、実時間でこの間隔に1回まで（リプレイを速く送ると、再生中の時刻はすぐ10分進むため）。
+ * 間に合わなかった分は、間隔が空いたところで描く
+ */
+const CLOUD_MIN_MS = 1000;
+let cloudTimer = 0;
 
 export function updateWeatherLayers(force = false) {
   const show = fxOn();
   const layerOn = !!map.getLayer('weather-cloud');
-  if (layerOn) map.setLayoutProperty('weather-cloud', 'visibility', show ? 'visible' : 'none');
-  updateRain(show);
+  if (layerOn && show !== cloudShown) {
+    cloudShown = show;
+    map.setLayoutProperty('weather-cloud', 'visibility', show ? 'visible' : 'none');
+  }
+  if (!show) updateRain(false);
+  else if (force) recountRain();
+  else scheduleRain();
   if (!show || !layerOn) return;
   const c = map.getCenter();
   const center: [number, number] = [Math.round(c.lng / WEATHER_CELL_DEG), Math.round(c.lat / WEATHER_CELL_DEG)];
   const key = center.join(',');
   const t = weatherTime();
-  if (!force && cloudDrawn && cloudDrawn.key === key && Math.abs(cloudDrawn.t - t) < 10 * 60_000) return;
+  if (!force && cloudDrawn?.key === key) {
+    if (Math.abs(cloudDrawn.t - t) < 10 * 60_000) return;
+    const wait = CLOUD_MIN_MS - (performance.now() - cloudDrawn.at);
+    if (wait > 0) {
+      cloudTimer ||= window.setTimeout(() => {
+        cloudTimer = 0;
+        updateWeatherLayers();
+      }, wait);
+      return;
+    }
+  }
+  clearTimeout(cloudTimer);
+  cloudTimer = 0;
   const drawn = drawClouds(center, t);
   if (!drawn) return;
-  cloudDrawn = { key, t };
-  (map.getSource('weather-cloud') as import('maplibre-gl').ImageSource | undefined)?.updateImage({ url: drawn.url, coordinates: drawn.coords });
+  cloudDrawn = { key, t, at: performance.now() };
+  (map.getSource('weather-cloud') as import('maplibre-gl').ImageSource | undefined)?.updateImage({ image: drawn.image, coordinates: drawn.coords });
 }
-map.on('moveend', () => updateWeatherLayers());
+// リプレイが追いかけるための jumpTo（毎コマ）の moveend では数え直さない（雨は下の 'move' でまとめて数え直す）
+map.on('moveend', (e) => {
+  if (!(e as { replayFollow?: boolean }).replayFollow) updateWeatherLayers();
+});
 hookDaylight({
   cloud: () => (fxOn() ? (centerWeather()?.cloud ?? 0) / 100 : 0),
   after: () => updateWeatherLayers(),
@@ -360,12 +388,13 @@ const dropsFor = (precip: number) => (precip < 0.1 ? 0 : Math.min(500, 40 + prec
  * マスの真ん中が地図のどこに当たるかを求めて、その場所の降水量で降らせる量を決める
  */
 function updateRain(show: boolean) {
-  const w0 = rainCanvas.clientWidth || window.innerWidth;
-  const h0 = rainCanvas.clientHeight || window.innerHeight;
-  const t = weatherTime();
   field = [];
   let max = 0;
+  // 大きさは出すときだけ読む（読むと、直前に書き換えた画面のレイアウトをその場でやり直させるため）
+  const w0 = show ? rainCanvas.clientWidth || window.innerWidth : 0;
+  const h0 = show ? rainCanvas.clientHeight || window.innerHeight : 0;
   if (show) {
+    const t = weatherTime();
     for (let gy = 0; gy < FIELD_Y; gy++) {
       for (let gx = 0; gx < FIELD_X; gx++) {
         const p = map.unproject([((gx + 0.5) / FIELD_X) * w0, ((gy + 0.5) / FIELD_Y) * h0]);
@@ -395,13 +424,25 @@ function updateRain(show: boolean) {
   drops.length = maxCount;
   if (!rainRaf) rainRaf = requestAnimationFrame(rainFrame);
 }
-// 地図を動かしたら、画面のどこで降っているかを数えなおす（動かしている間は間引く）
-let rainMoveAt = 0;
-map.on('move', () => {
-  if (!fxOn() || performance.now() - rainMoveAt < 300) return;
-  rainMoveAt = performance.now();
-  updateRain(true);
-});
+/**
+ * 画面のどこで降っているかの数え直し（マスごとに unproject と天気を引く。3D では地形との交わりを求めるので重い）は、
+ * 続けて頼まれても RAIN_RECOUNT_MS に1回まで。最後に頼まれた分は必ず数える（地図が止まった位置で合わせる）
+ */
+const RAIN_RECOUNT_MS = 300;
+let rainCountedAt = 0;
+let rainTimer = 0;
+function recountRain() {
+  clearTimeout(rainTimer);
+  rainTimer = 0;
+  rainCountedAt = performance.now();
+  updateRain(fxOn());
+}
+function scheduleRain() {
+  if (rainTimer) return;
+  rainTimer = window.setTimeout(recountRain, Math.max(0, RAIN_RECOUNT_MS - (performance.now() - rainCountedAt)));
+}
+// 地図を動かしたら（リプレイが追いかけているあいだも）、数え直す
+map.on('move', () => fxOn() && scheduleRain());
 
 /** 雨は30コマ/秒で十分なので、それより速くは描かない */
 const RAIN_FRAME_MS = 33;

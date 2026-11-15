@@ -11,6 +11,7 @@ import { trackTimes } from '../track/trim';
 import { forecastHorizon, weatherLabel, type WeatherAt } from '../nav/weather';
 import { emptyFC, fitTo, src } from './mapView';
 import { departureTime, isLate, paceOf, updateNav, type Nav, type Row } from './nav';
+import { pocketActive } from './pocket';
 import { miniProfileFor, profile, updateProfile } from './profileView';
 import { recorder, replayPlan, viewingTrack } from './recording';
 import { clearRoute, exportRoute, removeMark, reverseCurrentRoute, searchAlternativesForGpx } from './route';
@@ -258,6 +259,7 @@ export function renderCard(nav: Nav | null) {
     const t = state.shown.track;
     const times = trackTimes(t);
     const tiles = h('div', 'tiles');
+    const values: HTMLElement[] = [];
     for (const [label, value] of [
       ['時間', formatDuration((t.status === 'recording' ? Date.now() : times.end) - times.start)],
       ['距離', formatDistance(t.distance)],
@@ -265,10 +267,13 @@ export function renderCard(nav: Nav | null) {
       ['標高', fmtM(state.currentEle ?? state.shown.points.at(-1)?.ele)],
     ]) {
       const tile = h('div', 'tile');
-      tile.append(h('span', 'label', label), h('span', 'value', value));
+      const v = h('span', 'value', value);
+      tile.append(h('span', 'label', label), v);
       tiles.append(tile);
+      values.push(v);
     }
     card.append(tiles);
+    if (t.status === 'recording') tickElapsed(values[0], times.start);
     return;
   }
   const empty = h('div', 'nav-empty');
@@ -278,6 +283,22 @@ export function renderCard(nav: Nav | null) {
     empty.append(h('b', '', '目的地を設定しましょう'), h('br'), h('span', 'hint', '地図をタップ →「目的地」で、道沿いのルートと到着予想を表示します'));
   }
   card.append(empty);
+}
+
+/**
+ * ルートなしで記録しているときの「時間」：毎秒、この数字だけを書き換える（カードは作り直さない）。
+ * カードを作り直した・裏に回った・ポケット表示にしたら止まる（表に戻ったとき・ポケット表示から戻ったときは renderCard がまた始める）
+ */
+let elapsedTimer = 0;
+function tickElapsed(el: HTMLElement, start: number) {
+  clearTimeout(elapsedTimer);
+  const step = () => {
+    if (!el.isConnected || document.hidden || pocketActive()) return;
+    const ms = Date.now() - start;
+    el.textContent = formatDuration(ms);
+    elapsedTimer = window.setTimeout(step, 1000 - (ms % 1000));
+  };
+  elapsedTimer = window.setTimeout(step, 1000 - ((Date.now() - start) % 1000));
 }
 
 /** 次に行程表を描くとき、現在地の行まで送る（シートを開いたとき） */

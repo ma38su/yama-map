@@ -214,21 +214,25 @@ function routeAllLegs(
  *  3. 最短距離（車道・林道も同じ扱い）
  *  4. 登山道優先（OpenStreetMap のデータ）
  * ほとんど同じ経路になった候補はまとめる。
+ * failedTiles は読めなかった道のデータのタイルの数（圏外・電波が弱いなど。多いと、道があっても直線や遠回りになりうる）。
+ * signal で止めたら AbortError
  */
 export async function buildRouteOptions(
   points: PlanPoint[],
   elevation: ElevationFn,
   pref: RoutePref = 'trail',
   onProgress?: (msg: string) => void,
-): Promise<ActiveRoute> {
+  signal?: AbortSignal,
+): Promise<ActiveRoute & { failedTiles: number }> {
   const pts = normalizePoints(points);
   if (pts.length < 2) throw new Error('出発地と目的地が必要です');
   const bounds = boundsAround(pts.map((p) => p.lngLat));
   onProgress?.('道のデータを読み込み中…');
   const [gsi, osmLines] = await Promise.all([
-    loadRoadLines(bounds, (d, t) => onProgress?.(`道のデータを読み込み中… ${d}/${t}`)),
-    loadOsmLines(bounds).catch(() => [] as RouteLine[]),
+    loadRoadLines(bounds, (d, t) => onProgress?.(`道のデータを読み込み中… ${d}/${t}`), signal),
+    loadOsmLines(bounds, signal).catch(() => [] as RouteLine[]),
   ]);
+  signal?.throwIfAborted();
   onProgress?.('ルートを計算中…');
   const gsiGraph = gsi.lines.length ? new TrailGraph(gsi.lines) : null;
   const osmGraph = osmLines.length ? new TrailGraph(osmLines) : null;
@@ -273,6 +277,7 @@ export async function buildRouteOptions(
   onProgress?.('標高を計算中…');
   const options: RouteOption[] = [];
   for (const c of kept) {
+    signal?.throwIfAborted();
     const coords: LngLat[] = [];
     const legEnds: number[] = [];
     for (const leg of c.legs) {
@@ -296,7 +301,9 @@ export async function buildRouteOptions(
       sameAs: c.sameAs,
     });
   }
-  return chooseOption({ name: `${pts[0].name} → ${pts[pts.length - 1].name}`, kind: 'auto', points: pts, options }, preferredOption(options, pref));
+  signal?.throwIfAborted();
+  const route = chooseOption({ name: `${pts[0].name} → ${pts[pts.length - 1].name}`, kind: 'auto', points: pts, options }, preferredOption(options, pref));
+  return { ...route, failedTiles: gsi.failed };
 }
 
 /** 候補 i を選ぶ */

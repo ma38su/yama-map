@@ -1,7 +1,8 @@
 /**
  * 場所の情報をネットから取る（マス目ごと）。どの出どころも1つずつ順に聞き、相手のサーバーに負担をかけない：
  *  - Overpass（OpenStreetMap）は混んでいると答えに数十秒かかる。足りないマス目をまとめて1回で聞く。
- *    混んでいる（429・502〜504・時間切れ）と断られたら別のサーバーに聞き直し、どこもだめならしばらく聞かない。
+ *    混んでいる（429・502〜504・時間切れ）と断られたら別のサーバーに聞き直す。
+ *  - どの出どころも、取れなかったらしばらく聞かない（続けて取れないと30秒・1分・2分…最大10分と延ばす。電波が戻ったらすぐ聞く）。
  *    取れなかったときは、端末に残っている OpenFreeMap の地図データ（ルート検索・オフライン保存で読んだもの）から
  *    名前と種類だけを出す（partial。あとで Overpass から取り直す）
  *  - iNaturalist は 1秒に1回まで
@@ -24,13 +25,34 @@ import {
   type RemoteSource,
 } from './sources';
 
-/** 断られたあと、聞かないでおく時間 */
-const COOLDOWN_MS = 2 * 60_000;
+/**
+ * 取れなかったあと、聞かないでおく時間。続けて取れないと倍々に延ばす。
+ * 電波が弱いと onLine のまま通信だけ失敗するので、混んでいると断られたときに限らず待つ（地図を動かすたびに電波をつかみに行かないように）
+ */
+const COOLDOWN_MIN_MS = 30_000;
+const COOLDOWN_MAX_MS = 10 * 60_000;
+/** 混んでいると断られたときは、少なくともこれだけ待つ */
+const BUSY_COOLDOWN_MS = 2 * 60_000;
 const cooldownUntil: Record<RemoteSource, number> = { osm: 0, commons: 0, inat: 0 };
+const failStreak: Record<RemoteSource, number> = { osm: 0, commons: 0, inat: 0 };
 let overpassIndex = 0;
 
-/** 今は聞かないでおくか（断られたあと） */
+/** 今は聞かないでおくか（取れなかったあと） */
 export const coolingDown = (source: RemoteSource) => Date.now() < cooldownUntil[source];
+
+function cooldown(source: RemoteSource, e: unknown) {
+  failStreak[source]++;
+  const wait = Math.min(COOLDOWN_MAX_MS, COOLDOWN_MIN_MS * 2 ** (failStreak[source] - 1));
+  cooldownUntil[source] = Date.now() + Math.max(wait, isBusy(e) ? BUSY_COOLDOWN_MS : 0);
+}
+function succeeded(source: RemoteSource) {
+  failStreak[source] = 0;
+  cooldownUntil[source] = 0;
+}
+// 電波が戻ったら、すぐ聞けるようにする
+window.addEventListener('online', () => {
+  for (const s of Object.keys(cooldownUntil) as RemoteSource[]) cooldownUntil[s] = 0;
+});
 
 class BusyError extends Error {}
 
@@ -81,6 +103,10 @@ async function overpassCells(cells: string[], signal?: AbortSignal): Promise<Map
   }
 }
 
+/** 端末の地図データのタイルから読んだ場所（URL ごと。URL に版が入っているので中身は変わらない）。取れないたびに読み直さないように */
+const tilePoiCache = new Map<string, PlaceItem[]>();
+const TILE_POI_CACHE = 200;
+
 /** 端末に残っている OpenFreeMap の地図データから、山小屋・トイレなどを出す（ネットには聞かない）。1枚もなければ null */
 async function cachedTilePois(cells: string[]): Promise<Map<string, PlaceItem[]> | null> {
   if (typeof caches === 'undefined') return null;
@@ -88,10 +114,16 @@ async function cachedTilePois(cells: string[]): Promise<Map<string, PlaceItem[]>
   const items: PlaceItem[] = [];
   let found = 0;
   for (const t of tiles) {
-    const res = await caches.match(t.url, { ignoreVary: true }).catch(() => undefined);
-    if (!res?.ok) continue;
+    let pois = tilePoiCache.get(t.url);
+    if (!pois) {
+      const res = await caches.match(t.url, { ignoreVary: true }).catch(() => undefined);
+      if (!res?.ok) continue;
+      pois = fromTilePois(decodeOsmPois(await res.arrayBuffer(), t.x, t.y, OSM_ZOOM));
+      if (tilePoiCache.size >= TILE_POI_CACHE) tilePoiCache.delete(tilePoiCache.keys().next().value!);
+      tilePoiCache.set(t.url, pois);
+    }
     found++;
-    items.push(...fromTilePois(decodeOsmPois(await res.arrayBuffer(), t.x, t.y, OSM_ZOOM)));
+    items.push(...pois);
   }
   return found ? splitByCell(items, cells) : null;
 }
@@ -115,28 +147,32 @@ export async function fetchCells(
   { signal, keep = () => true, force = false }: FetchOptions = {},
 ): Promise<void> {
   if (!cells.length || (!force && coolingDown(source))) return;
-  const busy = (e: unknown): never => {
-    if (isBusy(e)) cooldownUntil[source] = Date.now() + COOLDOWN_MS;
+  const failed = (e: unknown): never => {
+    if (!signal?.aborted) cooldown(source, e);
     throw e;
   };
   if (source === 'osm') {
+    /** この呼び出しの中で取れなかったときの例外。あとのマス目はネットに聞かず、端末の地図データだけで出す */
+    let error: unknown = null;
     // まとめて聞く範囲は、広くなりすぎないよう9マス目ずつ（中心に近い順に並んでいるので、ほぼ 3×3）
     for (let i = 0; i < cells.length; i += 9) {
       const group = cells.slice(i, i + 9).filter(keep);
       if (signal?.aborted) return;
       if (!group.length) continue;
-      let got: Map<string, PlaceItem[]>;
-      let partial = false;
-      try {
-        got = await inQueue('osm', () => overpassCells(group, signal));
-      } catch (e) {
-        if (signal?.aborted) return;
-        const fallback = await cachedTilePois(group);
-        if (!fallback) busy(e);
-        if (isBusy(e)) cooldownUntil.osm = Date.now() + COOLDOWN_MS;
-        got = fallback!;
-        partial = true;
+      let got: Map<string, PlaceItem[]> | null = null;
+      if (error == null) {
+        try {
+          got = await inQueue('osm', () => overpassCells(group, signal));
+          succeeded('osm');
+        } catch (e) {
+          if (signal?.aborted) return;
+          error = e;
+          cooldown('osm', e);
+        }
       }
+      const partial = !got;
+      got ??= await cachedTilePois(group);
+      if (!got) throw error;
       for (const [c, items] of got) await onCell(c, items, partial);
     }
     return;
@@ -144,7 +180,8 @@ export async function fetchCells(
   for (const c of cells) {
     if (signal?.aborted) return;
     if (!keep(c)) continue;
-    const items = await inQueue(source, () => (source === 'commons' ? commonsCell(c, signal) : inatCell(c, signal))).catch(busy);
+    const items = await inQueue(source, () => (source === 'commons' ? commonsCell(c, signal) : inatCell(c, signal))).catch(failed);
+    succeeded(source);
     await onCell(c, items);
   }
 }

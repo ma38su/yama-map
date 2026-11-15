@@ -1,0 +1,530 @@
+# やまマップ 効率化・共通化の洗い出し（todo）
+
+2026-11-16 に、コード全体（`src/`・`android/`・`test/`・`index.html`・`style.css`・ビルド設定・`docs/`）を8つの範囲に分けて読み、非効率なところ・無駄なところ・共通化できるところを洗い出したもの。
+主な指摘は、コードと MapLibre 6.16・Capacitor のプラグインのソースで裏を取ってある。
+
+- 基準：コミット `73581c2`（0.7.3）＋作業中の変更（記録の一覧を `src/app/tracks.ts` に分ける、ポケット表示に電池の表示を足す）。行番号はこの時点のもので、ずれたら関数名で探す
+- 〔効果/手間〕：効果は 高・中・低。手間は 小（数行〜1ファイル）・中（数ファイル）・大
+- 🔋 電池に効く　⚠️ データを消さない決まりに関わる（IndexedDB はストアを足すだけ、appId・署名鍵・保存のキー・キャッシュ名を変えない）　❓ 実機か計測で確かめてから
+- 上から順に、効果が大きく手間が小さいもの。共通化（6章）は、その場所を直すついでに行うと安全
+- 進み具合：0章の15項目と、それと一緒に直した 1-8・3-2 の1項目は済み（2026-11-16、0.7.4 の上で。まだコミットしていない）。各項目の「済：」に、実際の直し方と確かめたことを書いた
+
+---
+
+## 0. 先にやると効くもの
+
+- [x] **0-1** 🔋 **リプレイ中、毎フレーム設定を localStorage に書いている**〔高/小〕
+  - MapLibre の `jumpTo` は、カメラが動かなくても毎回 `moveend` を同期で出す。リプレイ（追う・俯瞰）は毎フレーム `jumpTo` するので、`moveend` → `settings.view` を作り直して `saveSettings()`（設定全体の `JSON.stringify` と `localStorage.setItem`）が最大60回/秒走る。3D の1本指ドラッグ（touchmove ごと）・現在地の追従（測位ごと）・進む向きを上（0.3秒ごと）でも同じことが起きる
+  - ついでに起きている不具合：リプレイのカメラ（傾き65°など）が保存される。`savedOverrides` は terrain しか持たないので、リプレイ中にアプリが落ちると、次の起動が「2D なのに傾いた」地図になる
+  - 直し方：`moveend` ではメモリの `settings.view` だけ更新し、保存は数秒まとめて＋裏に回るとき。リプレイ中は `savedOverrides.view` に始める前の view を入れておく
+  - 場所：`src/app/mapView.ts:142`、`src/app/replay.ts:218`、`src/map/gestures.ts:54`
+  - 済：`settings.ts` に `saveSettingsSoon()`（止まってから2秒後に書き、裏に回るときはすぐ書く）を足して `moveend` で使う。リプレイ中は `savedOverrides.view` に始める前の位置を入れる。確かめたこと：`jumpTo` を20回続けても書き込みは0回、2秒後に1回
+
+- [x] **0-2** 🔋 **リプレイ中、毎フレーム雨の計算（60点の `unproject`）が走る**〔高/小〜中〕
+  - `weather.ts` の `moveend` の処理に間引きがなく、`updateWeatherLayers` → `updateRain(true)` を毎フレーム呼ぶ。3D の `unproject` は地形へのレイキャスト（1点に最大512サンプル）で、それを60点と `weatherFor` 61回。`'move'` 側に付けた300msの間引きが効いていない。降っていない日も同じ
+  - 記録のリプレイの降水量は場所によらない（歩いた場所の解析雨量）ので、60点を調べても同じ値になる
+  - 直し方：`map.jumpTo({ … }, { replayFollow: true })` で印を付けて、`moveend` 側では無視する。雨は rAF でまとめる `scheduleRain()` 1本にする。先に「この時刻にどこかで降っているか」を安く判定し、記録は `at()` 1回で一様にする（雪の判定だけマスごと）
+  - 場所：`src/app/weather.ts:335`・`:362-404`
+  - 済：`replayFollow` の印を付けた `moveend` は無視し、雨の数え直しは300msに1回まで（最後に頼まれた分は必ず数える）。雲の層の表示・非表示も変わったときだけ設定する。確かめたこと：`jumpTo` を60回続けて、数え直しは1回（以前は60回）。「記録は at() 1回で一様に」は、解析雨量のない時刻は場所で変わるのでやっていない
+
+- [x] **0-3** 🔋 **ポケット表示中も、隠れた地図とシートを30秒ごとに描き直している**〔高/小〕
+  - ポケット表示は `#map`・`#sheet` を `visibility:hidden` にするだけ。`refreshNow` → `renderTrack`（記録の線全体と `track-out` の setData）、`updateNav` → `renderDone`（route-done・route-ahead の setData）・`renderCard`・`renderBody` が続く。MapLibre は隠れていてもワーカーでデータを作り直して描く。ルートなしの記録中は毎秒カードを作り直す（0-4）
+  - 直し方：`pocketActive()` のあいだは `computeNav`・到着のお知らせ・道迷いの判定だけにして、描画は飛ばす（`trackStale` は立てたまま残す）。`exitPocket` の最後で `refreshNow()` を呼んで追いつく。効果は `perf.ts` の「描画=…回 ポケット=中」で確かめられる
+  - 場所：`src/app/nav.ts:192-227`（`updateNav`・`refreshNow`）、`src/app/recording.ts:295`（`renderTrack`）、`src/app/pocket.ts:52`（`exitPocket`）
+  - 済：ポケット表示のあいだ、`renderTrack` は「描き直しが要る」と覚えるだけ、`updateNav` は計算と到着のお知らせだけにした。`exitPocket` の最後で `refreshNow()`。❓ 実機の記録中には確かめていない（プレビューでは位置情報が使えない）
+
+- [x] **0-4** 🔋 **毎秒のタイマーが、ルートなしの記録中にカードを丸ごと作り直す（記録していなくても毎秒起きる）**〔中/小〕
+  - 毎秒変わるのは「時間」の数字だけなのに、`card.replaceChildren()` で13要素を作り直してレイアウトをやり直す。タイマーは表に出ているあいだずっと毎秒動く
+  - 直し方：時間の span の文字だけ書き換える。タイマーは「記録中・ルートなし・ポケット表示でない」ときだけ動かす（`scheduler.ts` の `whileVisible` が止める関数を返すようにする）
+  - 場所：`src/app/nav.ts:227`、`src/app/sheetView.ts:226-281`（`renderCard`）
+  - 済：`scheduler.ts` は変えず、カードを描いたときに始まり、カードの作り直し・裏に回る・ポケット表示で止まる1秒ごとのタイマーにした（`sheetView.ts` の `tickElapsed`。「時間」の数字だけ書き換える）。nav.ts の毎秒の `whileVisible` は消した。❓ 実機の記録中には確かめていない
+
+- [x] **0-5** 🔋 **1分ごとの空の色の更新が、0.7.3 からほぼ空振りなのに、毎回地図を描かせる**〔中/小〕
+  - リプレイ以外では色を変えなくなったが、`applyDaylight` は毎分 `setSky` を1回と `setPaintProperty` を15回呼ぶ。MapLibre の `Map` の setter は、値が同じでも必ず `_update(true)` を呼ぶ（`map.ts` で確認）。そのため毎分、スタイル全体の再計算と1コマの描画（3D なら地形込み）が起きる。続く `updateWeatherLayers` も `setLayoutProperty` で同じことをする
+  - 直し方：前に入れた値を覚えて、変わったものだけ set する。毎分の仕事は 3D（陰影の向き）か `?time=` のときだけでもよい（リプレイは `replay.ts` が自分で呼ぶ）。weather 側は「出していない→出さない」なら何もしない
+  - 場所：`src/main.ts:57`、`src/app/mapView.ts:132-140`、`src/map/daylight.ts:155-178`、`src/app/weather.ts:319-323`
+  - 済：`daylight.ts` に `setPaint()`（今の値と比べて違うときだけ設定）を置き、空も今の値と比べる。確かめたこと：同じ値のままなら setter は0回。3D への切り替えで陰影の向きが変わるときだけ5回
+
+- [x] **0-6** 🔋 **地図のエラーを受けていないので、圏外でタイルが読めないたびにログが1行増え、2秒ごとに全行を書き直す**〔中/小〕
+  - `map.on('error')` がないと MapLibre が `console.error` を出し、`log.ts` がそれを1行（最大600字）残す。圏外で地図を動かすと1回で数十件。`log()` は2秒まとめて、最大1500行の全体を `JSON.stringify` して localStorage に書く。記録の開始・終了などの大事な行も押し出される
+  - 直し方：`map.on('error', (e) => { if (e.tile) { 数える; return; } console.error(e.error); })`。件数は `perf.ts` の10分ごとの行に「タイル失敗=n」として足す
+  - 場所：`src/app/mapView.ts`（`map.on('error')` がない）、`src/log.ts:25-40`
+  - 済：`perf.ts` で `map.on('error')` を受け、タイルの失敗は数えて「計測(画面)」の行に「タイル失敗=n回」と出す。ほかのエラーは今までどおり console.error に渡す
+
+- [x] **0-7** 🔋 **リプレイの間隔を「再生時刻」で決めているので、×1000 や休憩中（×10）では実時間でほぼ毎フレームになる**〔高/小〕
+  - 空の色（再生時刻2分ごと：×1000 では0.12秒ごと、休憩中は毎フレーム）、雲の描き直し（10分ごと）、天気の文字（1分ごと。全点の線形探索つき）
+  - 直し方：実時間の下限を足す（空 250ms・雲 1秒・文字 250ms など）。データは10分〜1時間刻みなので、見た目は変わらない
+  - 場所：`src/app/replay.ts:26`・`:206-224`・`:248`、`src/app/weather.ts:329`
+  - 済：再生中は、空の色と天気の文字は実時間で250msに1回まで（止めてスライダーを動かしたときはすぐ）。雲は時刻が進んだことでの描き直しを1秒に1回まで（間に合わなかった分はあとで描く）
+
+- [x] **0-8** 🔋 **雲の画像を、毎回 PNG の data URL にしてから MapLibre に読み直させている**〔中〜高/小〕
+  - 描くたびに canvas を新しく作る → `toDataURL`（PNG の圧縮と base64。メインスレッドで同期）→ `updateImage({ url })` → MapLibre が取り直して復号し、テクスチャにする。頻度は 0-7 のとおり
+  - 直し方：`updateImage({ image: imageData, coordinates })` で ImageData を直接渡す（MapLibre 6.16 は受け取れる）。ImageData は1つを使い回せる。透明 PNG の data URL も、url のない image ソースにできる
+  - 場所：`src/app/weather.ts:252-282`・`:294`・`:333`
+  - 済：canvas と `toDataURL` をやめ、`new ImageData` を `updateImage({ image })` で渡す（ImageData は描くたびに新しく作る。使い回すと、地図が描き終える前に書き換えるおそれがあるため）。透明 PNG の初めの画像はそのまま。確かめたこと：ImageData を渡せて、エラーなし
+
+- [x] **0-9** 🔋 **標高グラフを、印やなぞる位置が動くたびに全部描き直す**〔中/小〜中〕
+  - `setMarker`・`pick` が毎回 `draw()` で、目盛り・全点のパス・ペースの塗りと帯・休憩・地点まで描く。リプレイでは点が1つ進むたびに、カードの小さいグラフと、開いていればシートのグラフの2枚（×1000 では毎フレーム）。なぞるときは、点の番号が同じでも pointermove ごとに描き直して `cursor` に setData する。`draw()` の先頭の `clientWidth` は強制レイアウトも起こす
+  - 直し方：印の x（px）が前と同じなら描かない。下絵を別の canvas に覚えて、印だけ重ねる。`pick` は番号が変わったときだけ。大きさは今ある ResizeObserver で覚える
+  - 場所：`src/ui/profile.ts:151-156`（`setMarker`）・`:232-261`（`pick`・`draw`）、`src/app/profileView.ts:28`・`:73-76`
+  - 済：印を描く位置（CSS の px）が前と同じなら描き直さない。なぞる位置は点の番号が同じなら何もしない。大きさは ResizeObserver で覚え、描くたびに `clientWidth` を読まない。確かめたこと：幅380px・590点の記録で、印を1点ずつ動かして描き直しは386回（35%減。長い記録・点の細かい記録ほど減る）。下絵を別の canvas に覚える案はやっていない
+
+- [x] **0-10** 🔋 **現在地ボタンの「測位を待っている」回転が、無限アニメーションのまま**〔中/小〕
+  - `maplibre-gl.css` の `.maplibregl-ctrl-geolocate-waiting .maplibregl-ctrl-icon { animation: maplibregl-spin 2s linear infinite }` が生きている。`positionOptions` を渡したので既定の timeout が消え、谷などで測位が取れないあいだずっと回る。`style.css` で止めているのは現在地の印の脈動だけ
+  - 直し方：`style.css` に同じセレクタで `animation: none`（待っていることは薄くするなどで示す）
+  - 場所：`src/style.css:90-93`、`src/app/mapView.ts:76-77`
+  - 済：回転を止め、待っているあいだは薄く表示する（opacity 0.45）。確かめたこと：そのクラスの付いたアイコンの animation が none
+
+- [x] **0-11** 🔋 **場所の情報の取得が「混んでいる」以外の失敗では止まらず、地図が動くたびに聞き直す**〔高/小〕
+  - 2分のクールダウンが付くのは、BusyError とタイムアウトのときだけ。電波が弱くて `navigator.onLine` が true のまま失敗する（`TypeError: Failed to fetch`、HTTP 500、JSON の途中切れ）と、追従中は測位ごとの `moveend` で0.5〜数秒おきに聞き直し、そのたびに電波をつかむ。OSM は失敗のたびに、端末に残っているタイル（約70枚）を読み直してデコードもする
+  - 直し方：失敗の種類を問わずクールダウンを付ける（30秒から倍々で最大10分。成功したときと `online` で解除）。代わりの poi はタイル URL ごとに覚える
+  - 場所：`src/places/load.ts:68`・`:117-147`（`fetchCells`）、`src/app/places.ts:206-234`
+  - 済：取れなければ種類を問わず、30秒から倍々（最大10分。混んでいるときは2分以上）聞かない。成功したときと `online` で解除。1回の取得の中で取れなかったら、残りのグループはネットに聞かず端末の地図データだけで出す（3-2 の1項目も一緒に）。代わりの poi はタイル URL ごとに200枚まで覚える
+
+- [x] **0-12** **電波が弱いところのルート作成が、最悪で約30分かかり、止められない**〔中〜高/小〜中〕
+  - 道路タイルを4並列・1枚15秒で打ち切りながら、最大500枚取る。つながっているが弱いときは、キャッシュにないタイルが1枚15秒ずつ止まる（500÷4×15秒＝約30分）。そのあいだ `state.building` が立ったまま。`loadRoadLines` が返す `failed` は誰も読まず、失敗が多くても黙って「直線で結ぶ」候補になる
+  - 直し方：`fetchTiles` に `signal` を渡せるようにし、「続けて6〜8回失敗したら残りをやめる」。`failed` が多ければ「電波が弱く道データの一部を読めませんでした」と出す。作り直すたびに前の分を abort する（1-8 の二重実行の防止と一緒に）
+  - 場所：`src/route/roadTiles.ts:202-252`、`src/nav/plan.ts:228-231`、`src/app/route.ts:129-147`
+  - 済：「続けて失敗したら全部やめる」と、オフライン保存した範囲のタイル（端末にある）まで捨ててしまうので、時間切れが8回たまったら残りは端末に残っているタイルだけを使う形にした（圏外ですぐ失敗するタイルは数えない）。読めなかったタイルがあれば、ルートを作ったときにそう知らせる。作り直すたびに前の分を止め、ルートを消したときも止める（1-8 も一緒に）
+
+- [x] **0-13** 🔋 **アプリ版で記録を続ける・締めるたびに、端末に残っている測位を最初から全部 JS に渡し直す**〔中/中〕
+  - 端末の SQLite の測位は、記録を終えるまで全部残っている。WebView が作り直されて続けるとき（履歴から消した・カメラを使った）と締めるときは `afterId=0` から500件ずつ読み、取り込み済みの点を JS 側の `t > since` で捨てる。8時間で数千〜1万点、十数往復・約1MB をブリッジに通して大半を捨て、そのあいだ「記録開始」を待たせる
+  - 直し方：`getFixes` に `since` を足し、最初の取り込みだけ SQL で `AND t > ?` も付ける。表の形は変えないので移行は要らない
+  - 場所：`src/track/location.ts:192-225`（`drainFixes`・`watchNative`）・`:289-293`、`android/app/src/main/java/io/github/ma38su/yamamap/TrackingStore.java:171-197`、`TrackingPlugin.java:133-145`
+  - 済：`getFixes` に `afterT` を足し、Java の `list` で `t > ?` も絞る（JS 側の `t > since` の判定も残した）。表の形は変えていない。確かめたこと：Java のコンパイルが通る。❓ 実機で記録を続けて確かめていない
+
+- [x] **0-14** **オフライン保存のタイルを、Service Worker が「表示しただけの地図」にも書いてから、すぐ消している**〔高/小〜中〕
+  - 保存の `fetch` も SW の `tile()` を通るので、SW が BROWSE に書き（本体を blob に読んでヘッダーを付け替える）、そのあと `download.ts` が TILE_CACHE に入れて BROWSE から消す。4000枚（約100MB）の保存で、余計な書き込みが約100MB、put と delete が4000回ずつ、`trimBrowse`（最大3000件の keys）が約80回。SW の put（`waitUntil`）より先に delete が届くと、BROWSE に重複が残る❓
+  - 直し方：保存の fetch に印を付け（`cache: 'force-cache'` かクエリ）、SW はそのとき BROWSE に入れない。いちばん素直なのは、保存を SW 側（postMessage）で行って TILE_CACHE に直接書く形。⚠️ キャッシュ名は変えない
+  - 場所：`src/offline/download.ts:94-101`、`src/sw.js:74-114`
+  - 済：保存の fetch に `cache: 'force-cache'` を付け、SW はそのとき BROWSE に入れない。BROWSE から出てきた（`x-yama-fetched` が付いている）ときだけ BROWSE から消す。キャッシュ名は変えていない。❓ 本番ビルドで保存を試していない（開発サーバーでは SW が動かないため）
+
+- [x] **0-15** **地図をタップするたびに道路タイル9枚を取ってデコードする（覚えも中断もない）**〔中/小〕
+  - z16 のタイルは一辺約490mなので、半径200mなら要るのは多くて2×2枚なのに、いつも3×3枚。前のタップの通信は止めない。ルート作成で同じ範囲を読んだ直後でも読み直す。吹き出しを開いたままタップすると、作り直した吹き出しが同じタップで閉じられて、取得だけが走る❓（Popup を使い回していて、閉じる処理が配る前の写しに残る）
+  - 直し方：`placeLabelsNear` と1つにして、半径にかかるタイルだけ読む。「タイル URL → 地名」の小さな LRU を `loadRoadLines`・`placeLabelsNear` と共有する。吹き出しを開くたびに AbortController を作り、次のタップで abort する
+  - 場所：`src/route/roadTiles.ts:322-358`（`nearestPlaceName`）、`src/app/mapTap.ts:44-102`
+  - 済：`nearestPlaceName` は `placeLabelsNear` を使い、半径にかかるタイルだけ読む。読んだ地名はタイルごとに600枚まで覚え、ルート作成・経路名付けと共有する。吹き出しを閉じたとき・次をタップしたときは取得を止める。同じタップで閉じられる件（❓）はそのまま
+
+---
+
+## 1. 見つかった不具合（効率とは別）
+
+- [ ] **1-1** **道迷いアラートの通知が、画面オフでは出ず、ルートに戻っても消えない（アプリ版）**〔高/小〕❓
+  - `LocalNotifications.schedule` は `isExactNotification` が既定で true。プラグイン（8.3.1）は、すぐ出す通知でも、Android 12 以降で「アラームとリマインダー」が許可されていないと、その設定画面を `startActivityForResult` で開き、戻るまで通知を出さない（Android 14 以降に新しく入れたアプリは既定で不許可）。画面オフでは出ず、`chain` が待ち続けるので、後の「まだ離れている」「戻った」も詰まる。振動も画面が表のときだけ
+  - `cancel()` は予約中の通知しか消さないので、表示中の「ルートから離れています」が記録を終えたあとも残る
+  - 直し方：`schedule` に `isExactNotification: false` を付ける。消すのは `removeDeliveredNotificationsById({ ids: [NOTIFY_ID] })`
+  - 場所：`src/app/offRouteAlert.ts:107`・`:115`（プラグイン側は `LocalNotificationsPlugin.kt` の `doSchedule`、`LocalNotificationManager.kt` の `cancel`）。docs/android-plan.md の「実機で確かめること」にも未確認で残っている
+
+- [ ] **1-2** ⚠️ **記録を終えた直後に「範囲を除く」を承認すると、あとから終わる標高の埋め直しが範囲を消す**〔中/小〜中〕
+  - `fillMissingElevations` は、始めに受け取った記録の写し（trim なし）に登り下りを足して `putTrack` する。`putKeepingLabels` が残すのは経路名とロックだけなので、DB の trim が消え、距離も範囲を除く前に戻る。埋め直しの途中で記録を消すと、点のない記録が一覧に戻る。点の更新と記録の更新が別のトランザクションなので、あいだで落ちると登り下りが直らないまま残る
+  - 直し方：`['points', 'tracks']` の1トランザクションで、保存してある記録を読み直して登り下りだけ書き換える関数にする（記録がなければ書かない。登り下りは保存してある trim の中で数える）。呼ぶ側は `state.shown.track` を置き換えず、登り下りだけ入れる。ストアは変えない
+  - 場所：`src/track/recorder.ts:430-450`、`src/track/db.ts:248-262`、`src/app/recording.ts:281-293`、`src/app/trimView.ts:174-225`
+
+- [ ] **1-3** ⚠️ **OpenFreeMap の版が変わると、オフライン保存した OSM のタイルが圏外で使われなくなる**〔高/中〜大〕
+  - 保存は、そのときの TileJSON の URL（`/planet/<版>/…`）でタイルを入れる。そのあと一度でも電波のある所でアプリを開くと、新しい TileJSON が入り（SW の networkFirst と `yama-map:osm-tiles`）、圏外でも新しい版の URL で探すので見つからない。圏外で OSM のルート候補・OSM の小道の層・Overpass の代わりの poi が出ず、保存したタイルは場所を取るだけになる（地理院のタイルは影響なし）
+  - 直し方：SW で openfreemap のタイルは、版の部分を除いたキーで match・put する（`download.ts`・`cachedTilePois` も同じに）。または保存した範囲にそのときの URL の型を残し、見つからなければその版で引く。既存の版つきのキーは消さずに複製で移し、`SavedArea.urls` と範囲の削除も両方のキーを扱う
+  - 場所：`src/sw.js:62-64`、`src/route/roadTiles.ts:257-292`（`osmTileTemplate`）、`src/app/offline.ts:67-68`・`:84`、`src/places/load.ts:85-97`
+
+- [ ] **1-4** **Overpass の「runtime error」（HTTP 200）を「何もない」として30日残す**〔高/小〕
+  - Overpass はクエリの時間切れ・メモリ不足を HTTP 200 で返し、`elements` は空か途中までで、`remark: "runtime error: …"` が付く。`parseOverpass` は `elements` が配列かどうかだけを見るので、正常な答えとして9マスを保存し、30日（オフライン保存は7日）取り直さない。別サーバーへの切り替えも、代わりの poi も働かない
+  - 直し方：`remark` に `runtime error` があれば BusyError にする。テストに `{ elements: [], remark: 'runtime error: …' }` を足す。すでに空で保存されたマスを直すなら `OSM_QUERY_VERSION` を上げる（取り直して上書きするだけ）
+  - 場所：`src/places/sources.ts:389-391`、`src/places/load.ts:76`、`test/places.test.ts:218-220`
+
+- [ ] **1-5** **行程表の最後の縦線が、計画のときに消えない**〔中/小〕
+  - `#timeline`（ol）の最後に合計の `p.note` を足しているので、`li:last-child` が目的地に当たらず、目的地の下に線がはみ出す（歩いている途中は青い線）。ol の子に p を置くのも HTML として正しくない
+  - 直し方：合計は ol の外の `<p id="plan-total">` に書く（CSS だけで済ませるなら `li:last-of-type`）
+  - 場所：`src/app/sheetView.ts:348-350`、`src/style.css:498`
+
+- [ ] **1-6** **周回・往復のルートで、目的地の到着時刻に出発の時刻が出る**〔中/小〕
+  - `arrivalTime` は「最初に80m以内を通った点」を探すので、出発地と目的地が同じだと出発の時刻になる。`actual.ts` は「前の地点より後で最初に通った点」を正しく扱っている
+  - 直し方：前の地点の到着より後から探す。`actual.ts` と同じ規則の関数にまとめる（2-4 の効率の改善と一緒に）
+  - 場所：`src/app/nav.ts:57-61`、`src/track/actual.ts:34-64`
+
+- [ ] **1-7** **ルートに戻る途中は、地点の「通過」「次」の印が変わらない**〔低/小〕
+  - `markPassed` を「歩き終えた線を描き直したとき」だけ呼んでいて、ルートに戻る途中（rejoin）は n が0のまま変わらない
+  - 直し方：`markPassed` は軽いので、`updateNav` のたびに呼ぶ
+  - 場所：`src/app/nav.ts:176-189`
+
+- [x] **1-8** **経由地の ✕ や「道沿いのルート候補を探す」を続けて押すと、片方の削除が戻る（通信と計算も二重）**〔中/小〕
+  - `rebuild` に二重実行の防止がない（防いでいるのは `choosePoint` だけ）。先に終わった方の `finally` で `building=false` になり、まだ走っているのに作り直しを始められる。遅く終わった方が勝つので、片方の削除が戻る
+  - 直し方：世代番号を持ち、await のあとで古ければ捨てる。前の AbortController を abort する（0-12 と一緒に）。作成中はボタンを無効にする
+  - 場所：`src/app/route.ts:129-153`・`:180-186`
+  - 済（0-12 と一緒に）：作り直すたびに前の分を止め（あとから頼んだほうを作る）、止められた分は何もしない。✕ は、作り直している途中ならその地点の並び（前に消した地点を除いたもの）から消す。ボタンの無効化はしていない
+
+- [ ] **1-9** **途中で閉じた記録を締めるとき「記録中」に見えて、歩き終えたあとの時間の雨まで取って残す**〔低〜中/小〕
+  - `finish()` → `load()` が status を `'recording'` にしてから `emit()` するので、`collectWhileRecording` が「今」までを範囲として解析雨量を取りに行く（前日の記録なら最大24枚）。`updateNav`・`paceOf` も記録中の扱いで一度走る
+  - 直し方：`collectWhileRecording` で、最新の点が10分以上前なら取らない（または RecorderState に finishing を足す）。emit を消すだけだと、Web 版の「終えたとき」の処理が動かなくなるので注意
+  - 場所：`src/track/recorder.ts:189-191`・`:221`、`src/app/recording.ts:133`、`src/app/trackWeather.ts:210-215`
+
+- [ ] **1-10** **現在地がオンにならないことがある**〔低〜中/小〕
+  - `startGeolocate` は `map.loaded()` を見ているが、これはタイルの読み込み中や setter の直後にも false になる。読み込み後にそうなると `once('load')` を足すだけで、`'load'` はもう来ない（リスナーも残る）。進む向きを上からも呼んでいる
+  - 直し方：`mapView.ts` の `styleReady` を export して使う
+  - 場所：`src/app/recording.ts:71-78`、`src/app/compass.ts:169`
+
+- [ ] **1-11** **雲の模様が流れずに跳ぶ**〔低/小〕
+  - 模様のずれを「風速×エポックからの時間（約50万時間）」で出しているので、風速がわずかに変わるだけで別の位置になり、描き直すたび（再生時刻10分ごと）に飛び移る
+  - 直し方：リプレイを始めた時刻からの差で出すか、前回からの増分を足していく
+  - 場所：`src/app/weather.ts:244-249`
+
+- [ ] **1-12** **計画のリプレイで雲がほとんど出ない可能性**〔中/小〕❓
+  - 9×9マスに1つでも予報のないマスがあると描かない。端末に予報があるのは行程の地点のマスだけなので、四隅が欠けやすい。描けないと `cloudDrawn` に残らないので、毎回（今は 0-2 のため毎フレーム）やり直す
+  - 直し方：足りないマスは近いマスの値か雲0で埋める。描けなかったことも覚える
+  - 場所：`src/app/weather.ts:156-167`・`:234-241`・`:329-332`
+
+- [ ] **1-13** **予定の記録を作り直すと、点が二重になる**〔低/小〕
+  - `putTrackWithPoints` は `appendPoints` の別名で「追記」（points は autoIncrement）。`settings.builtinPlan` の保存に失敗すると（`saveSettings` は失敗を黙って捨てる）、起動のたびに同じ id の点が約600ずつ増える
+  - 直し方：別名をやめる。予定の記録は、その記録の点を同じトランザクションで消してから足す（ストアは変えない）。または直後の `listTracks` で、もうあれば飛ばす
+  - 場所：`src/track/db.ts:244-245`、`src/app/menu.ts:204-229`（`ensureBuiltinPlan`）
+
+- [ ] **1-14** **記録のサービス：止める処理と次の記録の開始が重なると、新しい記録を消すことがある**〔低/小〕
+  - `generation++` が、`track = id`・prefs の書き込み・startForeground より後にある。通知の「停止」とアプリの開始がほぼ同時のときだけ
+  - 直し方：新しく始める分岐の最初（`track = id` の前）で `generation++`
+  - 場所：`TrackingService.java:281-305`・`:599-627`
+
+- [ ] **1-15** **気圧と歩数を、受け取った時点の値でまとめて全点に付けている（最大20秒ずれる）**〔低/小〜中〕
+  - 最大20秒ぶんまとめて届くので、先頭の点には最大20秒後の気圧・歩数が付く。登りでは標高が2〜4m 時間方向にずれる。`recorder.ts:323` のコメント「取り込むのが後になっても、その時の気圧」は受信の単位でしか成り立たない
+  - 直し方：直近30秒ほどの (elapsedRealtimeNanos, hPa) を小さな輪のバッファに持ち、`loc.getElapsedRealtimeNanos()` に近い値を点ごとに付ける。歩数も同じ。表の形は変えない
+  - 場所：`TrackingService.java:194`・`:197`、`TrackingStore.java:122-123`
+
+- [ ] **1-16** **記録のサービスのログが2000行を超えて増えることがあり、見られるのは300行だけ**〔低/小〕
+  - 古い行を消すのは「このプロセスで50行書いたとき」で、数はプロセスごとに0に戻る。短い記録が続くと消されないまま増える。「動作の記録」はネイティブのログを300行しか取らない（docs には「最新2000行」）
+  - 直し方：`long id = db.insert(…); if (id % 50 == 0) DELETE …`（AUTOINCREMENT の id はプロセスをまたいで増える）。JS の `getLog` の limit を 2000 に
+  - 場所：`TrackingStore.java:32-33`・`:78`、`src/track/location.ts:318`
+
+- [ ] **1-17** **カードの小さな標高グラフの目盛りが、古いまま残る**〔低/小〕
+  - `miniProfileFor` のキーに経由地が入っておらず、`shownActual` のキーとずれている。記録を開いたまま経由地を足すと、小さなグラフの目盛りだけが古いまま
+  - 直し方：キーを作る関数を1つにする（6-3 のメモの小道具）
+  - 場所：`src/app/profileView.ts:58-70`、`src/app/sheetView.ts:149-155`
+
+- [ ] **1-18** **リプレイの録画の後始末が漏れる**〔低/小〕
+  - `captureStream` のトラックを止めない。`onerror` がないので、`onstop` が来ないとボタンの表示が戻らない。最後まで再生したあとの0.8秒のタイマーを覚えていないので、そのあいだに再生や録画を始めると止めてしまう
+  - 直し方：`recorder.stream.getTracks().forEach((t) => t.stop())`、onerror でも終える、タイマーの id を覚えて play・録画の開始・stopReplay で消す
+  - 場所：`src/app/replayVideo.ts:77`・`:114-127`、`src/app/replay.ts:255`
+
+- [ ] **1-19** **一時的な TrackRecorder が、visibilitychange の登録と、その記録の全点を持ったまま残る**〔低/小〕
+  - 起動時に「終えた記録で端末に測位が残っているもの」を取り込むたびに作る recorder の、コンストラクタで足したリスナーが外れない
+  - 直し方：リスナーは `startWatch()` で1回だけ登録するか、`dispose()` を足して取り込み後に外す
+  - 場所：`src/track/recorder.ts:78-90`、`src/app/recording.ts:332`
+
+- [ ] **1-20** **そのほかの小さな不具合**〔低/小〕
+  - `status()` が6.1秒のタイマーを消さずに足していく（`src/app/status.ts:11-15`）
+  - シートを閉じたときの `transitionend` のリスナーが、transition の起きない「最小⇄閉じる」で積み残り、子の要素の transition でも発火する（`src/ui/sheet.ts:86-93`）
+  - 記録のリプレイでは GPS の追従を止めていない。「進む向きを上」がオンだと `easeTo` がリプレイの `jumpTo` とぶつかり、方位センサーも聞き続ける❓（`src/app/compass.ts:125-137`。計画のリプレイは `src/app/recording.ts:246` で止めている）
+  - `startReplay` 自体は二重に始めるのを防いでいない。続けて呼ばれると、終えても 2D に戻らない（今は呼ぶ側で防いでいる。`src/app/replay.ts`）
+  - 表示中の範囲の保存で、場所の情報だけ16マスで打ち切る（`src/app/offline.ts:91`）
+  - 写真の読み込みが重なると、古い一覧が最後に描かれる恐れ❓（id で比べている。`src/app/photos.ts:129-134`）
+  - Exif の向きが90°・270°の写真で縦横比が崩れる恐れ❓（`jpegSize` は向きを直す前の大きさ。`src/app/photos.ts:73-80`）
+  - 「動作の記録」で「ログを消す」と、開いているダイアログに `showModal` をもう一度呼ぶ❓。閉じたあとも報告の文字列（数百KB）を持ち続ける（`src/app/diagnostics.ts:15`・`:63-79`）
+
+---
+
+## 2. 電池・描画
+
+### 2-1. 地図
+
+- [ ] 🔋 **シートを全画面にしているあいだも、追従の描画とコンパスが動き続ける**〔中/小〜中〕— 全画面では地図が見えないのに、追従（ACTIVE_LOCK）は測位ごとにカメラを動かして描き、そのたびに 0-1 の保存も走る。コンパスは1秒に何十回も届くセンサーを聞き続ける。→ 全画面のあいだはポケット表示と同じく追従を BACKGROUND にし、コンパスの `want` に「全画面でない」を足す。`src/app/compass.ts:61-66`、`src/ui/sheet.ts:83`
+- [ ] 🔋 **コンパスがセンサーの値ごとに requestAnimationFrame を頼む**〔低〜中/小〕— 扇を書き換えるのは1.5°以上変わったときだけなのに、現在地を出しているあいだずっと毎フレーム処理が回る。→ 扇の角度が閾値以上変わったときだけ頼み、10〜15回/秒に間引く。`src/app/compass.ts:27-36`・`:94-121`
+- [ ] 🔋 **コンパスの3秒ごとのタイマー**〔低/小〕— 「オフにしたときのイベントはない」というコメントは古く、MapLibre 6.16 はボタンでオフにすると `trackuserlocationend` を出す。現在地を出していなくても表のあいだ3秒ごとに動き、毎回 rAF も頼む。→ `trackuserlocationstart`・`trackuserlocationend`・`error`・ポケット表示の出入りで `syncListening` を呼ぶ。古い向きの扇を消すのは、GPS の向きを使ったときだけ10秒後の1回のタイマーに。`src/app/compass.ts:78-85`
+- [ ] 🔋 **空のままの `track-out`・`cursor` に毎回 setData する**〔低〜中/小〕— 記録中は30秒ごとに空→空の setData で、ワーカーとタイルの作り直しが走る。シートを閉じるたびの `cursor` も、出していなくても送る。→ 今描いているものを覚えて、変わらなければ setData しない。`src/app/trimView.ts:70-73`、`src/app/sheetView.ts:479`
+- [ ] 🔋 **歩き終えた線を、進むたびに2つのソースへ setData する**〔低〜中/中〕— n は頂点を1つ過ぎるたびに変わるので、30秒ごとの更新のほぼ毎回、route-done と route-ahead（矢印）に setData する。n は先頭からの線形探索。→ route ソースを `lineMetrics: true` にして `line-gradient` で塗る（リプレイと同じやり方）。矢印は200m進んだときだけ更新し、n は二分探索で。`src/app/nav.ts:176-189`、`src/app/mapView.ts:200-242`
+- [ ] **記録の状態の文字列にエラー・保存失敗・画面点灯が入っていて、変わるたびに記録の線全体を描き直す**〔低〜中/小〕— GPS が途切れがちだと、error が「出る→消える」を繰り返す。Web 版は裏に回るたびに wakeLock も変わる。→ 記録の id か status が変わったときだけ全部描き、フラグだけなら `renderStatus()` だけ。`src/app/recording.ts:117-135`
+- [ ] **写真の印・ルートの地点が HTML の Marker**〔中/大（隠すだけなら小）〕— Marker は地図が動く毎フレーム、位置の計算と transform の書き換えをする。リプレイは毎フレーム `jumpTo` するので、写真50枚なら毎秒3000回。→ symbol 層にする（縮小画像を addImage）。少なくともリプレイ中は隠す。`src/app/photos.ts:139-152`、`src/app/route.ts:63-73`
+- [ ] **`recorder.clear()` のたびに二重に描く**〔低/小〕— onChange が `state.shown=null`・renderTrack・updateNav をしたあと、呼び出し側がもう一度描く。`saveRange` では写真の印も全部消して IndexedDB から読み直す。→ onChange では「記録していないときの clear」を描かない。`src/app/recording.ts:225-233`、`src/app/trimView.ts:185-191`、`src/app/tracks.ts`（`showSavedTrack`）
+- [ ] **保存した範囲を塗るたびに、Cache の全部のキーを読む**〔低〜中/小〕— 保存した地図は1範囲最大4000枚＋写真なので、数範囲で数万件。「地図で見る」を押すたびにも読む。→ 作った FeatureCollection を覚え、保存・削除のときだけ作り直す。切り替えは visibility だけに。`src/app/savedAreas.ts:33-73`
+- [ ] **起動時に `renderRoute`（Marker の作り直し）と `updateNav` が2回ずつ走る**〔低/小〕→ load では地図に関わる分だけ呼ぶ。`src/main.ts:58-60`・`:76-77`
+- [ ] **追従中に寄っても、ズーム15に戻される**〔低〜中/小〕❓— `zoomToUserAccuracy` が既定の true なので、測位ごとに精度の円へ fitBounds（maxZoom 15）し、飛ぶアニメーションとタイルの読み直しが起きる。→ false にして、最初に見つけたときだけ自分で寄せる（使い勝手の判断が要る）。`src/app/mapView.ts:76-81`
+- [ ] **シートのドラッグ中、毎フレーム同じ値の `--panel-h` を入れ直し、pointermove ごとにレイアウトを読む**〔低/小〕→ 前と同じなら入れない。`heightOf('full')` はドラッグの始めに1回だけ。`src/main.ts:70-75`、`src/ui/sheet.ts:110-118`
+- [ ] **状態表示を、同じ文字でも書き直す**〔低/小〕— `aria-live` なので、読み上げが繰り返される恐れも❓。→ 違うときだけ書く。`src/app/status.ts:44-46`
+
+### 2-2. リプレイ・録画・雲と雨
+
+- [ ] 🔋 **縮尺の表示（MapLibre の ScaleControl）が、地図の `move` のたびに `unproject` を2回呼ぶ**〔低〜中/小〕❓— 0-2 を確かめているときに見つけた（`jumpTo` 60回で120回）。3D の `unproject` は地形とのレイキャストなので、リプレイ中は毎フレーム、3D の指の操作でも動くたびに2回。→ リプレイのあいだは縮尺の表示を外して（`map.removeControl`）、終えたら戻す。効果は実機で計測してから。`src/app/mapView.ts:107`
+- [ ] 🔋 **毎フレーム setData を2回（点と矢じり）、休憩中も空のデータを毎フレーム送る**〔中/小〕→ 1つのソースに点と多角形を入れて、circle 層と fill 層を `['geometry-type']` の filter で分ける。矢じりを消すのは「出す→消す」に変わったときだけ。`src/app/replay.ts:168-202`
+- [ ] 🔋 **シートを全画面にしているあいだも、リプレイの地図を毎フレーム動かす**〔中/小〕→ 録画中でなければ、時刻・文字・グラフの印だけ進め、戻ったら1回合わせる（雨は今も全画面では描いていない）。`src/app/replay.ts:197-260`
+- [ ] 🔋 **録画：地図を描くたび（60回/秒）に写しているが、動画は30コマ**〔中〜高（録画中）/小〕— 毎回 `clientWidth`・シートの `getBoundingClientRect`・変わらない日付の `toLocaleDateString`・字幕を切り詰める `measureText` の繰り返し。→ 1000/30ms ごとに間引く（録画中は FRAME_MS を 1000/30 に）。日付と字幕の切り詰めは1回だけ、シートの高さは ResizeObserver で覚える。`src/app/replayVideo.ts:54-80`
+- [ ] 🔋 **歩き終えた線の `line-gradient` を0.05%ごとに変え、そのたびに全タイルのテクスチャを作り直す**〔中/小〕❓— 線全体で2000回、×1000 ではほぼ毎フレーム。→ 2px 相当以上進んだときか、1/20秒に1回までに。`src/app/replay.ts:225-231`
+- [ ] **計画のリプレイの天気（`cachedForecastSource`）が、キャッシュにないマスのたびに全キャッシュを文字列解析しながら探す**〔中/小〕— 最大200件を回して `cellCenter`（split と toFixed）を呼ぶので、1回の更新で数万回。→ キャッシュの値に中心の座標（数値）を持たせ、キー→結果をメモする。`src/app/weather.ts:156-167`
+- [ ] **記録したときの天気の `at()` が、同じ計算を2回ずつする**〔中/小〕— `analyzed()`（reduce で比べるたびに haversine 2回）と `observed(t)` を、`actual()` と `at()` の両方で呼ぶ。→ 求めた値を使い回し、最寄りのマスは `cellKey` で直接引く。`src/track/weatherLog.ts:263-307`
+- [ ] **再生中の時計の文字とシークバーを、毎フレーム書く**〔低〜中/小〕→ 変わったときだけ書く（0-9 の強制レイアウトの引き金にもなっている）。`src/app/replay.ts:210-211`
+- [ ] **`headingAt` を毎フレーム2回、`pts.map(lngLat)` を2回**〔低/小〕→ 点の番号が変わったときだけ計算し、座標の配列は1回だけ作る。`src/app/replay.ts:145-153`・`:300-304`
+- [ ] **時刻での線形探索**〔低/小〕— `weatherAt`（1時間おきなので添字は計算で出せる）、`shownEleAt`（リプレイ中、1秒に十数回全点）、weatherLog の `positionAt`。→ 二分探索か添字の計算（6-2 の `bisect`）。`src/nav/weather.ts:131-156`、`src/app/trackWeather.ts:265-271`、`src/track/weatherLog.ts:58-70`
+- [ ] **雨・雪の描画ループの細かい無駄**〔低〜中/小〕— 毎コマ `clientWidth/Height`・`getContext`・Path2D を2つ・粒ごとの `dropsFor`。canvas は dpr いっぱい（dpr3 で約10MB）でシートに隠れた所にも描く。全画面と一時停止中もループが回る❓。→ 大きさは覚える、しきい値は前もって計算、dpr は2まで、全画面と一時停止のあいだは止める。`src/app/weather.ts:409-453`
+- [ ] **起動のたびに雲のノイズ（約15万回の計算）を作る**〔低〜中/小〕— 使うのはリプレイで weatherFx がオンのときだけ。→ 最初の `drawClouds` で作る。ピクセルごとに作られる `bilinear` のクロージャもやめる。`src/app/weather.ts:184-230`
+- [ ] **リプレイの始めと終わりの小さな無駄**〔低/小〕— タイトルの rAF が録画していなくても3.2秒回る、始めの easeTo のあいだ zoom のたびに render、地図が動く前の中心で雲を描いてすぐ描き直す、終えたあとも `pts` と `cumD` を持ったまま。`src/app/replay.ts:116-121`・`:296-357`、`src/app/weather.ts:142-146`
+
+### 2-3. 下のシート・グラフ・ポケット表示
+
+- [ ] 🔋 **`renderBody` が、見えていないタブの中身まで毎回作る**〔中/小〜中〕— シートが開いていれば、updateNav（30秒ごと＋操作のたび）で行程タブと標高・ペースタブの両方を作る（隠れたタブの canvas も `clientWidth` で強制レイアウト）。→ 見えているタブだけ作り、切り替えたときに作る。`setTab` の `profile.draw()` は ResizeObserver と重なるので消す。`src/app/sheetView.ts:286-408`・`:456-470`
+- [ ] **シートを半分⇄全画面にするだけで、`renderBody` をやり直す**〔低〜中/小〕— `if (open || wasOpen) this.onChange(open)` なので段を変えるだけで作り直す。リプレイを始めるときの `setState('half')` も。→ `if (open !== wasOpen)`。`src/ui/sheet.ts:94`
+- [ ] **カード・行程表・ボタン・ペースの表を、変わっていなくても丸ごと作り直す**〔低〜中/中〕— 開いている記録のカードは中身が変わらないのに30秒ごと。行程の下のボタン（最大5つ。「計画をリプレイ」には長押しのリスナー7つ）も毎回作り直すので、押している最中に作り直されると長押しが外れる。→ ボタンは index.html に置いて hidden で出し分け、行程の ✕ は `#timeline` に1つのリスナー（data 属性で見分ける）。組み立てた結果が同じなら差し替えない。`src/app/sheetView.ts:226-403`
+- [ ] **ポケット表示が、15秒ごとに変わっていなくても DOM を作り直す。15秒のタイマーもいつも動く**〔低〜中/小〕→ 要素は一度作って持ち続け、文字や class が変わったときだけ書き換える。タイマーは `enterPocket` で始めて `exitPocket` で止める。`src/app/pocket.ts:172-209`（`renderPocket`）
+- [ ] **グラフの記録の系列を、描くたびに作り直す（小さいグラフとも二重）**〔低〜中/小〕— updateProfile のたびに `track.map` を3回と累積距離を計算し、同じでも描き直す。→ `{ coords, dists, eles, times }` を点の配列・点の数・revision の鍵で1つ覚えて両方で使い、同じなら `setSeries` しない。`src/app/profileView.ts:58-70`・`:101-117`
+- [ ] **範囲のつまみを動かすたびに、Marker を作り直して線を2回 setData し、範囲の点を数え直す**〔中（動かしているあいだ）/小〕→ Marker は持ち続けて `setLngLat` と札の文字だけ変える。setData と要約は rAF で1フレーム1回（か指を離したとき）。時刻→点の番号は二分探索。`src/app/trimView.ts:20-155`
+- [ ] **閉じている記録の画面の一覧を、作り直している**〔低/小〕— 記録を終えると最大4回、全記録の読み込み・DOM の組み立て・名付けを行う。開くときに必ず作るので要らない。→ `refreshTrackList` の頭で `if (!dialog.open) return`。`src/app/tracks.ts:30-38`、呼び出しは `src/app/recording.ts:146,155,200,292,333,345,351`、`src/app/trimView.ts:192`
+- [ ] **開いている記録のカードで、描くたびにすべての標高を並べ替える**（天気のまとめに使う中央値）〔低/小〕→ 天気があるときだけ計算し、覚えておく。`src/app/sheetView.ts:189`
+- [ ] **横軸の切り替えで2回描く**〔低/小〕→ `setAxis` と `checkSeg` だけに。`src/app/profileView.ts:96-99`
+- [ ] **`detectIdle` を2回計算する**（`offerTrim` と `currentDraft`）〔低/小〕→ `currentDraft()?.d.idle` を使う。`src/app/trimView.ts:40-49`・`:205-213`
+- [ ] **写真を1枚足す・消すたびに、全部の印と object URL を作り直す**〔低/小〜中〕→ 増えた分・減った分だけ足し引きする。`src/app/photos.ts:98-99`・`:200-201`
+- [ ] **写真の縮小で後始末が漏れる**〔低/小〕— 失敗すると `bmp.close()` が呼ばれない。1600px の canvas（約8MB）も GC まで残る。→ close は finally に、canvas は width を0にして手放す。`src/app/photos.ts:75-120`
+
+### 2-4. 記録・ペース・ルートの計算
+
+- [ ] **点が変わっていないのに `state.revision` を上げて、ペース・実績・グラフの覚えを全部捨てさせる**〔中/小〕— 経路名の変更・終えたときの名付け・天気の保存（記録中は30分ごと）・天気の読み込みで上げている。revision を見るのは点の数で覚えている計算（`paceOf`・`shownActual`・`cachedPace`・`miniProfileFor`）だけで、どれも経路名や天気を使わない。→ この4か所は `updateNav()` だけにする。`src/app/recording.ts:153`、`src/app/tracks.ts:135`、`src/app/trackWeather.ts:199`・`:257`
+- [ ] **同じ記録の点列に、休憩の判定（`splitMoving`）と累積距離を何度も計算する**〔低〜中/中〕— `analyzePace`・`paceSegments`・`actualRows` がそれぞれ `splitMoving`（全点の haversine。点ごとに配列2つ）を計算し、`cumD` と同じ累積距離を `profileView`・`replay`・`actual` でさらに計算する。記録中も `paceOf`・`cachedPace`・ポケット表示が別々に覚えている。`analyzePace` の再サンプリングは `RouteTimeline` とほぼ同じ。→ `{ cumD, cumMove, rests }` を trackId:点の数:revision の鍵で覚える関数を1つにして、3つの関数が受け取れるようにする。`actual.ts` は `splitMoving` の `cumD` を使う。`src/nav/eta.ts:224-244`・`:262-358`、`src/track/actual.ts:42-44`、`src/app/profileView.ts:65`・`:110`、`src/app/replay.ts:300`、`src/app/pocket.ts:93`
+- [ ] **通過した地点の到着時刻を、毎回記録の先頭から全点調べる**〔低〜中/小〕— 通過済みの地点ごと、`computeNav` のたび。80m以内を通っていない地点は毎回全点を最後まで。`recorder.state` も呼ぶたびにオブジェクトを作る。→ 地点ごとに見つけた点の番号と「どこまで見たか」を覚えて、増えた点だけ見る（1-6 の周回ルートの不具合も一緒に直る）。`src/app/nav.ts:57-61`・`:116`
+- [ ] **`paceOf` が15秒ごとに、点が増えていなくても全部やり直す**〔低/小〜中〕— 「今」で変わるのは経過・休憩・止まっている時間だけ。→ 点だけで決まる部分を覚え、時間の部分だけ毎回足す。`src/app/nav.ts:74-84`、`src/nav/eta.ts:288-358`
+- [ ] **`RouteTimeline.gain` が毎回全区間を走査し、ルートが決まれば変わらない区間の値を毎回計算する**〔低/小〕→ 範囲の中だけ走査する。区間ごとの距離・登り下り・見積もりは setRoute のときに一度作る。`src/nav/eta.ts:142-150`、`src/app/nav.ts:107-119`
+- [ ] **標高グラフと計画のリプレイが、ルートの全点で `estimate` を呼ぶ**（1点ごとに二分探索6回）〔低〜中/小〕→ 係数をかけた累積の分の配列を1回作り、各点は補間1回で（等間隔なので添字は O(1)）。`src/nav/eta.ts:132-139`、`src/app/profileView.ts:133`、`src/app/nav.ts:155-160`
+- [ ] **`projectOnRoute` の細かな無駄**〔低/小〕— 窓の端を線形に探す、`RoutePosition.index` はどこからも読まれない、出発時刻を指定した計画中も投影する、最新の点を `offRouteAlert` と `computeNav` で別々に投影する。`src/nav/eta.ts:394-435`、`src/app/nav.ts:92-95`
+- [ ] **まとめて取り込むときの標高（待ち0ms）が、点ごとにタイマーを作って消さない**〔低/小〕— `Promise.race` のタイマーを点ごとに作る（7200点なら7200個）。→ 読み終えたタイルから同期で引く `elevationCached()` を足し、まとめて取り込む途中はそれを使う。`clearTimeout` もする。`src/track/recorder.ts:322`、`src/map/gsiDem.ts:176-184`
+- [ ] **`DemSampler` の覚え（48枚）を、404 の null も1枠使う**〔低/小〕— 5m メッシュのない所では1地点で2枠使い、本物のタイルが早く追い出される。→ 404 のキーは別の Set に。`src/map/gsiDem.ts:178-218`
+- [ ] **gsiDem の細かい点**〔低/小〕— `bilinear` が毎回配列と関数を作る（ルートの全点・記録の点ごと）、`decodeImage` が毎回 canvas の大きさを代入する、取り消された依頼でも ImageBitmap を作る、404 で0mの平面タイルを毎回画像にして送る❓、地形と陰影で共有する `converted`（16枚）はズーム14未満では当たらない❓。`src/map/gsiDem.ts:84-118`・`:156-157`・`:223-242`
+- [ ] **点の多い GPX を、間引かずにルートにする**〔中（該当時）/小〕— 1秒ごとのログの GPX（数万点）だと、当てはめ・setData・グラフ・道迷いの判定・localStorage の保存にそのまま効く。→ 読み込むとき5〜10m未満の点を落とす（か許容2〜3mの Douglas–Peucker）。`src/nav/plan.ts:338-346`
+- [ ] **GPX の解析で、文書全体を何度も配列にする**〔低/小〕— `byTag` が `getElementsByTagName('*')` を4〜5回、`readPoint` が `Array.from(children)` を2回。→ `getElementsByTagNameNS('*', tag)`、子要素は1回だけ走査。`src/track/gpx.ts:30-74`
+- [ ] **`sample.ts` の細かい点**〔低/小〕— `pointAt` が毎回先頭から線形探索（`interp` で二分探索に）、`fillElevations` を2回、id を受け取れば `menu.ts` の全点コピー（trackId の付け替え）が要らない。`src/track/sample.ts:45-89`、`src/app/menu.ts:222`
+- [ ] **`actual.ts` の休憩の割り当てが O(区間×休憩)**〔低/小〕→ 時刻順なので添字1本で進める。`src/track/actual.ts:55-85`
+
+---
+
+## 3. 通信
+
+### 3-1. ルート作成・道データ
+
+- [ ] **地理院のタイルを、1枚につき2回まるごと解析する**〔中/小〕— `new VectorTile(…)` は作るときに全レイヤーの辞書を読む。最大500枚それぞれで、`decodeRoadTile` と `decodeLabels` が別々に作る。→ 1回だけ作って RdCL と Anno を読む `decodeGsiTile` に。`src/route/roadTiles.ts:243-246`・`:135`・`:305`
+- [ ] **経由地を足す・消すたびに、道データの取得・デコード・グラフ作成を最初からやり直す**〔中/中〕❓— 範囲が同じか内側でも。→ 直前の {範囲, 道の線, 地名, グラフ} を1件だけ数分覚える（グラフは数十MBになりうる）。軽い手として、タイル単位のデコード結果の LRU だけでも。`src/nav/plan.ts:226-234`、`src/app/route.ts:106-151`
+- [ ] **通過点を探すのに「地名の数×ルートの全線分」を、候補ごとに繰り返す**〔中/小〕— 範囲内の全タイルの注記（数百〜数千）それぞれで hint なしの `projectOnRoute`。正規表現の絞り込みも候補ごと（最大4回）。→ 絞り込みはループの外で1回。ルートの点を粗い格子（100m）に入れ、近くの地名だけ投影する。`src/nav/plan.ts:149-157`・`:286`
+- [ ] **最短経路探索がダイクストラのまま（A* の見積もりがない）**〔中/小〕❓— 1区間につき4プロファイルで走る。→ ヒープのキーを `dist + ゴールまでの平面距離` にする（重みは1以上なので許容的）。`src/route/trailRouter.ts:237-269`
+- [ ] **`TrailGraph` の格子が文字列キーで、吸着のたびに61×61マスを調べる**〔低〜中/小〕→ 数値キーにする、内側のリングから広げて打ち切る、吸着の結果をプロファイル間で共有する。`src/route/trailRouter.ts:108-210`
+- [ ] **ルート候補の標高を、候補ごとに全点の Promise で取り直す**〔低〜中/中〕❓— 長いルートでは、48枚の覚えから追い出されたタイルを次の候補で取り直す。→ 全候補の点をタイルごとに分け、タイルを1回待ってから同期で補間する。`src/nav/plan.ts:133-135`・`:275-284`
+- [ ] **小道の層を隠していても、起動のたびに TileJSON を取る**（MapLibre と `osmTileTemplate` の二重）〔低/小〕→ 層をオンにしたときに addSource するか、`osmTileTemplate` の結果を `tiles` で渡す。`src/app/trails.ts:40`、`src/route/roadTiles.ts:261-287`
+- [ ] **小さな確保の無駄**〔低/小〕— `clipSegment` が線分ごとに配列を5つ、`route()` のたびに N 個の配列3つと pop ごとのタプル、候補の重なりの判定で投影と格子を作り直す。`src/route/roadTiles.ts:92-97`、`src/route/trailRouter.ts:220-353`
+
+### 3-2. 場所の情報（Overpass・Commons・iNaturalist）
+
+- [x] **1回の取得の中で、断られたあとも次のグループで Overpass に聞く**〔中/小〕— クールダウンを見るのは関数の最初だけ。オフライン保存（force）は最初から無視するので、混んでいると22マスのルートで最大6分待つ（画面の案内は「1分ほど」）。→ ループの頭でも確かめ、force でも一度 busy になったら残りは端末のタイルだけにする。`src/places/load.ts:117-141`（済：0-11 と一緒に。force でも、1回の取得で一度取れなかったら残りは端末の地図データだけ）
+- [ ] **場所の GeoJSON を、1マス届くたびに全部作り直して setData する（空のマスでも）**〔中/小〜中〕— 覚えている最大150マスの全部の場所から Feature を作り直す。写真・生きものを出していると、1回の読み込みで最大16回。→ 空→空や同じ中身なら描かない。マスごとの Feature を作っておいて連結するだけにする。地図に出すのは表示中のマスとそのまわり1周に。`src/app/places.ts:158-171`・`:203`・`:245`
+- [ ] **オフライン保存の場所の情報が、メモリの覚え（150マス）と描き直しを巻き込む**〔中/小〕— 保存中は画面の外の場所のために全体の作り直しを何十回も行い、今見ているマスを追い出す。→ `ensurePlaces` からは IndexedDB に書くだけにする。`src/app/places.ts:231-287`
+- [ ] **オフライン保存の場所の情報を、出どころごとに順に取る**〔中/小〕— サーバーは別々で、`inQueue` が出どころごとに1本に絞っているので、並べても1つのサーバーへの負担は増えない。→ `Promise.all(REMOTE_SOURCES.map(…))`。`src/app/places.ts:261-287`
+- [ ] 🔋 **裏に回しても・ポケット表示でも・層を隠しても、取得中の仕事を続ける**〔中〜低/小〕— アプリ版では画面を消したあとも残りのマスを取り続ける（Commons なら最大32回）。→ `keep` に `!document.hidden && !pocketActive() && 出している出どころ && 古いか` を足し、AbortController で中止する。`src/app/places.ts:214`
+- [ ] **端末にないマスを、読み込みのたびに IndexedDB に聞き直す**〔低〜中/小〕— 追従中は1〜2秒ごと。→ 「なかったキー」を数分覚える。読み込みが重なったら次の1回だけ予約する。`src/app/places.ts:199-204`
+- [ ] **iNaturalist は API v1 の重い答え（1件数KB〜）を取る**〔中/中〕❓— 使うのは id・位置・日付・名前・写真1枚・出典だけ。→ v2 の `fields` で要る項目だけ取る。`src/places/sources.ts:241-297`
+- [ ] **Commons は1マスに2回聞く**（geosearch と imageinfo）〔中〜低/中〕❓→ `generator=geosearch` に `prop=imageinfo|coordinates` を付けて1回に。`src/places/load.ts:56-60`、`src/places/sources.ts:145-188`
+- [ ] **Overpass にまとめて聞く範囲が広がり、範囲の外の答えを捨てる**〔中〜低/小〜中〕— 中心から近い順に9個ずつ切るので、2つ目のグループの外接長方形が1つ目まで覆う（タブレットのズーム12で1.6〜2.1倍の面積）。→ 3×3 の格子の区画でまとめる。`src/places/load.ts:124-125`、`src/places/sources.ts:113-123`・`:480-484`
+- [ ] **OSM のマスに件数の上限がない**〔低〜中/小〕❓— 駐車場・バス停・宿を足したので、町なかでは1マスに数百〜数千件入りうる。→ 名前のあるものだけ・access=private を除く・上限を設ける。`src/places/sources.ts:310-322`
+- [ ] **場所の GeoJSON ソースの maxzoom が既定の18**（点だけなのに z15〜18 も切る）→ `maxzoom: 14`〔低/小〕❓ `src/app/places.ts:112`
+- [ ] **「山の施設をすべて出す・隠す」で setLayer を11回呼ぶ**（保存・setFilter・読み込みの予約が11回ずつ）→ `setLayers(ids, on)` で1回に〔低/小〕`src/app/layers.ts:95-99`、`src/app/places.ts:61-71`
+- [ ] **場所のマスの保存が、1マスごとに1トランザクション** → `putPlaceCells(list)` で1回に（ストアは変えない）〔低/小〕`src/track/db.ts:355-361`、`src/app/places.ts:246`
+
+### 3-3. オフライン保存・Service Worker
+
+- [ ] **30日を過ぎた表示済みのタイルは、時間切れなしでネットを待つ**〔中/小〕— 弱い電波ではタイルが数十秒出ない（計画のときに見てから1か月後に歩くと、見た範囲はほぼ全部これ）。取り直しが 5xx だと、写しがあってもエラーを返す。→ 写しをすぐ返して裏で取り直す（`event.waitUntil`）か、3〜4秒で写しに切り替える。`!res.ok && res.status !== 404 && seen` なら写しを返す。`src/sw.js:74-89`
+- [ ] **Web 版の更新のたびに、Service Worker がアプリ本体を全部取り直す**〔中〜高（Web 版）/中〕— `cache: 'reload'` で PRECACHE（約2.0MB、gzip 約0.58MB）を毎回取る。maplibre が `index-*.js` に入っているので、1行直すだけで1.33MB の名前が変わり、中身の同じワーカー（519KB）も取り直す。→ maplibre を別のチャンクに分ける（Vite 8 / Rolldown の `build.rolldownOptions.output.codeSplitting.groups`）。ハッシュ付きの `assets/` は前のシェルのキャッシュにあれば写し、`./`・manifest・icons・routes は `cache: 'no-cache'` に。見込みで1回 gzip 約0.58MB → 約0.1MB。アプリ版は対象外。`src/sw.js:32-43`、`vite.config.ts`
+- [ ] **「保存」を続けて押すと、2本同時に走る**〔低〜中/小〕— 地理院へ8接続になり（決めているのは4）、1本目は中止できなくなる。→ 関数の頭で準備中の印を立てて、ボタンを無効にする。`src/app/offline.ts:103-123`
+- [ ] **範囲の削除が数千件を1件ずつ await し、進み具合もボタンの無効化もない**〔低〜中/小〕→ 8〜16件ずつ並べて消し、削除中はボタンを無効にする。`src/offline/download.ts:116-121`、`src/app/offline.ts:221-230`
+- [ ] **タイル保存の fetch に時間切れがない**（応答が止まると4本のうち1本がずっと止まる）→ `AbortSignal.any([signal, AbortSignal.timeout(30_000)])`〔低〜中/小〕`src/offline/download.ts:95`
+- [ ] **メニューを開くたびに、保存した範囲を URL の一覧ごと全部読む**（1範囲約30万字。出すのは件数・名前・日付だけ）〔低〜中/小〕→ 一覧を覚え、保存・削除のときだけ読み直す。⚠️ URL を別のストアに分けるなら、ストアを足す形にして古い `urls` も読めるように残す。`src/app/offline.ts:192-243`、`src/track/db.ts:421-424`
+- [ ] **進み具合の表示を1枚ごとに書き換える**（4000枚で4000回）→ rAF でまとめる〔低/小〕`src/offline/download.ts:107-108`、`src/app/offline.ts:125-129`
+- [ ] **`putBrowse` が本体を blob に読んでから入れ直す** → `new Response(res.body, { status, statusText, headers })` で流したまま入れる〔低/小〕`src/sw.js:96-102`
+- [ ] **同じズームの帯を、層ごとに作り直す**（z14・z15 は3回）→ ズームごとに覚える〔低/小〕`src/offline/download.ts:52-63`
+- [ ] ⚠️ **SW の activate が、「yama-map-」で始まるキャッシュをすべて消す対象にしている**〔低（今は起きない）/小〕— 将来 TILE・BROWSE の名前を変えると、新しい SW が有効になった瞬間に保存した地図が消える。→ 消す対象を `yama-map-shell-` で始まるものに限る（保存した地図を消さないための守り）。`src/sw.js:45-55`
+
+### 3-4. 天気
+
+- [ ] **解析雨量のタイル：当たらない覚え、1ピクセルのためにタイル全部、1枚ずつ順に読む**〔中/小〜中〕— URL に時刻が入るので Map は当たらないのに、毎回 canvas を作って256KB の ImageData を読み、collect が終わるまで全部持つ（11時間分で22枚・約5.6MB）。タイムアウトしても画像の読み込みは止まらない。→ 1ピクセルだけ読む（共有の 1×1 canvas か `createImageBitmap(blob, px, py, 1, 1, …)`）。fetch にして AbortSignal で止め、3〜4枚ずつ並べる。`src/app/trackWeather.ts:56-95`・`:144-151`
+- [ ] **アメダスの地点表をアプリを開くたびに取り直す。30km 以内に地点のない記録は、9日間、画面に戻るたびに全点と表を読み直す**〔低〜中/小〕→ 地点が決まっていれば表を使わない。「地点なし」も TrackWeather に残す（項目を足すだけでストアは変えない）。`src/app/trackWeather.ts:41-53`・`:172-194`・`:223-234`
+- [ ] **記録したときの天気の取得の細かい重複**〔低/小〕— `getTrackWeather` を記録ごとに2回（`collectPending` と `collect`）、`targetTimes.json` を記録ごとに取り直す、マスの一覧は want.analysis でないとき（記録中）も全点から作る。→ rec を collect に渡す、targetTimes は数分覚える、マスは if の中で作る。`src/app/trackWeather.ts:135`・`:141-160`・`:230`
+- [ ] **予報の範囲外の時刻でも、予報を取りに行く**〔低/小〕❓— 昔の「予定」を開いたときや、1週間より先の出発のとき。→ 前日〜`forecastHorizon()` の外なら呼ばない。`src/app/sheetView.ts:66-100`・`:304`、`src/app/weather.ts:127-135`
+
+### 3-5. そのほか
+
+- [ ] **名付けられなかった記録を、起動のたびに読み直す**（全部の点と地名のタイル）→ 試した記録の id を localStorage に残す〔低/小〕`src/app/trackNames.ts:73-89`
+- [ ] **地名の検索の細かい点**〔低/小〕— 日本語の変換中に400ms止まると、未変換のかなで問い合わせる。同じ語でも Enter で取り直す。ダイアログを閉じてもタイマーと通信が残る。重複の除去が O(n²)。→ `isComposing` のあいだは予約しない、直前と同じ語なら取らない、close で clearTimeout と abort、重複の除去は Map で。`src/app/search.ts:21-72`
+
+---
+
+## 4. 端末への保存（localStorage・IndexedDB・ファイル）
+
+- [ ] ⚠️ **表示中のルートの保存で、選んでいる候補を2回書き、数値も全桁で書く**〔中/小〜中〕— `chooseOption` が候補を最上位に広げるので、coords・eles・dists が JSON に2回入る。座標は17桁、標高も長い小数。候補4つ×1000点で約376KB を同期で stringify し（起動時は同期で parse）、天気・ログと同じ容量の枠を使う。→ 保存するときは最上位の形を省いて options と chosen だけにし、座標は小数6〜7桁・標高と距離は0.1mに丸める（試算で約39%）。`loadSavedRoute` は今の形も必ず読めるようにし、新しい形には版（`v: 2`）を付ける。キー `yama-map:route` は変えない。`src/nav/plan.ts:302-306`・`:420-444`
+- [ ] **天気予報の保存が、届くたびに全マスを詰め直して書く**〔低/小〜中〕— 1マス約4.7KB、上限200マスで約1MB（ふだんは数十KB なので今の実害は小さい）。→ 24時間より前を落とす、`KEEP_CELLS` を50程度に、詰めた形を覚えておく。⚠️ IndexedDB に移すならストアを足して版を上げるだけにする。`src/app/weather.ts:40-80`
+- [ ] **ログの保存が、2秒ごとに全行（最大1500行）を stringify して書き直す**〔低〜中/小〜中〕— 0-6 で行の数を減らせば大半は消える。根本的には日ごとのキーに分けるなど（キーを変えるなら古いキーも読む）。`src/log.ts:25-40`
+- [ ] **バックアップのファイルで、点ごとに trackId を書いている**〔低〜中/小〕— 1点約170バイトのうち約50バイト。読み込むときは最初の版から必ず記録の id で上書きしているので、書かなくても困らない（版を上げずに互換を保てる）。→ `JSON.stringify` の replacer で点の `trackId` を飛ばす。記録の行が25〜30%小さくなる。`src/track/backup.ts:33`・`:75-80`、`src/app/transfer.ts:37`
+- [ ] **記録の書き出しで、全部の行を文字列のまま持ち、二重に押すと二重に走る**〔中（写真が多いとき）/小〕→ 1行ごとに `new Blob([line])` にして文字列を手放す。記録ごとの読み出しは `Promise.all`。書き出し中はボタンを無効にする。`src/app/transfer.ts:24-50`
+- [ ] **記録のファイルの読み込みが、長い行で行の長さの二乗に比例する**〔中（版1や写真の多いファイル）/小〕— 届くたびに `rest += value` → `rest.indexOf('\n')` を先頭から探す。→ 新しく届いた部分だけで改行を探し、断片は配列にためて join する。ファイルの形は変えない。`src/app/transfer.ts:53-68`
+- [ ] **`deleteTrack` が点を1件ずつ消す**（2万点なら2万回）〔低/中〕→ index の最初と最後の主キーと件数が合えば、`IDBKeyRange.bound` で1回に（版は変えない）。`src/track/db.ts:282-310`
+- [ ] **3D の起伏のスライダーが、動かすたび（input）に設定を保存する** → input では地図だけ変え、change で保存〔低/小〕`src/app/menu.ts:163-166`、`src/app/mapView.ts:102-106`
+- [ ] **点ごとの保存に `durability: 'relaxed'` を明示する**〔低/小〕❓— 古い WebView では readwrite の既定が strict（書くたびに fsync）のことがある。今の Chrome では既に relaxed。`src/track/db.ts:236`
+
+---
+
+## 5. Android（ネイティブ）
+
+全体としては、書き込みは受信ごとに1トランザクション、ウェイクロックなし、センサーは CPU を起こさない種類でまとめて届く、とよく作られていて、大きな無駄は少ない。
+
+- [ ] 🔋 **「止まっているか」の確かめと10分ごとの計測が、端末が眠っているあいだ進まない時計で動いている**〔中〜高/中〕❓— `Handler.postDelayed` は uptime（CPU が起きていた時間）で数え、CPU を起こさない。画面オフで休憩していると30秒ごとの確かめが何分も後になり、「3分止まったら GPS を間引く」が遅れるか、短い休憩では効かない。歩数の時刻も「届いた時刻」なので、まとめて届くと「今歩いた」ことになる。→ 測位・歩数を受け取ったついでにも確かめる。止まっているあいだは `AlarmManager.set(ELAPSED_REALTIME_WAKEUP, …)` の不正確なアラームを1つだけ置く（API 24 から・許可不要）。`steppedAt` は `event.timestamp` から。確かめ方：画面オフで記録したログの「計測 区間=」「間引き=」「止まっているので測位を間引いた」の時刻。`TrackingService.java:228`・`:375`・`:407`・`:496`・`:510`・`:539`
+- [ ] 🔋 **記録中の通知を、画面オフでも1分ごとに作り直す**〔低〜中/小〕— 書き換えのたびに、チャンネルの確認・起動インテントの検索・PendingIntent 2つの作成（システムへの呼び出し5回前後）。距離が同じでも書き換える。→ チャンネルは onCreate で1回、Builder と PendingIntent は使い回して文字だけ変える、同じ文なら notify しない、画面オフのあいだは書き換えず SCREEN_ON で1回。`TrackingService.java:213`・`:686-745`
+- [ ] 🔋 **JS が点を足さない受信でも、毎回 JS を起こす**〔低〜中/小〕❓— 止まっているときの GPS のぶれ・誤差40m超・間引き中の粗い測位でも `signal("fixes")` を送り、WebView が getFixes して全部捨てる。→ 「誤差40m以内で8m以上動いた点」があったときだけ知らせ、保険として2分に1回。取り込みは id 順なので欠けない。`TrackingService.java:199-211`
+- [ ] **「保存した」の知らせのあと、毎回 getFixes で取りに行く**〔低/中〕→ 知らせに受信した点と「前回の最後の id」を載せ、JS の afterId と一致すればそのまま使う。`TrackingPlugin.java:65-68`、`src/track/location.ts:200`・`:253`
+- [ ] **使っていない部品が動いている**〔低（外すなら中）/小〕— local-notifications の起動時の受信（端末を起動するたびにプロセスを起こし、保存してある「離れています」を出し直す）・`SCHEDULE_EXACT_ALARM`・`RECEIVE_BOOT_COMPLETED`・ContentProvider、androidx.startup の `EmojiCompatInitializer`（画面は WebView なので要らない）。→ `AndroidManifest.xml` で `tools:node="remove"`（`SCHEDULE_EXACT_ALARM` を外すなら 1-1 の `isExactNotification: false` が必須）。さらに進めるなら、通知の許可と道迷いの通知を TrackingPlugin に移してプラグインを外す（チャンネル `off-route` は同じ id で使い続けられる）
+- [ ] **JS とネイティブの細かい往復の重複**〔低/小〕— `checkPermissions` を2回（`src/track/location.ts:140`・`:156`）、続けるたびに許可を求め直す（`src/track/recorder.ts:160`）、表に戻るたびの `status()` が2回と、記録中で表のとき30秒ごとの `status()`（`location.ts:243`・`:307-311`）、設定画面から戻ると電池の確認が2回（visibilitychange と resume の両方。Web 版でも登録している。`src/app/battery.ts:38-42`）
+- [ ] **通知に出す距離が、アプリの距離と違う数え方**〔低/小〕— Java は「8m 以上動いたら足す」だけ、JS は `max(8m, 誤差の半分)` と秒速12m の跳ねの除外。誤差20〜40m の森では通知の距離が多くなる。Java の中でも同じ数え方が2か所（受信時と `TrackingStore.distance`）で、`distanceTo` を2回計算している。→ JS と同じ規則の小さなクラスを1つにする。`TrackingService.java:82-84`・`:199-210`、`TrackingStore.java:136-159`
+- [ ] **Capacitor のひな形が残っている**〔低/小〕— `ExampleUnitTest.java`・`ExampleInstrumentedTest.java`（後者は `com.getcapacitor.app` と比べるので動かすと必ず失敗）とテスト用の依存、`res/layout/activity_main.xml` と coordinatorlayout（BridgeActivity は capacitor の layout を使う）、`res/drawable/ic_launcher_background.xml`（格子模様。アイコンは `@color/ic_launcher_background` を使う）、`strings.xml` の `package_name`・`custom_url_scheme`、`file_paths.xml` の external-path（共有は Cache だけ）、`app/build.gradle` の flatDir・fileTree（libs なし）と google-services（json なし）
+- [ ] **ビルド設定**〔低（主にビルド時間）/小〕— `android:build` は毎回 `cap sync`（Web だけ直したなら `cap copy android` で足りる）、`gradle.properties` に caching・parallel・configuration-cache と `-Xmx2g`（configuration cache が通るかは❓）、`proguard-android.txt` は非推奨（minify を有効にするときは optimize 版に）、play-services-location 21.0.1 は古い❓。⚠️ ふだん使っているのは debug APK（debuggable）。release を debug 鍵で署名すれば鍵が同じなので上書きで入り、データを消さずに debuggable を外せる（鍵そのものは変えない）
+- [ ] **Java の共通化**〔低/小〕— SharedPreferences のキーの文字列が2つのクラスに散らばっている（文字列は変えずに定数へ）、身体活動の許可の判定が2か所（`TrackingService.java:461-464`・`TrackingPlugin.java:218`）、通知のチャンネル・インテント・アイコンの組み立てが2か所（`:686-700`・`:711-731`）、screenReceiver の解除の try/catch が3回と後片付けの重複、TAG が2か所、ログの文に閾値を直書き（`:551`）、色 #16805c が2か所、電池残量を2回読む（`:412`・`:421`）
+
+---
+
+## 6. 共通化
+
+### 6-1. 書式と定数
+
+- [ ] **日付・時刻の書式が、あちこちで自前**〔低/小〕— `names.ts` の `clock` は `dom.ts` の `fmtClock` と同じ。曜日の表が2か所（`src/track/names.ts:34`・`src/app/sheetView.ts:50`）、2桁そろえが4か所（`sheetView.ts:410`・`weatherLog.ts:181`・`dom.ts:30`・`geo.ts:215`）、「M/D」を `photos.ts:177` でも、`toLocaleDateString('ja-JP')` が5か所（`places.ts:331` の `fmtDate`・`offline.ts:201`・`layers.ts:71`・`sheetView.ts:177`・`replay.ts:388`）、`toLocaleString` にロケールがないものが `offline.ts` に6か所、所要時間の書式もばらばら（`tracks.ts`・`sheetView.ts:182`・`trimView.ts:107`）、MB の出し方が2通り（`download.ts:128`・`diagnostics.ts:49`）。原因は、DOM に触れない `track/` から `dom.ts`（Capacitor を読み込む）を使えないこと。→ DOM に依存しない `src/format.ts` に置き、`dom.ts` から再 export する。⚠️ 記録の名前「2026/11/15 07:20 の記録」（`src/track/recorder.ts:123`）は保存されるデータなので、形を変えない
+- [ ] **時間の定数を毎回書いている**〔低/小〕— `3_600_000` が29行、ほかに `86_400_000`・`24 * 60 * 60_000` など。`nav/weather.ts:158` の `HOUR_MS` は非公開で、同じファイルの中でも直書きしている。→ `MIN_MS`・`HOUR_MS`・`DAY_MS` を1か所に
+- [ ] **同じ意味の数値が、別々に書いてある**〔低/小〕— 地点を「通った」とみなす80m（`nav.ts:59`・`actual.ts:34`）、ルートから離れすぎの5000m（`nav.ts:100`・`:127`・`offRoute.ts:9` の `OFF_ROUTE.MAX_M`。上の表示とアラートがずれうる）、休憩の切れ目の90秒（`replay.ts:23`・`eta.ts` の `STOP_MIN_GAP_S`）、直近20秒の測位（`recorder.ts:280`・`recording.ts:54`。文言も同じ）、`evidenceMin > 10` が5か所（`sheetView.ts:186,245,390,391`・`pocket.ts:89`）、出発地・到着地の近くの300m（`actual.ts:36`・`names.ts:16`）、`eta.ts:311` の `180`
+
+### 6-2. 地理・タイルの計算（`geo.ts` へ）
+
+- [ ] **度 → m の係数**〔低/小〕— `111_320`・`110_574` が `eta.ts:403`・`plan.ts:122`・`roadTiles.ts:325,340,348`・`trailRouter.ts:58`・`sample.ts:67`・`geo.ts:35,47`・`corridor.ts:8` に、`111_000` が `trackNames.ts:29` に。→ `metersPerDegree(lat)`。`corridor.ts` の `tileSizeM` は `metersPerPixel × 512` と同じ、`aroundPoint` は `roadTiles.ts:324`・`trackNames.ts:29` と同じ計算
+- [ ] **タイル番号 → 経緯度が3か所**（`geo.ts:75-78` の中・`savedAreas.ts:14-18`・`roadTiles.ts:118-125`）→ `lngLatToTile` と対の `tileToLngLat`。範囲 → タイル URL の列挙も2か所（`roadTiles.ts:187-196`・`download.ts:36-49`）
+- [ ] **線分への最近点が2か所**（`trailRouter.ts:301-307`・`eta.ts:410-418`）。`zeroKinds` も2か所（`plan.ts:169`・`trailRouter.ts:67`）
+- [ ] **二分探索が4か所あり、同じことを線形探索で書いている所もある**（二分探索：`ui/profile.ts:237`・`replay.ts:130`・`eta.ts:56` の `interp`・`photoPlace.ts:21`。線形：`eta.ts:429`・`nav.ts:180`・`profileView.ts:138`・`trimView.ts:28`）→ `bisect` を1つ
+- [ ] **時刻から位置を求める処理が3つ**（`photoPlace.ts:21` は二分探索、`weatherLog.ts:58` は同じ仕様の線形、`replay.ts:131-161`）。時刻が一番近いものを探す処理も2つ（`weatherLog.ts:247`・`trackWeather.ts:265`）→ DOM に依存しない1か所に
+- [ ] **一番遠い点を2回、別の尺度で探している**（`names.ts:76-81` は haversine、`trackNames.ts:47-53` は度の二乗）— 東西に長い周回では2点が300m以上ずれ、往復の真ん中の名前が抜けることがある。→ `farthestFrom` を1つにし、trackNames で一度だけ求めて渡す
+- [ ] **点 → `[lng, lat]` が5か所以上**（`trim.ts:20` の `ll`・`trimView.ts:60`・`profileView.ts:65,109`・`trackNames.ts:44`・`replay.ts:142`・`sheetView.ts:485`）→ `shownOf` で座標の配列も一度だけ作って持たせる
+- [ ] **今の表示範囲の計算が2か所**（`places.ts:187-190`・`offline.ts:80-82`）→ `mapView.ts` に `viewBoundsNow()`
+
+### 6-3. 通信・非同期の小道具
+
+- [ ] **fetch して状態を確かめて JSON にする処理が6か所あり、タイムアウトの書き方が4通り**（`AbortSignal.timeout` の別名（`trackWeather.ts:39`）、`AbortSignal.any`（`load.ts:38`）、setTimeout と AbortController（`search.ts:48-56`）、`Promise.race`（`sw.js:72`。時間切れのあとも fetch は続く））→ `fetchJson(url, { timeoutMs, signal })` を1つ
+- [ ] **並列数を絞った取得が2か所**（`roadTiles.ts:202-225`・`download.ts:89-111`）→ signal 付きの `runLimited(items, 4, fn)`（0-12 と一緒に）
+- [ ] **キーごとに順に実行する処理が3か所**（`trackWeather.ts:116` の `queued`・`load.ts:50` の `inQueue`・`offRouteAlert.ts:35` の `enqueue`）
+- [ ] **文字列キーのメモが5か所**（`sheetView.ts:149`・`profileView.ts:58,85`・`pocket.ts:78`・`trimView.ts:20`。キーのずれで 1-17 も起きている）→ 小さな `memo(key, fn)`
+- [ ] **localStorage の JSON の読み書きが6か所**（settings・log・places・weather・roadTiles・plan）。遅らせて保存し、裏に回るとすぐ保存する処理も2か所（`weather.ts:55-80`・`log.ts:23-39`）→ `loadJson`・`saveJson`・遅延保存の小道具
+- [ ] **画像からピクセルを読む処理が2か所**（`gsiDem.ts:84-95` の `decodeImage`・`trackWeather.ts:56-80`）→ `decodeImage` を共通に
+- [ ] **種付き乱数（mulberry32）が2か所**（`sample.ts:33-42`・`weather.ts:188-194`）
+- [ ] **定期処理の小道具に「止める」がない**ので、`perf.ts`・`pocket.ts`・`nav.ts` の1秒タイマーが自前で回すか、いつも動いている → `whileVisible` が止める関数を返すようにする（0-4）
+
+### 6-4. 画面の部品
+
+- [ ] **ダイアログを背景のタップで閉じる処理が8か所**（`menu.ts:38`・`tracks.ts:27`・`diagnostics.ts:81`・`layers.ts:92`・`photos.ts:30,204`・`places.ts:396`・`search.ts:18`）。閉じるボタンの仕組みも2通り（`value="close"` と `data-close`）→ `main.ts:63-68` の共通の click に `if (e.target instanceof HTMLDialogElement) e.target.close()` を足して消し、`data-close` にそろえる
+- [ ] **ボタンを作る書き方が17か所**（`h('button')` のあと `type = 'button'`。`sheetView.ts:351` の `btn` は `tracks.ts` のものとまったく同じ）→ `dom.ts` に `button(cls, label, onClick)`。一覧の1件（`tracks.ts`・`offline.ts:196-233`・`layers.ts:69-83`）、ファイルの選択（`menu.ts:101`・`layers.ts:101-105`・`transfer.ts:124-127`）、`setProgress` の try/finally（`menu.ts`・`layers.ts:106-114`）も小道具に
+- [ ] **カードとポケット表示で同じ組み立て・文言**— 到着予想の行（`sheetView.ts:23-38`・`pocket.ts:159-170`）、日没の行（`sheetView.ts:250-253`・`pocket.ts`）、「ルートから約…離れています」（`sheetView.ts:139`・`pocket.ts`・`status.ts:36`）、数字のタイル（`sheetView.ts:261-271,399-403`・`pocket.ts:151`）。行程の行も4か所（`sheetView.ts:128-145,203-223,298-321,331-336`）
+- [ ] **天気の一行の書式が3か所**（`sheetView.ts:55-89` の `wxRow`・`recordedWxLine`、`trackWeather.ts:284-296` の `weatherShort`）。雪の天気コードの判定も2か所（`weather.ts:355`・`weatherLog.ts:253`）→ `nav/weather.ts` に
+- [ ] **地図のボタン（IControl）3つがほぼ同じ形**（`mapView.ts:54-74`・`compass.ts:140-161`・`layers.ts:15-31`）→ `mapButton(cls, title, content, onClick)`
+- [ ] **FileReader → data URL が2か所**（`transfer.ts:15-21`・`dom.ts:106-113`）。長押しも2つ（`pocket.ts:212-` と `dom.ts:119-154`。`onLongPress` に「指が動いてもやめない」などの選択肢を足せば1つ）
+- [ ] **ポケット表示の判定を class で直接見ている**（`compass.ts:63,104`・`weather.ts:411`）→ `pocketActive()`。`weather.ts:411` と `pocket.ts:64` の雨の処理は、リプレイとポケット表示が重ならないので意味がなくなっている
+- [ ] **「予定」の記録の判定 `startsWith('plan-')` が7か所** → `isPlanTrack(t)`（`trackWeather.ts:281` の `showingPlan` もこれで）
+
+### 6-5. 地図の層・スタイル・URL
+
+- [ ] **ズームで補間する式がばらばらで、線の層5本が id・ソース・色・太さだけ違う**（`mapView.ts:177`・`:214-242`、`trails.ts:35-50`、`places.ts:123`）→ `byZoom()`・`lineLayer()`
+- [ ] **地形の指定 `{ source: 'dem-terrain', exaggeration }` が3か所、`'dem-terrain'` の文字が4か所**（`main.ts:53`・`mapView.ts:105`・`style.ts:135`）
+- [ ] **`createStyle` の sky は `daylight.ts` と同じ値で、`toneStyle` が必ず上書きするので使われていない**。陰影の 0.35 も2か所（`style.ts:97,110-118`・`daylight.ts:18-26,109`）
+- [ ] **「保存した範囲」だけ、呼ぶ側が setLayer のあとに showSaved を呼ぶ**（`layers.ts:40-43`・`offline.ts:208-209`）→ 登山道と同じく setLayer の中で呼ぶ
+- [ ] **地理院の URL・キャッシュ名・タイルのホストが4か所に散らばっている**（`download.ts:22-32`・`gsiDem.ts:18-21,178-180`・`roadTiles.ts:14`・`savedAreas.ts:12` の正規表現・`sw.js:14-29`）— 道データの版が変わると、保存とルート検索で URL が食い違う。→ `ROAD_TILE_URL` と DEM のテンプレートを export して使う。キャッシュ名と TILE_HOSTS は `vite.config.ts` の `serviceWorker()` で sw.js に埋め込む。⚠️ キャッシュ名そのものは変えない
+- [ ] **OSM の種類の表が3か所**（`sources.ts:310-322` のクエリ・`:325-359` の `osmKind`・`:419-457` の `tilePoiKind`）→ タグ → 種類の表を1つにして、クエリと判定をそこから作る（名前のある山頂だけ別扱い）
+- [ ] **sw.js の `page` と `networkFirst` がほぼ同じ**（`sw.js:116-146`）→ `networkFirst(req, cacheName, key)` にして `AbortSignal.timeout(4000)` を使う
+
+### 6-6. 記録・天気のロジック
+
+- [ ] **`summarize` と同じ集計を自前で書いている**（`sample.ts:71-115`・`recorder.ts:444-446`）。`geo.ts` の `elevationGain` は src では使われていない → `summarize` を使い、使わないなら消す
+- [ ] **地点を通った時刻の規則が2つ**（`nav.ts` の `arrivalTime` と `actual.ts`）→ 1-6・2-4 と一緒に1つに
+- [ ] **天気の細かい重複**— 最寄りのマスの探し方が2つ（`weather.ts:156-167` は度の平面距離、`weatherLog.ts:263-267` は haversine）、Open-Meteo の URL の共通のパラメータを2回書く（`nav/weather.ts:60-95`）、14桁の時刻文字列の作り方・読み方が4か所（`weatherLog.ts:121,132,189,203`・`nav/weather.ts:82`）
+- [ ] **`backgroundCapable` と `Capacitor.isNativePlatform()`** — `dom.ts:55` だけ直接呼んでいる
+
+### 6-7. JS とネイティブで同じ値
+
+値を変えるときは両方を直す必要がある。この表をどちらかのコメントに置いておくとよい。
+
+| 値 | Java | JS | 今の状態 |
+|---|---|---|---|
+| 測位の誤差の上限 40m | `TrackingService.java:83` | `recorder.ts:32` | 一致 |
+| 点を足す最小の移動 8m | `TrackingService.java:84` | `recorder.ts:33`（`max(8, 誤差/2)`） | 値は一致、判定は不一致（5章） |
+| ありえない速さの跳ね 12m/s | なし | `recorder.ts:34` | Java にない |
+| 距離の表示 | `TrackingService.java:726-728`（1km 以上は常に小数2桁） | `geo.ts:206`（10km 以上は小数1桁） | 10km 以上で不一致 |
+| 気圧の古さの上限 2分 | `TrackingService.java:86` | `location.ts:121` | 一致 |
+| ネイティブのログの行数 | `TrackingStore.java:32`（2000行残す） | `location.ts:318`（300行だけ取る） | 不一致（1-16） |
+| まとめて受け取る最大の遅れ 20秒 | `TrackingService.java:81` | `location.ts:6` のコメントだけ | JS に定数なし |
+
+---
+
+## 7. 不要なコード・古いコメント
+
+- [ ] **ファイルの外で使われていない export**（src・test・index.html を grep 済み）〔低/小〕
+  - 地図：`GSI_DEM_PROTOCOL`（gsiDem.ts:17）、`overcastSky`（daylight.ts:82）、`norm360`（heading.ts:4）、型 `MapTone`・`HillshadeLight`・`DaylightOptions`・`SunTimes`。テストだけが使う `DAY_TONE`・`heightToTerrarium`（見本として残すのはあり）
+  - ルート：`roadTileUrls`・`decodeRoadTile`・`decodeOsmTile`・`decodeLabels`・`ROAD_TILE_ZOOM`・`MAX_ROAD_TILES`（roadTiles.ts）、`STD_FACTOR`・`STEP_M`・`slopeClass`・`smoothSeries`・`PRIOR_REST_PER_MIN`・型 `Minutes`・`SlopeClass`（eta.ts）
+  - 記録・画面：`IDLE_RADIUS_M`・`MIN_IDLE_MS`・`stepsBetween`（trim.ts）、`enterPocket`（pocket.ts）、`guessTrackRoute`（trackNames.ts）、`BottomSheet.toggle`・型 `SheetState`（ui/sheet.ts）
+  - 天気：`HOURLY`・`FORECAST_DAYS`・`PAST_DAYS`（nav/weather.ts）、`centerWeather`（app/weather.ts）、`shownEleAt`（trackWeather.ts）、`RAIN_STEP_MS`・`RAIN_CLASSES`・`AMEDAS_MAX_KM`・`LAPSE_RATE`（weatherLog.ts）
+  - 場所・オフライン・メニュー：`PLACE_CELL_DEG`・`OSM_KINDS`・`OsmKind`・`CommonsGeo`・`WaypointLike`（sources.ts）、`coolingDown`・`FetchOptions`（load.ts）、`LayerPlan`（download.ts）、`PLACES_LAYER`・`PLACES_ATTRIBUTION`（places.ts）、`menu`・`PRESETS`（menu.ts）
+- [ ] **使われていない関数・引数・値**〔低/小〕
+  - `estimateTiles`（`download.ts:65-71`。消すと `tileCount` の import も要らない）
+  - いつも同じ値の引数・渡されない引数：`downloadLayers` の `maxZoom`（呼ぶ2か所とも16。`download.ts:24`）、`paceSegments` の `segmentM`（`eta.ts:262`）、`wxRow` の `head`（`sheetView.ts:55`）、`stopRecording` の `save` と読まれない `rec.canvas`（`replayVideo.ts:12,82,114`）
+  - 読まれない値：`TrailGraph.edgeCount`（`trailRouter.ts:104`）、`RouteResult.cost`、`RoutePosition.index`、`loadRoadLines` の `failed`（消すより 0-12 で使う）
+  - 小さいグラフに付けているリスナー（CSS で pointer-events:none なので届かない。`profileView.ts:54-57`）
+  - `lastChecked`（いつも `lastRecState` と同じ。`recording.ts:112-134`）、`replayPlan` の1回目の `updateRecButton`（`recording.ts:248`）
+  - `mapTap.ts:47` の先の `remove`（addTo が自分でしている）、`mapView.ts:38` の `initialSun`（ふだんは使わない）
+  - `ANALYSIS_KEEP_MS`（取りに行くのは9日以内の記録だけなので、実質いつも真。`trackWeather.ts:100`）
+  - `plan.ts:196` の `snapFrom < 300 && snapTo < 300`（maxSnap:300 と重なる）
+  - `sw.js:26` の `'thumb.wikimedia.org'`❓、`menu.ts:223` の「sample-」の互換コード（古い版の端末がなくなれば）❓
+- [ ] **古い・合っていないコメント**〔低/小〕
+  - `location.ts:27`：`more` の説明が「保存は最後の1点でまとめて」のまま（実際は50点ごとと最後の1点）
+  - `settings.ts:18`：weatherFx の「weather がオンのときだけ」に対し、`fxOn` は `settings.weather` を見ていない
+  - `trackWeather.ts:159-160`：「多すぎれば間引く」は、実際は先頭の30マスを取るだけ
+  - `compass.ts:80-81`：「オフにしたときのイベントはない」（2-1）
+  - `nav.ts:63`：「今より6時間以上前は翌日」は時刻だけを指定したときの話
+  - `ui/profile.ts:565`：「10分・15分…」だが、表は5分から
+  - 宙に浮いた JSDoc：`sheetView.ts:40`（前の版の departLabel の説明）、`recording.ts:300-306`
+  - `recorder.ts:323`：「取り込むのが後になっても、その時の気圧」（1-15）
+
+---
+
+## 8. CSS・HTML
+
+- [ ] **`[hidden]` の上書きが8ブロック・13セレクタに散らばっている** → `[hidden] { display: none !important }` を1つ置いて消す（TS から `style.display` を触る所はない。新しい部品で書き忘れる心配もなくなる）〔低〜中/小〕`style.css:63,308,667,1008,1208,1306,1385,1635`
+- [ ] 🔋 **リプレイの録画中の ● が、無限に点滅する**（一時停止中も毎フレーム合成）→ 記録ボタンと同じく3回で止めるか、点滅させない〔低/小〕`style.css:800-803`
+- [ ] **`.pocket-exit .fill` の width の transition**（レイアウトを起こす）→ `transform: scaleX()` に〔低/小〕`style.css:1504-1510`
+- [ ] **ほぼ同じブロック・同じ値の繰り返し**〔低/小〜中〕— ボタンの基本の見た目が7か所（`.btn`・`.btn.small`・`.list .row .btn`・`.view-actions .btn`・`.depart-now`・`.lock-btn`・`.pp-actions button`）、押した状態（緑地・白字）が4か所、`.mk` と `.trk-end` の pin・tag、ポケット表示の3ブロック（`.pocket-stat`・`.pocket-row`・`.pocket-pace`）、`#sheet-body h3` と `.dlg h3`、backdrop（`dialog::backdrop` 1つで済む）、SVG の fill/stroke が3か所、`font: … system-ui, sans-serif` が3か所（`:root` の日本語フォントの指定を捨てている）、左右の余白14px が4か所
+- [ ] **色を CSS 変数にする**〔低/小〕— `#2563eb` が8回（rgba を含めると10回）、`background: #fff` が11回（`--surface` を使っていない）、#b9c0c8・#8f98a3 が4回ずつ、ほぼ同じ薄い灰色が5種類。ルート・記録・登山道の色は TS にも直書き（`mapView.ts:215,242`・`ui/profile.ts:36-41,461`・`trails.ts:36,50`・`layers.ts:56-57`）
+- [ ] **効いていない規則・宣言**〔低/小〕— `#sheet-body section:first-child`（211）、`#depart-note:empty`（349）、`.search-item .title/.meta`（1253）、`.replay-title` の top と opacity（1617-1630。top は TS が毎回上書き）、重複した box-sizing・user-select・font:inherit・border・background、`-webkit-overflow-scrolling`（202）、使われていない CSS 変数 `--accent-weak`・`--warn`・`--radius`
+- [ ] **index.html**〔低/小〕— どこからも参照されない id `sec-profile`・`sec-pace`、TS で付けるが CSS も JS も使わないクラス `pp`・`pl`・`pl-kind`・`locked`、検索の form の `method="dialog"`（submit は止めている）、写真を見るダイアログ2つが同じ形、メニューのルートの説明が「国土地理院の道」だけ（OpenStreetMap の道も使っている）
+
+---
+
+## 9. ビルド・CI・テスト
+
+- [ ] ⚠️ **IndexedDB（`db.ts`）のテストが1つもない**〔高/中〕— 「更新で記録を消さない」を支える部分（版を上げるときはストアを足すだけ、経路名とロックを古い写しで消さない、ロック中の記録は消さない、点・写真・天気をまとめて消す、接続が切れたら1回だけやり直す）が、型とコメントでしか守られていない。→ fake-indexeddb を devDependency に入れて、版3の DB（weather なし）に入れたデータが open 後も残ること、route・locked のない写しで `putTrack`・`appendPoints` しても消えないこと、`deleteTrack` のロック、`updateElevations` が null の点だけ埋めること、InvalidStateError のとき1回だけやり直すことを確かめる
+- [ ] **重要な計算で、テストのないもの**〔中/中〕— `computeNav`（app/ にあって state に依存しているので、純粋関数として nav/ に出す）、`buildRouteOptions`・`chooseOption`・`buildGpxRoute`・`saveRoute`/`loadSavedRoute`（前の版で保存したルートを読めるか。4章の形の変更の前に）、recorder の `fillMissingElevations` と間引き、`drainFixes`（重ならず欠けずに取り込めるか）、`fetchCells`（サーバーの切り替え・休止・partial）、roadTiles のデコード（小さな実タイルを fixtures に）
+- [ ] **`android:sync` が型チェックしない**〔中/小〕— APK に入るビルドだけ tsc を通らない（tsc は約1.2秒）。→ `"android:sync": "npm run build && cap sync android"`。docs/android.md の「npm run build か npm test で確かめておく」の npm test は誤り（vitest は型を見ない）
+- [ ] **`serviceWorker()` の一覧が手書きで、manifest とアイコンが版のハッシュに入らない**〔低〜中/小〕— manifest やアイコンだけを変えると版が変わらず、古いものが出続ける。public/ にファイルを足して書き忘れると、圏外で出ない。→ public/ を再帰で列挙して PRECACHE とハッシュに入れる（.DS_Store などは除く）。`vite.config.ts:16-39`
+- [ ] **CI**〔低/小〕— push（全ブランチ）と pull_request の両方で起動するので PR は2回走る → `push: branches: [main]`。concurrency がないので Pages の公開が重なりうる → deploy に `concurrency: pages`。Node が CI は22、手元は24 → `.nvmrc` と `node-version-file`。Android（Java）のコンパイルがない → `android/**` が変わったときだけ `./gradlew compileDebugJavaWithJavac`。⚠️ CI の APK は配らない（鍵が違うので上書きで入らず、入れ直すとデータが消える）
+- [ ] **package.json と tsconfig の小さな重複**〔低/小〕— `serve` が build の中身をもう一度書いている、tsconfig に noEmit があるので `--noEmit` は重複、`capacitor.config.ts` が型チェックの対象外、`@types/node` が直接の依存になっていない。→ typecheck は `tsc`、build は `npm run typecheck && vite build`、serve は `npm run build && vite preview`、include に `capacitor.config.ts`
+- [ ] **`.npmrc` の `legacy-peer-deps=true` は、もう要らない**〔低/小〕— lock の peerDependencies はすべて満たされていて、false にしても同じ lock になる
+- [ ] **`chunkSizeWarningLimit: 1500` は、index の警告を消すためだけに効いている** → maplibre を分けたら（3-3）1200程度に〔低/小〕
+- [ ] **テストのフィクスチャとヘルパーの重複**〔低〜中/小〕— `actual.test.ts:7-10` と `sample.test.ts:8-11` が同じ4行、メートル→度の書き方が7通り、Track・TrackPoint を作る関数が5か所、MIN・H を各ファイルで定義、同じ「11/15 07:00 JST」を別々の書き方で作っている → `test/helpers.ts`（`*.test.ts` ではないのでテストとしては拾われない）
+- [ ] **`recorder.test.ts` の `settle()`（microtask を50回待つ）が壊れやすい** → `vi.waitFor`〔低/小〕
+
+計測（2026-11-16）：`npm test` は17ファイル・175件で0.72秒（遅いテストはない。いちばん遅いのは30万点を使う geo の bbox で46〜92ms）。`tsc` 1.2秒、`vite build` 0.2秒。`index-*.js` 1.33MB（gzip 386KB、うち maplibre 約1.11MB）、`maplibre-gl-worker-*.mjs` 519KB、CSS 94KB（うち maplibre-gl.css 72KB）。
+
+---
+
+## 10. ドキュメント
+
+- [ ] ⚠️ **architecture.md の保存先の表で、IndexedDB が「版3」のままで weather がない**（同じ文書の144行は「版4で足した」）。SQLite の「取り込んだら消す」も、実際は「記録を終えて IndexedDB に保存できたら消す」〔中/小〕`docs/architecture.md:261-262`
+- [ ] ⚠️ **鍵を切り替える前のバックアップを「GPX で書き出し」と案内している**（GPX では写真・経路名・ロック・記録の範囲・記録したときの天気・歩数が失われる）→ 記録の画面の「記録をまとめて書き出す」で書き出し、入れ直したあと「記録を読み込む」で戻す案内に〔中/小〕`docs/android.md:267`
+- [ ] **アプリの出典に、気象庁（解析雨量・アメダス）がない**（README にはある。カードには「解析雨量・アメダス◯◯」と出している）〔中/小〕`index.html` の about
+- [ ] **済んだものが「今後」の一覧に残っている**— README の「OpenStreetMap の登山道レイヤー」、android.md の「標高を気圧センサーで」と START_STICKY、design-notes.md の「OSM の登山道を重ねるのが次の候補」→ 直したうえで、TODO は1か所（android-plan.md かこのファイル）にまとめ、ほかはリンクに〔低〜中/小〕
+- [ ] **README と docs で同じ説明を二重に管理している**— ビルド・署名・配り方（README と android.md）、ポケット表示の説明が4か所、「同時4接続・4000枚」「ログ1500・2000行」が2か所ずつ、`src/main.ts:1-5` の app/ の一覧（34ファイル中14。今回の tracks.ts の追加でも手で直していた）→ 数値と作り方は1か所に置き、main.ts は architecture.md を指すだけに〔低〜中/小〜中〕
+- [ ] **architecture.md の古い記述**— テストの一覧（trim・names・backup・recorder・weatherLog・features・geo がない。「test/<モジュール名>.test.ts」と書くだけにする）、ポケット表示の説明の「雨を止める」（雨はリプレイだけになった）〔低/小〕
+- [ ] **場所の種類の説明が古い**（inn・peak・bus・parking がない）〔低/小〕`docs/places.md:50`、`src/places/sources.ts:492`、README の場所の出典、`docs/design-notes.md:62`
+
+---
+
+## 11. 見送るもの・今のままでよいもの
+
+- 点ごとに IndexedDB に保存する／`putKeepingLabels` が読んでから書く／バックアップの版1を読める／「sample-」の記録を消す：データを守るための意図的な作り
+- ⚠️ 場所のマス（切り捨て）と天気のマス（四捨五入）はどちらも0.05°だが、保存のキー（IndexedDB の places と areas.cells、localStorage）なので統一しない
+- ⚠️ 古い場所の情報の掃除（1日1回）のための索引：既存のストアを変えることになるので見送り（やるなら別の小さなストアを足す）
+- SQLite の WAL・AUTOINCREMENT：今のままでよい（WAL を明示すると synchronous=FULL になって書き込みがかえって増えうる。AUTOINCREMENT を外すには表の作り直しが要る）
+- 測位の1秒・5m・20秒まとめ、`useLegacyBridge`、`loggingBehavior: 'none'`、minify オフ、ネイティブ側のウェイクロックなし
+- リプレイの歩き終えた線を `line-gradient` で塗るやり方そのもの（直すのは頻度だけ。2-2）
+- 起動を軽くする動的 import：アプリのコードは約210KB で、分けても数十KB。効くのは maplibre の分割だけ（3-3）
+- テストの並列化・ジョブ分割：テストは0.7秒なので要らない
