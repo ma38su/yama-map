@@ -70,6 +70,51 @@ function actualRow(label: string, row: ActualRow, remain: string, primary: boole
   return el;
 }
 
+/** 歩いている途中か（ルートの上にいる・ルートから離れて戻る途中）。行程の中の現在地を示すとき */
+const walking = (nav: Nav | null): nav is Nav & { pos: NonNullable<Nav['pos']> } => !!state.route && !!nav?.pos && (nav.onRoute || !!nav.rejoin);
+
+/** 行程のどこにいるか：出発地から目的地までの棒に、地点（通った地点は灰色）と現在地 */
+function progressBar(nav: Nav, span: { from: number; to: number }): HTMLElement {
+  const ratio = (d: number) => Math.max(0, Math.min(1, (d - span.from) / Math.max(1, span.to - span.from)));
+  const left = (d: number) => `${(ratio(d) * 100).toFixed(1)}%`;
+  const el = h('div', 'prog');
+  const bar = h('div', 'prog-bar');
+  const done = h('div', 'prog-done');
+  done.style.width = left(nav.fromAlong);
+  bar.append(done);
+  for (const r of nav.rows) {
+    const mk = h('span', `prog-mk ${r.mark.kind}${r.passed ? ' passed' : ''}${r === nav.next ? ' next' : ''}`);
+    mk.style.left = left(r.mark.along);
+    bar.append(mk);
+  }
+  const here = h('span', `prog-here${nav.rejoin ? ' off' : ''}`);
+  here.style.left = left(nav.fromAlong);
+  bar.append(here);
+  el.append(bar, h('span', 'prog-pct', `${Math.round(ratio(nav.fromAlong) * 100)}%`));
+  el.setAttribute('aria-label', `行程の${Math.round(ratio(nav.fromAlong) * 100)}%`);
+  return el;
+}
+
+/** 行程表の「現在地」の行（通った地点と、次の地点のあいだに入れる） */
+function hereRow(nav: Nav & { pos: NonNullable<Nav['pos']> }, span: { from: number; to: number }): HTMLElement {
+  const li = h('li', `here${nav.rejoin ? ' off' : ''}`);
+  const time = h('div', 'time', fmtClock(Date.now()));
+  time.append(h('small', '', '現在'));
+  const body = h('div');
+  const name = h('div', 'name', '現在地');
+  if (state.currentEle != null) name.append(h('small', '', ` 標高 ${fmtM(state.currentEle)}`));
+  body.append(name);
+  const walked = Math.max(0, nav.fromAlong - span.from);
+  const rest = Math.max(0, span.to - nav.fromAlong) + (nav.rejoin?.distM ?? 0);
+  const lines = [`${formatDistance(walked)} 歩いた · 残り ${formatDistance(rest)}`];
+  if (nav.rejoin) lines.unshift(`ルートから約 ${formatDistance(nav.pos.offset)} 離れています`);
+  const next = nav.next;
+  if (next && !next.passed && next.remain) lines.push(`次の${next.mark.name}まで ${formatDistance(next.remainM)} · あと ${fmtMin(next.remain.totalMin)}`);
+  for (const [i, text] of lines.entries()) body.append(h('div', i === lines.length - 1 ? 'leg' : 'leg tight', text));
+  li.append(time, h('div', 'dot'), body, h('div'));
+  return li;
+}
+
 /** 開いている記録の実績（ルートの地点を通った時刻など）。点が増えたときだけ計算し直す */
 let actualCache: { key: string; rows: ActualRow[] } | null = null;
 function shownActual(): ActualRow[] {
@@ -136,6 +181,7 @@ export function renderCard(nav: Nav | null) {
     const title = h('div', 'nav-title');
     title.append(h('b', '', state.route.name), h('span', '', ` · ${state.route.label} · ${formatDistance(span.to - span.from)}`));
     card.append(title);
+    if (walking(nav)) card.append(progressBar(nav, span));
     const { next, dest } = nav;
     if (next && dest && next !== dest) card.append(navRow('次', next, false, nav.sunset));
     if (dest) card.append(navRow('目的地', dest, true, nav.sunset));
@@ -180,6 +226,9 @@ export function renderCard(nav: Nav | null) {
   card.append(empty);
 }
 
+/** 次に行程表を描くとき、現在地の行まで送る（シートを開いたとき） */
+let scrollToHere = false;
+
 export function renderBody(nav: Nav | null) {
   const tl = $('timeline');
   tl.replaceChildren();
@@ -217,6 +266,11 @@ export function renderBody(nav: Nav | null) {
       li.append(time, h('div', 'dot'), body, del);
       items.push({ time: row.time, passed: row.passed, el: li });
     }
+    const span = routeSpan(state.route);
+    if (walking(nav)) {
+      const at = items.findIndex((it) => !it.passed);
+      items.splice(at < 0 ? items.length : at, 0, { time: Date.now(), passed: true, el: hereRow(nav, span) });
+    }
     // 到着予想が日没の前後1時間にかかるなら、日没を時系列に差し込む
     const destTime = nav.dest?.time;
     if (nav.sunset && destTime && !nav.dest?.passed && destTime + 60 * 60_000 > nav.sunset) {
@@ -231,7 +285,11 @@ export function renderBody(nav: Nav | null) {
       items.splice(idx, 0, { time: nav.sunset, passed: false, el: li });
     }
     tl.append(...items.map((i) => i.el));
-    const span = routeSpan(state.route);
+    if (scrollToHere) {
+      // シートを開いたときは、現在地の行が見えるところまで送る
+      const here = tl.querySelector('li.here');
+      if (here) requestAnimationFrame(() => here.scrollIntoView({ block: 'center' }));
+    }
     const total = estimate(state.timeline, span.from, span.to, nav.factors);
     const sum = h('p', 'note');
     sum.textContent = `全行程 ${formatDistance(span.to - span.from)}・標準 ${fmtHM(total.stdMin)}・このペースで 歩行 ${fmtHM(total.movingMin)} ＋ 休憩 ${fmtHM(total.restMin)}${state.route.straightLegs ? '・一部直線区間あり' : ''}`;
@@ -330,8 +388,11 @@ setTab(sheetTab);
 
 // ---------- ボトムシート ----------
 export const sheet = new BottomSheet($('sheet-handle'), [$('card')], $('sheet-body'), (open) => {
-  if (open) renderBody(state.lastNav);
-  else src('cursor')?.setData(emptyFC);
+  if (open) {
+    scrollToHere = true;
+    renderBody(state.lastNav);
+    scrollToHere = false;
+  } else src('cursor')?.setData(emptyFC);
 });
 export function openSheet() {
   if (!sheet.isOpen) sheet.setOpen(true);

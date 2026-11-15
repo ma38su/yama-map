@@ -35,6 +35,10 @@ const COLORS = {
   ink: '#1f2933',
   line: '#16805c',
   fill: 'rgba(22, 128, 92, 0.18)',
+  /** 歩き終えた部分（現在地より手前） */
+  walked: '#9aa3ad',
+  walkedFill: 'rgba(122, 132, 145, 0.16)',
+  here: '#d6334a',
   rest: 'rgba(91, 100, 112, 0.16)',
   restInk: '#5b6470',
 };
@@ -56,6 +60,7 @@ export class ElevationProfile {
   private view: ProfileView = { from: 0, to: 1 };
   private hover: number | null = null;
   private marker: number | null = null;
+  private markerLabel: string | null = null;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly pointers = new Map<number, { x: number; y: number }>();
   private pinch: { dist: number; cx: number; view: ProfileView } | null = null;
@@ -142,10 +147,11 @@ export class ElevationProfile {
     this.draw();
   }
 
-  /** 現在地をグラフ上に示す（何番目の点か） */
-  setMarker(index: number | null): void {
-    if (index === this.marker) return;
+  /** 現在地をグラフ上に示す（何番目の点か）。label があれば縦線と名前も出す（リプレイの位置は点だけ） */
+  setMarker(index: number | null, label: string | null = null): void {
+    if (index === this.marker && label === this.markerLabel) return;
     this.marker = index;
+    this.markerLabel = label;
     this.draw();
   }
 
@@ -370,14 +376,29 @@ export class ElevationProfile {
         ctx.fillRect(x0, pad.top, x1 - x0 + 0.5, ph);
       }
       ctx.restore();
+      ctx.strokeStyle = COLORS.ink;
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.stroke(path);
     } else {
-      ctx.fillStyle = COLORS.fill;
-      ctx.fill(fill);
+      // 現在地より手前（歩き終えた部分）は灰色、先は緑
+      const mx = this.marker != null && this.marker < dists.length ? sx(xs[this.marker]) : null;
+      const parts: [number, number, string, string][] =
+        mx == null ? [[0, w, COLORS.fill, COLORS.line]] : [[0, mx, COLORS.walkedFill, COLORS.walked], [mx, w, COLORS.fill, COLORS.line]];
+      for (const [x0, x1, fillColor, lineColor] of parts) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x0, 0, x1 - x0, h);
+        ctx.clip();
+        ctx.fillStyle = fillColor;
+        ctx.fill(fill);
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.stroke(path);
+        ctx.restore();
+      }
     }
-    ctx.strokeStyle = pace ? COLORS.ink : COLORS.line;
-    ctx.lineWidth = pace ? 1.5 : 2;
-    ctx.lineJoin = 'round';
-    ctx.stroke(path);
 
     // ペースの帯：棒の高さは速さ（標準を真ん中の線）、色は速い青〜遅い赤
     if (pace) {
@@ -455,18 +476,46 @@ export class ElevationProfile {
     }
     ctx.textBaseline = 'alphabetic';
 
-    // 現在地
+    // 現在地（名前があれば縦線と、点の上に名前）
     if (this.marker != null && this.marker < dists.length) {
       const e = nearestValid(eles, this.marker);
-      if (e != null) {
-        const x = sx(xs[this.marker]);
-        ctx.fillStyle = '#d6334a';
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
+      const x = sx(xs[this.marker]);
+      const label = this.markerLabel;
+      if (label) {
+        ctx.strokeStyle = COLORS.here;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(x, sy(e), 5, 0, Math.PI * 2);
+        ctx.moveTo(Math.round(x) + 0.5, pad.top);
+        ctx.lineTo(Math.round(x) + 0.5, pad.top + ph);
+        ctx.stroke();
+      }
+      if (e != null) {
+        const y = sy(e);
+        ctx.fillStyle = COLORS.here;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = label ? 2.5 : 2;
+        ctx.beginPath();
+        ctx.arc(x, y, label ? 6.5 : 5, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+        if (label) {
+          ctx.font = 'bold 11px system-ui, sans-serif';
+          const tw = ctx.measureText(label).width + 10;
+          const bh = 17;
+          // 点の上（上の地点名と重なるときは点の下）。左右ははみ出さないように
+          let by = y - 10 - bh;
+          if (by < pad.top + 14) by = y + 10;
+          const bx = Math.max(pad.left + 1, Math.min(w - pad.right - tw - 1, x - tw / 2));
+          ctx.fillStyle = COLORS.here;
+          ctx.beginPath();
+          ctx.roundRect(bx, by, tw, bh, 8);
+          ctx.fill();
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, bx + tw / 2, by + bh / 2 + 0.5);
+          ctx.textBaseline = 'alphabetic';
+        }
       }
     }
     ctx.restore();

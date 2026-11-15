@@ -78,7 +78,9 @@ export function updateProfile(nav: Nav | null) {
       times: track.map((p) => p.t),
       pace: cachedPace(track),
     }, `track:${track[0].trackId}`);
-    profile.setMarker(replayIndex());
+    // 記録中は最後の点（今いるところ）、リプレイ中はその位置
+    if (recorder.recording) profile.setMarker(track.length - 1, '現在地');
+    else profile.setMarker(replayIndex());
   } else if (state.route && state.timeline) {
     profileCoords = state.route.coords;
     // 時刻の軸：行程と同じ到着予想。歩いている途中なら、今いる位置（ルートに戻る地点）の時刻から逆算して出発地の時刻を決める
@@ -97,7 +99,7 @@ export function updateProfile(nav: Nav | null) {
     if (nav?.onRoute) {
       let i = 0;
       while (i < state.route.dists.length - 1 && state.route.dists[i] < nav.fromAlong) i++;
-      profile.setMarker(i);
+      profile.setMarker(i, '現在地');
     } else profile.setMarker(null);
   }
   checkSeg($('profile-axis'), profile.currentAxis);

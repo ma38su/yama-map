@@ -31,13 +31,17 @@ import {
 const MAX_ACCURACY_M = 40;
 const MIN_STEP_M = 8;
 const MAX_SPEED_MPS = 12;
+/** まとめて取り込んでいるときも、この点数ごとに保存する（裏で長く記録したあと、取り込み終わるまで待たないように） */
+const SAVE_EVERY = 50;
+/** 保存に失敗したら、点が増えなくてもこの間隔でやり直す */
+const RETRY_MS = 15_000;
 
 export interface RecorderState {
   track: Track | null;
   points: TrackPoint[];
   lastFix: Fix | null;
   error: string | null;
-  /** 端末に保存できていない点がある（保存できたら false に戻る） */
+  /** 端末への保存に失敗している（やり直して保存できたら false に戻る。まとめて取り込んでいる途中の、まだ書いていない点は含めない） */
   saveFailed: boolean;
   wakeLock: boolean;
 }
@@ -51,8 +55,11 @@ export class TrackRecorder {
   private lastFix: Fix | null = null;
   private error: string | null = null;
   private rejectedJumps = 0;
-  /** 端末への保存に失敗した点。次の点と一緒に保存し直す */
+  /** まだ端末に保存していない点（まとめて取り込んでいる途中のもの・保存に失敗したもの）。次の保存でまとめて書く */
   private unsaved: TrackPoint[] = [];
+  /** 最後の保存が失敗した */
+  private saveFailed = false;
+  private retryTimer = 0;
   private queue: Promise<void> = Promise.resolve();
   /** 記録を始めている・続けている途中（「記録開始」を続けて押したときなどに、二重に始めないように） */
   private starting = false;
@@ -66,7 +73,12 @@ export class TrackRecorder {
     private readonly onChange: (s: RecorderState) => void,
   ) {
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState !== 'visible' || !this.recording) return;
+      if (!this.recording) return;
+      // 裏に回るときは、まだ書いていない点を書いておく（そのままアプリが閉じられても残るように）
+      if (document.visibilityState === 'hidden') {
+        this.flush();
+        return;
+      }
       // Web版はバックグラウンドから戻ったら測位を取り直す（iOSで止まることがあるため）。
       // アプリ版の測位はバックグラウンドでも続いているので、そのままにする
       if (!backgroundCapable) void this.startWatch();
@@ -84,7 +96,7 @@ export class TrackRecorder {
       points: this.points,
       lastFix: this.lastFix,
       error: this.error,
-      saveFailed: this.unsaved.length > 0,
+      saveFailed: this.saveFailed,
       wakeLock: this.wakeLock != null,
     };
   }
@@ -118,6 +130,7 @@ export class TrackRecorder {
     };
     this.points = [];
     this.unsaved = [];
+    this.saveFailed = false;
     this.gain = new GainCounter();
     this.baro = new BaroFusion();
     this.error = null;
@@ -186,6 +199,8 @@ export class TrackRecorder {
   private async close(endedAt: number, drained: boolean | void = true): Promise<Track | null> {
     if (!this.track) return null;
     this.track = { ...this.track, status: 'done', endedAt };
+    clearTimeout(this.retryTimer);
+    this.retryTimer = 0;
     await this.save();
     log(`記録を終了（${this.track.id.slice(0, 8)}・${this.points.length}点・${formatDistance(this.track.distance)}${this.unsaved.length ? `・保存できていない点 ${this.unsaved.length}` : ''}${drained === false ? '・端末に測位が残っている' : ''}）`);
     // IndexedDB に保存し終えたら、アプリ版の端末側の測位は消す（残っていれば、次に開いたときに取り込む：app/recording.ts）
@@ -201,6 +216,7 @@ export class TrackRecorder {
     this.track = { ...track, status: 'recording' };
     this.points = await getPoints(track.id);
     this.unsaved = [];
+    this.saveFailed = false;
     this.rejectedJumps = 0;
     this.error = null;
     this.gain = new GainCounter();
@@ -317,14 +333,32 @@ export class TrackRecorder {
     await this.settle(pos);
   }
 
-  /** まとめて取り込んでいるあいだは何もせず、最後の1点（ふだんの測位は毎回）で、たまった点を保存して知らせる */
+  /**
+   * ふだんの測位は毎回、たまった点を保存して知らせる。
+   * まとめて取り込んでいるあいだは SAVE_EVERY 点ごとに保存し、知らせるのは最後の1点で
+   */
   private async settle(pos: Fix): Promise<void> {
-    if (pos.more) return;
+    if (pos.more) {
+      if (this.unsaved.length >= SAVE_EVERY) await this.save();
+      return;
+    }
     if (this.unsaved.length) await this.save();
     this.emit();
   }
 
-  /** 記録の概要と、まだ保存できていない点を保存する。失敗したら点は覚えておき、次にやり直す */
+  /** まだ書いていない点を、順番待ちの後ろで保存する（裏に回るとき・やり直しのとき） */
+  private flush(): void {
+    this.queue = this.queue
+      .then(async () => {
+        if (!this.track || (!this.unsaved.length && !this.saveFailed)) return;
+        const failed = this.saveFailed;
+        await this.save();
+        if (failed !== this.saveFailed) this.emit();
+      })
+      .catch((e) => console.error(e));
+  }
+
+  /** 記録の概要と、まだ保存できていない点を保存する。失敗したら点は覚えておき、少し待ってやり直す（次の点が届いたときも） */
   private async save(): Promise<void> {
     if (!this.track) return;
     const points = this.unsaved;
@@ -332,8 +366,20 @@ export class TrackRecorder {
       if (points.length) await appendPoints(this.track, points);
       else await putTrack(this.track);
       this.unsaved = this.unsaved.slice(points.length);
+      if (this.saveFailed) log(`記録を保存し直せた（${points.length}点）`);
+      this.saveFailed = false;
+      clearTimeout(this.retryTimer);
+      this.retryTimer = 0;
     } catch (e) {
-      console.error('記録を保存できませんでした', e);
+      // 1回目の失敗だけ残す（やり直しのたびにログが増えないように）
+      if (!this.saveFailed) console.error(`記録を保存できませんでした（${points.length}点。${RETRY_MS / 1000}秒ごとにやり直します）`, e);
+      this.saveFailed = true;
+      if (this.recording && !this.retryTimer) {
+        this.retryTimer = window.setTimeout(() => {
+          this.retryTimer = 0;
+          this.flush();
+        }, RETRY_MS);
+      }
     }
   }
 

@@ -23,7 +23,7 @@ import { settings } from '../settings';
 import { $, download, h } from '../ui/dom';
 import { elevation, fitTo, map, src, lineFC } from './mapView';
 import { popup } from './mapTap';
-import { updateNav } from './nav';
+import { updateNav, type Nav } from './nav';
 import { hereLngLat } from './recording';
 import { openSheet } from './sheetView';
 import { state } from './state';
@@ -61,6 +61,7 @@ export function renderRoute() {
   let viaNo = 0;
   markers = list.map((m) => {
     const el = h('div', `mk ${m.kind}`);
+    el.dataset.id = m.id;
     const pin = m.kind === 'start' ? 'S' : m.kind === 'dest' ? 'G' : m.kind === 'pass' ? '' : String(++viaNo);
     el.append(h('div', 'pin', pin), h('div', 'tag', m.name));
     el.addEventListener('click', (ev) => {
@@ -69,7 +70,19 @@ export function renderRoute() {
     });
     return new Marker({ element: el, anchor: 'top', offset: [0, m.kind === 'pass' ? -7 : -14] }).setLngLat(m.lngLat).addTo(map);
   });
+  markPassed(state.lastNav);
   $<HTMLButtonElement>('btn-fit').disabled = !state.route;
+}
+
+/** 地点の印：歩いている途中なら、通り過ぎた地点は薄く、次に向かう地点は目立たせる */
+export function markPassed(nav: Nav | null) {
+  const walking = !!state.route && !!nav && (nav.onRoute || !!nav.rejoin);
+  for (const mk of markers) {
+    const el = mk.getElement();
+    const row = walking ? nav.rows.find((r) => r.mark.id === el.dataset.id) : undefined;
+    el.classList.toggle('passed', !!row?.passed);
+    el.classList.toggle('next', walking && nav.next?.mark.id === el.dataset.id);
+  }
 }
 
 export async function choosePoint(kind: PointKind, lngLat: LngLat, name?: string) {

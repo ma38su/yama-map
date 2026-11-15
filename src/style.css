@@ -91,6 +91,21 @@ button,
 .maplibregl-user-location-dot::before {
   animation: none;
 }
+/* 現在地の印は少し大きく、白と濃い色の二重の縁取りで、青いルートの線の上でも見分けられるように */
+.maplibregl-user-location-dot,
+.maplibregl-user-location-dot::before {
+  width: 19px;
+  height: 19px;
+  background-color: #1a73e8;
+}
+.maplibregl-user-location-dot::after {
+  top: -3px;
+  left: -3px;
+  width: 25px;
+  height: 25px;
+  border: 3.5px solid #fff;
+  box-shadow: 0 0 0 1.5px rgba(17, 24, 39, 0.55), 0 1px 5px rgba(0, 0, 0, 0.4);
+}
 /* シートを開いている間は縮尺・出典を隠す（シートの裏に回るため） */
 .sheet-open .maplibregl-ctrl-bottom-left,
 .sheet-open .maplibregl-ctrl-bottom-right {
@@ -168,9 +183,9 @@ button,
   user-select: none; /* ドラッグで文字が選ばれないように */
   -webkit-user-select: none;
 }
-/* 最小：つまみと目的地の1行だけ残し、地図・3Dを広く見せる */
+/* 最小：つまみと目的地の1行（歩いている途中は行程の棒も）だけ残し、地図・3Dを広く見せる */
 .sheet-mini #actions,
-.sheet-mini #card > :not(.nav-row.primary) {
+.sheet-mini #card > :not(.nav-row.primary):not(.prog) {
   display: none;
 }
 .sheet-mini #card .nav-row.primary {
@@ -200,6 +215,82 @@ button,
   margin: 0 0 10px;
   font-size: 14px;
   color: var(--muted);
+}
+
+/* 行程の棒（カード）：出発地〜目的地のどこにいるか。歩いた部分は記録の線と同じ赤、これからはルートの青 */
+.prog {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 2px 3px 8px;
+}
+.prog-bar {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: #bfd0f5;
+}
+.prog-done {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--rec);
+}
+.prog-mk {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid #2563eb;
+  background: #fff;
+}
+.prog-mk.start {
+  border-color: var(--accent);
+}
+.prog-mk.dest {
+  border-color: var(--rec);
+}
+.prog-mk.pass {
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-width: 1.5px;
+}
+.prog-mk.passed {
+  border-color: #8a95a3;
+  background: #8a95a3;
+}
+.prog-mk.next {
+  background: #2563eb;
+}
+.prog-here {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  width: 17px;
+  height: 17px;
+  margin: -8.5px 0 0 -8.5px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  background: var(--rec);
+  box-shadow: 0 0 0 1.5px var(--rec), 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.prog-here.off {
+  background: #ea7a0b;
+  box-shadow: 0 0 0 1.5px #ea7a0b, 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.prog-pct {
+  min-width: 2.6em;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* カード（折りたたみ時に見える要約） */
@@ -425,6 +516,45 @@ button,
 .timeline li.passed .dot {
   color: #9aa3ad;
 }
+/* 歩いている途中：歩いた区間の線は記録の赤、現在地から先はルートの青 */
+.timeline li.passed::before {
+  background: rgba(214, 51, 74, 0.6);
+}
+.timeline li.here::before,
+.timeline li.here ~ li::before {
+  background: rgba(37, 99, 235, 0.45);
+}
+.timeline li.here {
+  min-height: 0;
+  margin: 2px 0 4px;
+  color: var(--rec);
+}
+.timeline li.here .time {
+  color: var(--rec);
+}
+.timeline li.here .dot {
+  width: 18px;
+  height: 18px;
+  margin: 4px 2px 0;
+  color: var(--rec);
+  box-shadow: 0 0 0 2px currentColor, 0 0 0 7px rgba(214, 51, 74, 0.18);
+}
+.timeline li.here .name small {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.timeline li.here .leg {
+  color: var(--ink);
+}
+.timeline li.here.off,
+.timeline li.here.off .time,
+.timeline li.here.off .dot {
+  color: #c2560a;
+}
+.timeline .leg.tight {
+  padding-bottom: 0;
+}
 .timeline .name {
   font-weight: 700;
   font-size: 15px;
@@ -532,6 +662,9 @@ button,
   margin: 8px 0 0;
   font-size: 12px;
   color: var(--muted);
+}
+.pace-legend[hidden] {
+  display: none;
 }
 .pace-scale {
   width: 72px;
@@ -970,6 +1103,20 @@ dialog.photo-view::backdrop {
 .mk.pass .tag {
   font-weight: 600;
   font-size: 11px;
+}
+/* 歩いている途中：通り過ぎた地点は薄く、次に向かう地点は輪で目立たせる（動かすと描き直しが続いて電池を使うので、止まった輪） */
+.mk.passed {
+  opacity: 0.5;
+}
+.mk.passed .pin {
+  background: #8a95a3;
+}
+.mk.next .pin {
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45), 0 0 0 5px rgba(37, 99, 235, 0.4);
+}
+.mk.next .tag {
+  background: #2563eb;
+  color: #fff;
 }
 .timeline li.pass .dot {
   width: 16px;

@@ -18,6 +18,7 @@ import { sunTimes } from '../nav/sun';
 import { settings } from '../settings';
 import { lineFC, emptyFC, src } from './mapView';
 import { hereLngLat, recorder, renderTrack, updateCurrentEle } from './recording';
+import { markPassed } from './route';
 import { renderBody, renderCard, sheet } from './sheetView';
 import { whileVisible } from './scheduler';
 import { state } from './state';
@@ -135,17 +136,20 @@ function computeNav(): Nav | null {
   };
 }
 
-/** 歩き終えた部分のルート（灰色の線）として描いてあるもの。変わらなければ描き直さない（地図の描き直しが起きるため） */
-let doneDrawn: { route: ActiveRoute | null; n: number } = { route: null, n: 0 };
+/** 歩き終えた部分のルート（灰色の線）と、これからの部分（向きの印）として描いてあるもの。変わらなければ描き直さない（地図の描き直しが起きるため） */
+let doneDrawn: { route: ActiveRoute | null; n: number } = { route: null, n: -1 };
 function renderDone(nav: Nav | null) {
   const r = state.route;
   let n = 0;
   if (r && nav?.onRoute) while (n < r.coords.length && r.dists[n] <= nav.fromAlong) n++;
   if (r === doneDrawn.route && n === doneDrawn.n) return;
-  const source = src('route-done');
-  if (!source) return; // 地図の読み込み前
-  source.setData(r && n ? lineFC(r.coords.slice(0, n)) : emptyFC);
+  const done = src('route-done');
+  const ahead = src('route-ahead');
+  if (!done || !ahead) return; // 地図の読み込み前
+  done.setData(r && n ? lineFC(r.coords.slice(0, n)) : emptyFC);
+  ahead.setData(r ? lineFC(r.coords.slice(Math.max(0, n - 1))) : emptyFC);
   doneDrawn = { route: r, n };
+  markPassed(nav);
 }
 
 let arrivedNotified = false;

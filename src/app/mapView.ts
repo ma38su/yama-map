@@ -168,21 +168,65 @@ export const replayDoneGradient = (progress: number): ExpressionSpecification =>
   'rgba(122, 20, 36, 0)',
 ];
 
+/** 線の太さ：寄るほど太く（広く見ているときは細く、山道を見分けられるくらいに寄ったら太く） */
+const lineWidth = (z12: number, z17: number): ExpressionSpecification => ['interpolate', ['linear'], ['zoom'], 12, z12, 17, z17];
+
+/** ルートの進む向きの印（白い「>」）。線の向きに合わせて回るよう、右向きに描く */
+function arrowImage(): ImageData {
+  const r = 2;
+  const w = 12 * r;
+  const ht = 12 * r;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = ht;
+  const ctx = c.getContext('2d')!;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(3.5 * r, 2.5 * r);
+  ctx.lineTo(8 * r, 6 * r);
+  ctx.lineTo(3.5 * r, 9.5 * r);
+  ctx.strokeStyle = 'rgba(17, 51, 140, 0.55)';
+  ctx.lineWidth = 4 * r;
+  ctx.stroke();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2.2 * r;
+  ctx.stroke();
+  return ctx.getImageData(0, 0, w, ht);
+}
+
 /** ルート・記録・グラフのカーソルを描く層（地図の読み込み後に一度だけ） */
 export function addOverlayLayers() {
-  for (const id of ['route', 'route-done', 'track', 'cursor', 'replay']) map.addSource(id, { type: 'geojson', data: emptyFC });
+  for (const id of ['route', 'route-done', 'route-ahead', 'track', 'cursor', 'replay']) map.addSource(id, { type: 'geojson', data: emptyFC });
   // リプレイの歩き終えた線は、記録の線全体を置いておき、line-progress で途中まで塗る（進むたびに線を作り直さない）
   map.addSource('replay-done', { type: 'geojson', data: emptyFC, lineMetrics: true });
   // OpenStreetMap 由来のルートを表示しているときだけ出典を出すためのソース
   map.addSource('osm-credit', { type: 'geojson', data: emptyFC, attribution: OSM_ATTRIBUTION });
-  const casing = { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.9 };
+  if (!map.hasImage('route-arrow')) map.addImage('route-arrow', arrowImage(), { pixelRatio: 2 });
   const round = { 'line-join': 'round' as const, 'line-cap': 'round' as const };
   map.addLayer({ id: 'osm-credit', type: 'circle', source: 'osm-credit', layout: { visibility: 'none' } });
-  map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: round, paint: casing });
-  map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: round, paint: { 'line-color': '#2563eb', 'line-width': 5 } });
-  map.addLayer({ id: 'route-done', type: 'line', source: 'route-done', layout: round, paint: { 'line-color': '#93a3b8', 'line-width': 5 } });
-  map.addLayer({ id: 'track-casing', type: 'line', source: 'track', layout: round, paint: { ...casing, 'line-width': 6 } });
-  map.addLayer({ id: 'track-line', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#d6334a', 'line-width': 3.5 } });
+  // これからのルート：白い縁取りの青い線と、進む向きの印。歩き終えた部分は灰色で上から塗る
+  map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: round, paint: { 'line-color': '#ffffff', 'line-width': lineWidth(7, 12), 'line-opacity': 0.9 } });
+  map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: round, paint: { 'line-color': '#2563eb', 'line-width': lineWidth(4, 8) } });
+  map.addLayer({ id: 'route-done', type: 'line', source: 'route-done', layout: round, paint: { 'line-color': '#a7b1bd', 'line-width': lineWidth(4, 8) } });
+  map.addLayer({
+    id: 'route-arrows',
+    type: 'symbol',
+    source: 'route-ahead',
+    layout: {
+      'symbol-placement': 'line',
+      'symbol-spacing': ['interpolate', ['linear'], ['zoom'], 12, 60, 17, 90],
+      'icon-image': 'route-arrow',
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.85, 17, 1.5],
+      'icon-rotation-alignment': 'map',
+      'icon-pitch-alignment': 'map',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
+    },
+  });
+  // 歩いた記録：太めの赤い線（白い縁取りで、灰色の歩き終えたルートや地図の上でも見分けやすく）
+  map.addLayer({ id: 'track-casing', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#ffffff', 'line-width': lineWidth(6, 10), 'line-opacity': 0.95 } });
+  map.addLayer({ id: 'track-line', type: 'line', source: 'track', layout: round, paint: { 'line-color': '#d6334a', 'line-width': lineWidth(3.5, 6) } });
   map.addLayer({ id: 'replay-done', type: 'line', source: 'replay-done', layout: round, paint: { 'line-gradient': replayDoneGradient(0), 'line-width': 4.5 } });
   map.addLayer({
     id: 'replay',
