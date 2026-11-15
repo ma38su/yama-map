@@ -190,7 +190,7 @@ android/              Capacitor の Android プロジェクト（docs/android.md
 ### 天気（`nav/weather.ts`・`app/weather.ts`）
 - [Open-Meteo](https://open-meteo.com/) の1時間ごとの予報（降水確率・降水量・天気・雲量・気温・風）を使う。API キー不要で、複数の地点を1回で問い合わせられる
 - 予報は約5km（0.05度）のマス目ごとに取る。描画中に頼まれたマス目を200ms待ってまとめて問い合わせ、届いたら `updateNav()` で描き直す
-- 取った予報は `localStorage`（`yama-map:weather`）に3日分・200マスまで残し、圏外のときは問い合わせない。1時間経ったら取り直す。圏外で取れないマス目は5分間は問い直さない
+- 予報は今日を含めて7日分（`FORECAST_DAYS`。1週間先までの計画に使う）と前日の分を取る。取った予報は `localStorage`（`yama-map:weather`）に3日間・200マスまで残し、圏外のときは問い合わせない。1時間経ったら取り直す。圏外で取れないマス目は5分間は問い直さない
 - 保存するときは、1時間おきの時刻の配列を「先頭の時刻と本数」にする（`packWeather`。約3分の2の大きさ）。書き込みは画面の処理を止めるので、届いてから3秒まとめて行う
 - 時刻の天気は前後の時刻で補間する（`weatherAt`）。降水確率と天気は近いほうの時刻の値
 - 雲・雨・雪と曇りの空は、リプレイ中だけ出す（`setReplayWeather`。歩いているときは電池と見やすさのために出さない）。リプレイ中の `weatherFor` は、記録は記録したときの天気、計画は端末に残っている予報（`cachedForecastSource`）だけを使い、取りに行かない
@@ -253,7 +253,7 @@ MapLibre を更新したときは、この仕組みが残っているか確か�
 | localStorage | `yama-map:settings` | 設定（背景地図・陰影・空の色・3D と起伏の強調・天気・画面を点けたまま・道迷いアラート・ペース・ルートの探し方・出発の日時・地図の位置・予定の記録を入れたか・電池の最適化を聞いたか・重ねる情報の種類ごとの表示・ルート沿いの保存の幅） |
 | localStorage | `yama-map:places-pruned` | 古い場所の情報を最後に消した時刻 |
 | localStorage | `yama-map:route` | 表示中のルート |
-| localStorage | `yama-map:weather` | 天気予報（マス目ごと、3日分） |
+| localStorage | `yama-map:weather` | 天気予報（マス目ごと、前日〜1週間先） |
 | localStorage | `yama-map:log` | 動作のログ（最新1500行） |
 | localStorage | `yama-map:osm-tiles` | OpenFreeMap のタイルの URL（圏外でも道データを探せるように） |
 | IndexedDB | `yama-map`（`tracks` / `points` / `photos` / `places` / `imports` / `areas`） | 記録・記録の写真・場所の情報（マス目ごと）・読み込んだ場所のファイル・オフライン用に保存した範囲（版3。版を上げるときはストアを足すだけ） |

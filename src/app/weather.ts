@@ -10,6 +10,7 @@ import {
   cellCenter,
   cellKey,
   fetchForecast,
+  forecastHorizon,
   packWeather,
   unpackWeather,
   weatherAt,
@@ -127,7 +128,9 @@ function forecastFor(lngLat: LngLat): HourlyWeather | null {
   if (!settings.weather) return null;
   const key = cellKey(lngLat);
   const hit = cache.get(key);
-  if (!hit || Date.now() - hit.at > STALE_MS) request(key);
+  // 古い・前の版で取った短い予報（3日分）なら取り直す
+  const short = !!hit && (hit.h.t.at(-1) ?? 0) < forecastHorizon(hit.at) - 3_600_000;
+  if (!hit || short || Date.now() - hit.at > STALE_MS) request(key);
   return hit?.h ?? null;
 }
 

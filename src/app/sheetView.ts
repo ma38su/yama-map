@@ -8,7 +8,7 @@ import { BottomSheet } from '../ui/sheet';
 import { actualRows, type ActualRow } from '../track/actual';
 import { trackTitle } from '../track/names';
 import { trackTimes } from '../track/trim';
-import { weatherLabel, type WeatherAt } from '../nav/weather';
+import { forecastHorizon, weatherLabel, type WeatherAt } from '../nav/weather';
 import { emptyFC, fitTo, src } from './mapView';
 import { departureTime, isLate, paceOf, updateNav, type Nav, type Row } from './nav';
 import { miniProfileFor, profile, updateProfile } from './profileView';
@@ -436,9 +436,18 @@ function renderDeparture() {
     ? '記録中は現在時刻から到着予想を出します'
     : !now && !dateChosen() && daysFromToday(dep.getTime()) === 1
       ? '今より前の時刻なので、明日の出発として予想しています'
-      : !now && dep.getTime() - Date.now() > 3 * 86_400_000
-        ? '天気予報は3日先までなので、この日の天気は出ません'
+      : !now && settings.weather
+        ? forecastNote(dep.getTime(), state.lastNav?.dest?.time ?? dep.getTime())
         : '';
+}
+
+/** 選んだ出発の天気予報の注意：予報が切れている（1週間より先）・途中で切れる・先の日で確かさが下がる */
+function forecastNote(depart: number, arrive: number): string {
+  const horizon = forecastHorizon();
+  if (depart > horizon) return `天気予報は${departLabel(horizon)}までなので、この日の天気は出ません`;
+  if (arrive > horizon) return `天気予報は${departLabel(horizon)}までなので、それより後の地点の天気は出ません`;
+  if (depart - Date.now() > 3 * 86_400_000) return '3日より先の天気予報は、確かさが下がります';
+  return '';
 }
 
 // ---------- 詳細のタブ ----------

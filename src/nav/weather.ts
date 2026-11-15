@@ -46,6 +46,17 @@ export function cellCenter(key: string): LngLat {
 
 export const HOURLY = ['precipitation_probability', 'precipitation', 'weather_code', 'cloud_cover', 'temperature_2m', 'wind_speed_10m', 'wind_direction_10m'] as const;
 
+/** 予報を取る日数（今日を含めて UTC の日ごと）。1週間先までの計画にも使えるように。先の日ほど確かさは下がる */
+export const FORECAST_DAYS = 7;
+/** 一緒に取る過去の日数（今日より前） */
+export const PAST_DAYS = 1;
+
+/** 予報がある最後の時刻 (ms)：今日（UTC）から数えて FORECAST_DAYS 日目の 23時（UTC。日本時間では翌朝8時） */
+export function forecastHorizon(now = Date.now()): number {
+  const d = new Date(now);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + FORECAST_DAYS) - 3_600_000;
+}
+
 export function forecastUrl(points: LngLat[]): string {
   const q = new URLSearchParams({
     latitude: points.map((p) => p[1]).join(','),
@@ -54,8 +65,8 @@ export function forecastUrl(points: LngLat[]): string {
     wind_speed_unit: 'ms',
     timeformat: 'unixtime',
     timezone: 'GMT',
-    past_days: '2',
-    forecast_days: '3',
+    past_days: String(PAST_DAYS),
+    forecast_days: String(FORECAST_DAYS),
   });
   return `https://api.open-meteo.com/v1/forecast?${q}`;
 }

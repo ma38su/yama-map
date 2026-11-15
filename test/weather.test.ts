@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cellCenter, cellKey, forecastUrl, packWeather, parseForecast, unpackWeather, weatherAt, weatherLabel } from '../src/nav/weather';
+import { cellCenter, cellKey, forecastHorizon, forecastUrl, packWeather, parseForecast, unpackWeather, weatherAt, weatherLabel } from '../src/nav/weather';
 
 // Open-Meteo の返答の形（timeformat=unixtime、複数地点は配列）
 const t0 = Date.UTC(2026, 10, 15, 2) / 1000; // 11:00 JST
@@ -60,6 +60,12 @@ describe('マス目とURL', () => {
     expect(u.searchParams.get('latitude')).toBe('36.85,36.9');
     expect(u.searchParams.get('longitude')).toBe('139.4,139.45');
     expect(u.searchParams.get('hourly')).toContain('precipitation_probability');
+    // 1週間先まで（今日を含めて7日）
+    expect(u.searchParams.get('forecast_days')).toBe('7');
+  });
+  it('予報がある最後の時刻は、今日（UTC）から7日目の23時（UTC）', () => {
+    // 2026-11-16 21:00（日本時間）= 12:00 UTC → 11/22 23:00 UTC（日本時間 11/23 8:00）
+    expect(forecastHorizon(Date.UTC(2026, 10, 16, 12, 0))).toBe(Date.UTC(2026, 10, 22, 23, 0));
   });
   it('天気コードの名前', () => {
     expect(weatherLabel(61).label).toBe('雨');
