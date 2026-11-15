@@ -169,10 +169,18 @@ export class DemSampler {
   private cache = new Map<string, Promise<HeightTile>>();
   constructor(private readonly maxTiles = 32) {}
 
-  async elevation(lng: number, lat: number): Promise<number | null> {
-    const fine = await this.sample('dem5a_png', 15, lng, lat).catch(() => null);
-    if (fine != null) return fine;
-    return this.sample('dem_png', 14, lng, lat).catch(() => null);
+  /**
+   * 地点の標高。maxWaitMs を渡すと、それより長くは待たずに null を返す（タイルの読み込みは続け、次からはすぐ返す）。
+   * 0 なら、手元にあるタイルだけで求める。記録の点を続けて処理するときに、電波が弱くて止まらないように
+   */
+  async elevation(lng: number, lat: number, maxWaitMs?: number): Promise<number | null> {
+    const lookup = (async () => {
+      const fine = await this.sample('dem5a_png', 15, lng, lat).catch(() => null);
+      if (fine != null) return fine;
+      return this.sample('dem_png', 14, lng, lat).catch(() => null);
+    })();
+    if (maxWaitMs == null) return lookup;
+    return Promise.race([lookup, new Promise<null>((resolve) => setTimeout(() => resolve(null), maxWaitMs))]);
   }
 
   private async sample(layer: string, z: number, lng: number, lat: number): Promise<number | null> {

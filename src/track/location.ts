@@ -30,8 +30,11 @@ export interface Fix {
 export type FixError = 'denied' | 'unavailable';
 
 export interface LocationWatch {
-  /** 測位をやめる。アプリ版は、まだ取り込んでいない測位をすべて渡し終えてから返る */
-  stop(): Promise<void> | void;
+  /**
+   * 測位をやめる。アプリ版は、まだ取り込んでいない測位をすべて渡し終えてから返る。
+   * 取り込みに失敗して端末側に測位が残っていれば false（そのときは端末側の測位を消さない）
+   */
+  stop(): Promise<boolean> | void;
 }
 
 export interface WatchOptions {
@@ -62,11 +65,16 @@ export interface TrackingStatus {
   /** 通知の「停止」で止められた記録と、その時刻 */
   stoppedTrack: string | null;
   stoppedAt: number | null;
+  /** 今の気圧 (hPa) とその時刻（記録中で気圧計があれば） */
+  hPa: number | null;
+  hPaAt: number;
 }
 interface TrackingPlugin {
   start(o: { trackId: string; startedAt: number }): Promise<void>;
-  stop(): Promise<void>;
+  /** trackId を渡すと、その記録をしているときだけ止める */
+  stop(o?: { trackId?: string }): Promise<void>;
   status(): Promise<TrackingStatus>;
+  pendingTracks(): Promise<{ tracks: string[] }>;
   getFixes(o: { trackId: string; afterId: number; limit: number }): Promise<{ fixes: StoredFix[] }>;
   clearFixes(o: { trackId: string }): Promise<void>;
   checkPermissions(): Promise<{ location: PermissionState }>;
@@ -100,6 +108,8 @@ const Tracking = registerPlugin<TrackingPlugin>('Tracking');
 
 /** 1回に取り込む測位の数 */
 const BATCH = 500;
+/** これより古い気圧は使わない（気圧計が止まっていた） */
+const PRESSURE_STALE_MS = 2 * 60_000;
 
 /**
  * 記録を始める前に、通知と位置情報の許可を1つずつ順番に求める（watchLocation の前に呼ぶ）。
@@ -151,16 +161,22 @@ function watchWeb(onFix: (f: Fix) => void, onError: (e: FixError) => void): Loca
   return { stop: () => navigator.geolocation.clearWatch(id) };
 }
 
-/** 端末に保存された測位のうち、番号が afterId より後のものを、since より後の時刻のものだけ onFix に渡す。最後の番号と渡した数を返す */
+/**
+ * 端末に保存された測位のうち、番号が afterId より後のものを onFix に渡す。最後の番号と渡した数を返す。
+ * since より前の時刻の測位は、もう IndexedDB にある（記録を続けるときの最初の取り込み）ので渡さない。
+ * 2回目からは番号だけで重ならないので、since は -Infinity にする（端末の時計が戻されても点を捨てないように）
+ */
 async function drainFixes(
   trackId: string,
   afterId: number,
   since: number,
   onFix: (f: Fix) => void,
-): Promise<{ afterId: number; since: number; count: number }> {
+): Promise<{ afterId: number; count: number }> {
   let count = 0;
   for (;;) {
     const { fixes } = await Tracking.getFixes({ trackId, afterId, limit: BATCH });
+    // 番号が進まなければ（同じ測位が返ってくる）、同じものを何度も取り込まないようやめる
+    if (fixes.length && fixes[0].id <= afterId) throw new Error(`記録の測位の取り込みが進みません（${afterId}）`);
     const fresh = fixes.filter((f) => f.t > since);
     fresh.forEach((f, i) =>
       onFix({
@@ -174,30 +190,33 @@ async function drainFixes(
       }),
     );
     if (fixes.length) afterId = fixes[fixes.length - 1].id;
-    if (fresh.length) since = fresh[fresh.length - 1].t;
     count += fresh.length;
-    if (fixes.length < BATCH) return { afterId, since, count };
+    if (fixes.length < BATCH) return { afterId, count };
   }
 }
 
 function watchNative(onFix: (f: Fix) => void, onError: (e: FixError) => void, opts: WatchOptions): LocationWatch {
-  let cursor = { afterId: 0, since: opts.since };
+  let afterId = 0;
+  /** 最初の取り込みだけ、時刻で取り込み済みの点をはじく */
+  let since = opts.since;
   let stopped = false;
   // 取り込みは1つずつ順に行う
   let busy: Promise<void> = Promise.resolve();
   /** reason はログ用。サービスからの知らせのたびの取り込みは、多いときだけログに残す */
   const drain = async (reason: string) => {
-    const c = await drainFixes(opts.trackId, cursor.afterId, cursor.since, onFix);
-    cursor = c;
+    const c = await drainFixes(opts.trackId, afterId, since, onFix);
+    afterId = c.afterId;
+    since = -Infinity;
     if (c.count && (reason !== '知らせ' || c.count >= 30)) log(`記録の測位を取り込んだ: ${c.count}件（${reason}）`);
   };
-  const poll = (reason: string) => {
+  /** checkStatus：通知の「停止」で止められていないか確かめる（停止の知らせ・表に戻ったとき・開始のときだけ） */
+  const poll = (reason: string, checkStatus = true) => {
     busy = busy
       .then(async () => {
         if (stopped) return;
         await drain(reason);
+        if (!checkStatus) return;
         const s = await Tracking.status();
-        // 通知の「停止」で止められた
         if (!stopped && !s.recording && s.stoppedTrack === opts.trackId) {
           log('通知の「停止」で止められたので、記録を締める');
           opts.onEnded?.(s.stoppedAt ?? Date.now());
@@ -207,7 +226,7 @@ function watchNative(onFix: (f: Fix) => void, onError: (e: FixError) => void, op
     return busy;
   };
   // サービスからの知らせ（WebView が止まっていて届かなかった分は、表に出たときに取り込む）
-  const listeners = [Tracking.addListener('fixes', () => void poll('知らせ')), Tracking.addListener('stopped', () => void poll('停止の知らせ'))];
+  const listeners = [Tracking.addListener('fixes', () => void poll('知らせ', false)), Tracking.addListener('stopped', () => void poll('停止の知らせ'))];
   const onVisibility = () => document.visibilityState === 'visible' && void poll('表に戻った');
   document.addEventListener('visibilitychange', onVisibility);
   void Tracking.start({ trackId: opts.trackId, startedAt: opts.startedAt })
@@ -218,14 +237,20 @@ function watchNative(onFix: (f: Fix) => void, onError: (e: FixError) => void, op
     });
   return {
     async stop() {
-      if (stopped) return;
+      if (stopped) return true;
       stopped = true;
       document.removeEventListener('visibilitychange', onVisibility);
       for (const l of listeners) void l.then((h) => h.remove());
       await busy;
-      // まとめて受け取る途中の測位も保存させてから、残りを取り込む
-      await Tracking.stop().catch((e) => console.error(e));
-      await drain('終了').catch((e) => console.error('記録の取り込みに失敗しました', e));
+      // まとめて受け取る途中の測位も保存させてから、残りを取り込む（この記録をしているときだけ止める）
+      await Tracking.stop({ trackId: opts.trackId }).catch((e) => console.error(e));
+      try {
+        await drain('終了');
+        return true;
+      } catch (e) {
+        console.error('記録の取り込みに失敗しました（端末に残し、次に開いたときに取り込みます）', e);
+        return false;
+      }
     },
   };
 }
@@ -241,6 +266,24 @@ export async function readRecordedFixes(trackId: string, since: number, onFix: (
   if (!backgroundCapable) return;
   const { count } = await drainFixes(trackId, 0, since, onFix);
   log(`途中で閉じた記録の測位を取り込んだ: ${count}件`);
+}
+
+/** まだ取り込まれていない測位が端末に残っている記録の id（Web では空） */
+export async function pendingRecordedTracks(): Promise<string[]> {
+  if (!backgroundCapable) return [];
+  return (await Tracking.pendingTracks().catch(() => ({ tracks: [] as string[] }))).tracks;
+}
+
+/** 記録のサービスを止める（持ち主の記録がないまま動いているとき。Web では何もしない） */
+export async function stopTrackingService(trackId: string): Promise<void> {
+  if (backgroundCapable) await Tracking.stop({ trackId }).catch((e) => console.error(e));
+}
+
+/** 今の気圧 (hPa)。アプリ版で記録中、気圧計があり、値が新しいときだけ（ほかは null） */
+export async function currentPressure(): Promise<number | null> {
+  if (!backgroundCapable) return null;
+  const s = await Tracking.status().catch(() => null);
+  return s?.hPa != null && Date.now() - s.hPaAt < PRESSURE_STALE_MS ? s.hPa : null;
 }
 
 /** アプリ版の端末とアプリの状態・記録のサービスのログ・logcat（メニューの「動作の記録」。Web では null） */

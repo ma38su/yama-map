@@ -3,6 +3,7 @@
  * 休憩（点と点のあいだが空いているところ）は速く送る。
  */
 import { cumulativeDistances, distance, type LngLat } from '../geo';
+import { angleDiff } from '../nav/heading';
 import type { TrackPoint } from '../track/db';
 import { $, fileStamp, fmtClock } from '../ui/dom';
 import { lineFC, map, pointFC, replayDoneGradient, setTerrain, src, updateDaylight } from './mapView';
@@ -99,7 +100,7 @@ function render(follow: boolean) {
     const h = headingAt(i);
     if (h != null) {
       // 向きはなめらかに変える（細かい曲がりで画面が揺れないように）
-      const diff = ((h - bearing + 540) % 360) - 180;
+      const diff = angleDiff(bearing, h);
       bearing += diff * 0.06;
     }
     map.jumpTo({ center: here, bearing });

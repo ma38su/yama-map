@@ -4,7 +4,7 @@
  */
 import { Marker } from 'maplibre-gl';
 import { deletePhoto, getPhotos, putPhoto, type TrackPhoto } from '../track/db';
-import { readExif } from '../track/exif';
+import { jpegSize, readExif } from '../track/exif';
 import { placePhoto } from '../track/photoPlace';
 import { $, fmtClock, h } from '../ui/dom';
 import { map } from './mapView';
@@ -54,10 +54,12 @@ async function addPhotos(files: File[]) {
   let added = 0;
   let unplaced = 0;
   let unreadable = 0;
+  let failed = 0;
   try {
     for (const [i, file] of files.entries()) {
       setProgress(`写真を取り込み中… ${i + 1}/${files.length}`);
-      const meta = readExif(await file.slice(0, 256 * 1024).arrayBuffer());
+      const head = await file.slice(0, 256 * 1024).arrayBuffer();
+      const meta = readExif(head);
       const placed = placePhoto(meta, file.lastModified, shown.points, here);
       if (!placed) {
         unplaced++;
@@ -66,15 +68,28 @@ async function addPhotos(files: File[]) {
       let image: Blob;
       let thumb: Blob;
       try {
-        const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+        // 大きな写真（50MP など）を元の大きさのまま読むとメモリが足りなくなるので、縮めて読む
+        const size = jpegSize(head);
+        const k = size ? IMAGE_MAX / Math.max(size.width, size.height) : 1;
+        const bmp = await createImageBitmap(
+          file,
+          size && k < 1
+            ? { imageOrientation: 'from-image', resizeWidth: Math.round(size.width * k), resizeHeight: Math.round(size.height * k), resizeQuality: 'medium' }
+            : { imageOrientation: 'from-image' },
+        );
         [image, thumb] = await Promise.all([shrink(bmp, IMAGE_MAX, false), shrink(bmp, THUMB, true)]);
         bmp.close();
       } catch {
         unreadable++; // HEIC など、ブラウザが読めない形式
         continue;
       }
-      await putPhoto({ id: crypto.randomUUID(), trackId, t: placed.t, lng: placed.lngLat[0], lat: placed.lngLat[1], located: placed.located, image, thumb });
-      added++;
+      try {
+        await putPhoto({ id: crypto.randomUUID(), trackId, t: placed.t, lng: placed.lngLat[0], lat: placed.lngLat[1], located: placed.located, image, thumb });
+        added++;
+      } catch (e) {
+        console.error('写真を保存できませんでした', e);
+        failed++; // 空き容量が足りないなど
+      }
     }
   } finally {
     setProgress('');
@@ -84,6 +99,7 @@ async function addPhotos(files: File[]) {
   const notes = [
     unplaced ? `${unplaced}枚は撮った時刻が記録と合わないため置けませんでした` : '',
     unreadable ? `${unreadable}枚は読めない形式でした` : '',
+    failed ? `${failed}枚は保存できませんでした（空き容量を確かめてください）` : '',
   ].filter(Boolean);
   status(`${added ? `写真を${added}枚、軌跡に置きました` : '写真を置けませんでした'}${notes.length ? `（${notes.join('・')}）` : ''}`, !added);
 }
@@ -172,7 +188,13 @@ $('photo-next').addEventListener('click', () => {
 $('photo-delete').addEventListener('click', async () => {
   const p = photos[viewIndex];
   if (!p || !confirm('この写真を削除しますか？')) return;
-  await deletePhoto(p.id);
+  try {
+    await deletePhoto(p.id);
+  } catch (e) {
+    console.error(e);
+    status('写真を削除できませんでした', true);
+    return;
+  }
   viewer.close();
   loadedFor = null;
   await renderPhotos();

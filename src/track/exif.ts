@@ -44,6 +44,27 @@ export function readExif(buf: ArrayBuffer): PhotoMeta {
   return {};
 }
 
+/**
+ * JPEG の画像の幅と高さ（向きを直す前）。SOF の印を探して読む。見つからなければ null。
+ * 大きな写真を、元の大きさのまま読み込まずに縮めて読むために使う
+ */
+export function jpegSize(buf: ArrayBuffer): { width: number; height: number } | null {
+  const v = new DataView(buf);
+  if (v.byteLength < 4 || v.getUint16(0) !== 0xffd8) return null;
+  let off = 2;
+  while (off + 9 <= v.byteLength) {
+    const marker = v.getUint16(off);
+    if ((marker & 0xff00) !== 0xff00) return null;
+    // SOF0〜SOF15（DHT・JPG・DAC の C4・C8・CC を除く）
+    if (marker >= 0xffc0 && marker <= 0xffcf && marker !== 0xffc4 && marker !== 0xffc8 && marker !== 0xffcc) {
+      return { height: v.getUint16(off + 5), width: v.getUint16(off + 7) };
+    }
+    if (marker === 0xffda) return null;
+    off += 2 + v.getUint16(off + 2);
+  }
+  return null;
+}
+
 function readTiff(v: DataView, base: number): PhotoMeta {
   const le = v.getUint16(base) === 0x4949; // "II"
   const u16 = (o: number) => v.getUint16(base + o, le);

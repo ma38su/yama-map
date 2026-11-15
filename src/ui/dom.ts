@@ -72,7 +72,23 @@ export function download(filename: string, data: string | Blob, type = 'applicat
 /** 動画などを書き出すときの1回分の大きさ。全体を一度に base64 にすると、長い動画でメモリが足りなくなる */
 const WRITE_CHUNK = 3 * 1024 * 1024;
 
+/** 前に書き出して共有したファイル（キャッシュフォルダの yama-…）のうち、1日より古いものを消す。送り先が読み終えるまで待つため、すぐには消さない */
+async function cleanShared(): Promise<void> {
+  try {
+    const { files } = await Filesystem.readdir({ path: '', directory: Directory.Cache });
+    const old = Date.now() - 24 * 60 * 60_000;
+    for (const f of files) {
+      if (f.type === 'file' && f.name.startsWith('yama-') && (f.mtime ?? 0) < old) {
+        await Filesystem.deleteFile({ path: f.name, directory: Directory.Cache });
+      }
+    }
+  } catch {
+    /* 消せなくても書き出しは続ける */
+  }
+}
+
 async function shareFile(filename: string, data: string | Blob): Promise<void> {
+  await cleanShared();
   const file = { path: filename, directory: Directory.Cache };
   let uri: string;
   if (typeof data === 'string') {

@@ -47,7 +47,6 @@ map.on('load', () => {
   renderRoute();
   renderTrack();
   updateNav();
-  void checkUnfinished();
 });
 
 // data-close の付いたボタンで、そのダイアログを閉じる
@@ -66,6 +65,8 @@ new ResizeObserver(updatePanelHeight).observe($('sheet'));
 renderRoute();
 updateNav();
 updateRecButton();
+// 前回の途中の記録は、地図の読み込みを待たずに確かめる（電波が弱いと読み込みが長引くため。その間「記録開始」は待つ）
+void checkUnfinished();
 void ensureBuiltinPlan();
 
 // ---------- Service Worker（オフライン対応） ----------

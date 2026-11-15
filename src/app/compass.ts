@@ -77,8 +77,12 @@ geolocate.on('geolocate', (pos) => {
 });
 geolocate.on('trackuserlocationend', syncListening);
 document.addEventListener('visibilitychange', syncListening);
-// 現在地ボタンでオフにしたときのイベントはないので、ときどき確かめる
-whileVisible(3000, syncListening);
+// 現在地ボタンでオフにしたときのイベントはないので、ときどき確かめる。
+// 向きが届かなくなったとき（GPS の進行方向だけで、立ち止まった）に扇を消すのも、ここで確かめる
+whileVisible(3000, () => {
+  syncListening();
+  schedule();
+});
 
 // ---------- 表示 ----------
 let cone: HTMLDivElement | null = null;
@@ -92,17 +96,26 @@ function schedule() {
 }
 
 let lastRotateAt = 0;
+/** 扇を最後に描いた向き（画面の上からの角度）。少ししか変わらなければ書き換えない（センサーは1秒に何十回も届くため） */
+let drawnAngle: number | null = null;
 function render() {
   frame = 0;
+  // ポケット表示のあいだは地図を描かないので、扇も地図の向きも変えない
+  if (document.body.classList.contains('pocket-on')) return;
   // 10秒以上新しい向きが届かなければ扇を消す
   const fresh = heading != null && Date.now() - headingAt < 10_000;
   if (locating() && geolocate._dotElement) {
     if (!cone || cone.parentElement !== geolocate._dotElement) {
       cone = h('div', 'heading-cone');
       geolocate._dotElement.append(cone);
+      drawnAngle = null;
     }
     cone.hidden = !fresh;
-    if (fresh) cone.style.transform = `rotate(${heading! - map.getBearing()}deg)`;
+    const angle = fresh ? heading! - map.getBearing() : null;
+    if (angle != null && (drawnAngle == null || Math.abs(angleDiff(drawnAngle, angle)) >= 1.5)) {
+      cone.style.transform = `rotate(${angle}deg)`;
+      drawnAngle = angle;
+    }
   }
   if (headingUp && fresh) rotateMap(heading!);
 }
@@ -112,6 +125,8 @@ map.on('rotate', schedule);
 function rotateMap(hd: number) {
   const now = Date.now();
   if (Math.abs(angleDiff(map.getBearing(), hd)) < 4 || now - lastRotateAt < 300) return;
+  // ほかの動き（地名検索・写真への移動など）の途中なら、止めないよう待つ
+  if (map.isMoving()) return;
   lastRotateAt = now;
   // 現在地に追従しているあいだは、中心も現在地に合わせる（追従のアニメーションを止めてしまうので）。
   // geolocateSource を付けて、追従が外れないようにする
@@ -147,7 +162,7 @@ class HeadingUpControl implements IControl {
 const control = new HeadingUpControl();
 map.addControl(control, 'top-right');
 
-export async function setHeadingUp(on: boolean) {
+async function setHeadingUp(on: boolean) {
   if (on === headingUp) return;
   if (on) {
     const sensor = await requestPermission();

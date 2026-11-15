@@ -28,7 +28,6 @@ const STALE_MS = 60 * 60_000;
 const RETRY_MS = 5 * 60_000;
 /** 端末に残しておく期間 */
 const KEEP_MS = 3 * 24 * 60 * 60_000;
-export const WEATHER_ATTRIBUTION = '<a href="https://open-meteo.com/" target="_blank" rel="noopener">天気: Open-Meteo</a>';
 
 // ---------- 予報の取得と保存 ----------
 const cache = new Map<string, { h: HourlyWeather; at: number }>();

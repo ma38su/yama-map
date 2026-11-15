@@ -19,7 +19,7 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 | 許可（`requestTrackingPermissions`） | ブラウザに任せる（拒否済みなら記録を始めない） | 記録開始時に、通知 → 位置情報の順に**1つずつ**求める（位置情報は `TrackingPlugin` の `requestPermissions`）。位置情報を拒否されたら記録を始めない |
 | 戻るボタン（`app/backButton.ts`） | ブラウザに任せる | アプリを終了しない。メニュー → 地図の吹き出し → 下のシート → リプレイの順に閉じ、何もなければ裏に回す（`@capacitor/app`） |
 | 画面に戻ったとき（`track/recorder.ts`） | 測位をやり直す | ネイティブの記録は止まらないので、やり直さず、たまった測位を取り込む |
-| アプリを開いたとき（`app/recording.ts` の `checkUnfinished`） | 記録中のまま閉じていたら、続けるか聞く | 裏で記録が続いていれば、聞かずに取り込んで続ける。通知の「停止」で止めていれば、そこまでで締める。端末の再起動などで止まっていたら、続けるか聞く |
+| アプリを開いたとき（`app/recording.ts` の `checkUnfinished`。地図の読み込みを待たずに確かめ、終わるまで「記録開始」は待つ） | 記録中のまま閉じていたら、続けるか聞く | 裏で記録が続いていれば、聞かずに取り込んで続ける。通知の「停止」で止めていれば、そこまでで締める。端末の再起動などで止まっていたら、続けるか聞く。持ち主の記録がないまま動いているサービスは止め、終えた記録で端末に残っている測位（終えるときに取り込めなかった分）は取り込む |
 | 地図の青い現在地マーク（`app/recording.ts` の `feedNativeFix`） | WebView の位置情報 | WebView の位置情報が古いときは、ネイティブの位置で上書きする |
 | 画面を点けたままにする（`settings.ts`） | 初期値オン | 初期値オフ。メニューの説明文も差し替える（`app/menu.ts`） |
 | 「画面を消すと記録が止まります」の警告（`app/status.ts`） | 出す | 出さない |
@@ -34,7 +34,8 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 - **記録の点をネイティブ側で保存する理由**：以前は `@capacitor-community/background-geolocation` から測位を JS に届け、JS が IndexedDB に保存していました。
   このプラグインは画面（Activity）の終了と一緒に測位サービスを止めるうえ、WebView が止まると点が保存されないので、
   履歴からスワイプしたときや OS に画面を止められたときに記録が途切れました。今はサービスが画面と関係なく動き続け、点はその場で SQLite に入ります。
-  JS は取り込んで IndexedDB に保存し終えたら、端末側の点を消します（`clearFixes`）。
+  JS は取り込んで IndexedDB に保存し終えたら、端末側の点を消します（`clearFixes`）。取り込みや保存に失敗したときは消さず、次に開いたときに取り込みます。
+  止める依頼には記録の id を付け、サービスがその記録をしているときだけ止めます（新しい記録を始めたあとに、古い記録の止める依頼が届いても止めないように）。
 - **測位の間隔とまとめて受け取る理由**：測位は1秒間隔の高精度で、5m 動いたときだけ受け取ります（記録は8m以上動いたときだけ点を足すので、記録は変わらない）。
   さらに最大20秒ぶんをまとめて受け取ります（`setMaxUpdateDelayMillis`）。止まっていれば何も届かず、歩いていても最大20秒に1回しか JS を起こしません。
 - **許可を1つずつ求める理由**：WebView の位置情報（地図の現在地表示）と記録の許可を同時に求めると、許可ダイアログが2枚重なります。
@@ -66,10 +67,9 @@ iOS 版はありません（Xcode と Apple Developer Program が必要なため
 
 | ファイル | 用途 |
 |---|---|
-| `TrackingService.java` | 軌跡の記録（位置情報タイプのフォアグラウンドサービス）。測位は `play-services-location` の FusedLocationProviderClient。気圧計があれば気圧も点に付ける。通知の経過時間・距離・停止ボタン |
+| `TrackingService.java` | 軌跡の記録（位置情報タイプのフォアグラウンドサービス）。測位は `play-services-location` の FusedLocationProviderClient。気圧計があれば気圧も点に付ける。通知の経過時間・距離・停止ボタン。測位・気圧・計測の値は記録用のスレッドだけで扱う |
 | `TrackingStore.java` | 記録中の測位を入れておく SQLite（`tracking.db`） |
-| `TrackingPlugin.java` | JS（`src/track/location.ts`）から使う `Tracking`。`start`・`stop`・`status`・`getFixes`・`clearFixes`、位置情報の許可、電池の最適化（`batteryOptimization`・`openBatterySettings`） |
-| `BarometerPlugin.java` | 気圧計（`src/track/barometer.ts`）。記録中の今の標高を気圧から求める |
+| `TrackingPlugin.java` | JS（`src/track/location.ts`）から使う `Tracking`。`start`・`stop`（記録の id 付き）・`status`（今の気圧も）・`getFixes`・`clearFixes`・`pendingTracks`、位置情報の許可、電池の最適化（`batteryOptimization`・`openBatterySettings`）、動作の記録（`diagnostics`・`getLog`・`getLogcat`） |
 
 アプリが求める主な権限は、位置情報（精密・おおよそ）、フォアグラウンドサービス（位置情報）、通知、インターネット、振動、電池の最適化から外す画面を開く（`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`）です。
 `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` は、Play ストアで配るときは使い方が審査されます（APK を直接配るなら問題ありません）。

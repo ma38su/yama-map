@@ -19,9 +19,9 @@ import android.location.Location;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
-import android.os.PowerManager;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.util.Log;
 
@@ -31,6 +31,7 @@ import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 
 import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationAvailability;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
@@ -47,9 +48,11 @@ import java.util.Locale;
  * アプリの画面（Activity）や WebView とは結び付けていないので、履歴からスワイプして消しても、
  * WebView が止められても記録は続く。止めるのはアプリの「記録終了」か、通知の「停止」だけ。
  *  - 測位は1秒間隔・5m 動いたときだけ。最大20秒ぶんまとめて受け取る（その間 CPU を眠らせておける）
- *  - 気圧計があれば、気圧も点と一緒に残す（JS の気圧高度計で標高を補う）
+ *  - 気圧計があれば、気圧も点と一緒に残す（JS の気圧高度計で標高を補う）。今の気圧は TrackingPlugin の status からも読める
  *  - システムに止められて再起動されたら（START_STICKY）、記録中だった記録を続ける
  *  - あとでパフォーマンスを分析できるよう、10分ごとに「計測」の1行をログに残す（電池・温度・測位の届き具合・画面が点いていた時間など）
+ * スレッド：onStartCommand と止める依頼はメインスレッドなどから来るが、測位・気圧・画面のオン/オフ・計測の値は
+ * すべて記録用のスレッド（handler）で扱う。track だけはどこからでも読むので volatile にしている
  */
 public class TrackingService extends Service implements SensorEventListener {
     static final String ACTION_START = "io.github.ma38su.yamamap.TRACKING_START";
@@ -76,19 +79,31 @@ public class TrackingService extends Service implements SensorEventListener {
 
     /** 動いているサービス（なければ null）。TrackingPlugin が止めるときに使う */
     static volatile TrackingService running;
+    /** 今の気圧 (hPa) とその時刻。記録中だけ（TrackingPlugin の status で JS に渡す） */
+    static volatile double latestHPa = Double.NaN;
+    static volatile long latestHPaAt;
 
     private FusedLocationProviderClient fused;
     private HandlerThread thread;
     private Handler handler;
-    private String track;
-    private long startedAt;
+    /** 記録中の記録（どのスレッドからも読む） */
+    private volatile String track;
+    private volatile long startedAt;
+    /** 記録を始めた回数。止めているあいだに次の記録が始まったら、止める処理で新しい記録を消さないように */
+    private int generation;
+
+    // ---------- 止める依頼（synchronized (this) で扱う） ----------
+    private boolean stopping;
+    private final List<Runnable> stopWaiters = new ArrayList<>();
+
+    // ---------- ここから下は記録用のスレッド（handler）だけで扱う ----------
     private double distance;
     private Location counted;
     private long notifiedAt;
     private SensorManager sensors;
     private double hPa = Double.NaN;
     private long hPaAt;
-    // ---------- 計測（前回ログにまとめてから） ----------
+    private Boolean available;
     /** 届いた測位の数と、受け取った回数（まとめて届くので、回数のほうが少ない） */
     private int received;
     private int deliveries;
@@ -117,25 +132,34 @@ public class TrackingService extends Service implements SensorEventListener {
         public void onLocationResult(@NonNull LocationResult result) {
             String t = track;
             if (t == null) return;
-            TrackingStore store = TrackingStore.get(TrackingService.this);
             Double p = !Double.isNaN(hPa) && System.currentTimeMillis() - hPaAt < PRESSURE_STALE_MS ? hPa : null;
+            List<Location> locations = result.getLocations();
+            // 1回に届いた分は、まとめて1回で保存する
+            TrackingStore.get(TrackingService.this).addAll(t, locations, p);
             deliveries++;
-            for (Location loc : result.getLocations()) {
-                store.add(t, loc, p);
+            for (Location loc : locations) {
                 received++;
-                if (loc.hasAccuracy()) accuracies.add(loc.getAccuracy());
-                if (loc.hasAccuracy() && loc.getAccuracy() <= COUNT_ACCURACY_M) {
-                    if (counted == null) counted = loc;
-                    else if (loc.distanceTo(counted) >= COUNT_STEP_M) {
-                        distance += loc.distanceTo(counted);
-                        counted = loc;
-                    }
+                if (!loc.hasAccuracy()) continue;
+                accuracies.add(loc.getAccuracy());
+                if (loc.getAccuracy() > COUNT_ACCURACY_M) continue;
+                if (counted == null) counted = loc;
+                else if (loc.distanceTo(counted) >= COUNT_STEP_M) {
+                    distance += loc.distanceTo(counted);
+                    counted = loc;
                 }
             }
-            prefs(TrackingService.this).edit().putFloat("distance", (float) distance).apply();
             TrackingPlugin.signal("fixes");
             // 距離の表示は1分に1回まで書き換える（経過時間は通知が自分で進める）
             if (SystemClock.elapsedRealtime() - notifiedAt > 60_000) notifyProgress();
+        }
+
+        @Override
+        public void onLocationAvailability(@NonNull LocationAvailability availability) {
+            // 測位が使えなくなった・戻った（GPS の電波が届かない、位置情報がオフにされた、など）
+            boolean now = availability.isLocationAvailable();
+            if (available != null && available == now) return;
+            available = now;
+            if (track != null) TrackingStore.log(TrackingService.this, now ? "測位が使える状態になった" : "測位が使えない状態になった");
         }
     };
 
@@ -183,18 +207,15 @@ public class TrackingService extends Service implements SensorEventListener {
             : "記録のサービスを開始（記録 " + shortId(id) + "・" + (resumed ? "続き" : "新規") + "）");
         track = id;
         startedAt = since;
-        distance = resumed ? p.getFloat("distance", 0) : 0;
-        counted = null;
         p.edit()
             .putString("track", id)
             .putLong("startedAt", since)
-            .putFloat("distance", (float) distance)
             .remove("stoppedTrack")
             .remove("stoppedAt")
             .apply();
         try {
             int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION : 0;
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), type);
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(0), type);
         } catch (Exception e) {
             // 位置情報の許可がない・裏からは始められない（Android 12 以降）など
             Log.e(TAG, "フォアグラウンドサービスを始められませんでした", e);
@@ -206,9 +227,22 @@ public class TrackingService extends Service implements SensorEventListener {
             return START_NOT_STICKY;
         }
         running = this;
-        startMeasuring(!resumed || restarted);
-        requestUpdates();
-        startPressure();
+        synchronized (this) {
+            generation++;
+        }
+        // 記録の値の準備と測位の開始は、記録用のスレッドで
+        final boolean fresh = !resumed;
+        final String startTrack = id;
+        handler.post(() -> {
+            // 続きなら、ここまでの距離を残っている測位から数え直して、通知に出す
+            distance = fresh ? 0 : TrackingStore.get(this).distance(startTrack, COUNT_ACCURACY_M, COUNT_STEP_M);
+            counted = null;
+            if (!fresh) notifyProgress();
+            available = null;
+            startMeasuring(fresh);
+            requestUpdates();
+            startPressure();
+        });
         return START_STICKY;
     }
 
@@ -218,7 +252,12 @@ public class TrackingService extends Service implements SensorEventListener {
             .setMaxUpdateDelayMillis(MAX_DELAY_MS)
             .build();
         try {
-            fused.requestLocationUpdates(request, callback, thread.getLooper());
+            fused.requestLocationUpdates(request, callback, thread.getLooper()).addOnFailureListener(e -> {
+                // Google Play 開発者サービスがない・許可が足りない（裏から再起動したときなど）
+                TrackingStore.log(this, "測位を始められなかったので記録を止めた: " + e);
+                notifyStopped();
+                stopTracking(false, null);
+            });
         } catch (SecurityException e) {
             Log.e(TAG, "位置情報の許可がありません", e);
             TrackingStore.log(this, "位置情報の許可がないので記録を止めた: " + e.getMessage());
@@ -227,7 +266,7 @@ public class TrackingService extends Service implements SensorEventListener {
         }
     }
 
-    // ---------- 計測 ----------
+    // ---------- 計測（記録用のスレッド） ----------
 
     /** 計測を始める。新しい記録なら、記録全体の電池の減りを出すために、始めの電池残量を残す */
     private void startMeasuring(boolean fresh) {
@@ -245,7 +284,8 @@ public class TrackingService extends Service implements SensorEventListener {
         } catch (IllegalArgumentException ignored) {
             // まだ登録していない
         }
-        ContextCompat.registerReceiver(this, screenReceiver, f, ContextCompat.RECEIVER_NOT_EXPORTED);
+        // 画面のオン/オフも記録用のスレッドで受け取る
+        ContextCompat.registerReceiver(this, screenReceiver, f, null, handler, ContextCompat.RECEIVER_NOT_EXPORTED);
         SharedPreferences p = prefs(this);
         if (fresh || !p.contains("startBattery")) {
             p.edit().putInt("startBattery", batteryPercent()).putLong("startBatteryAt", System.currentTimeMillis()).apply();
@@ -275,6 +315,7 @@ public class TrackingService extends Service implements SensorEventListener {
         received = 0;
         deliveries = 0;
         accuracies.clear();
+        handler.removeCallbacks(summaryTask);
         handler.postDelayed(summaryTask, SUMMARY_MS);
     }
 
@@ -325,45 +366,82 @@ public class TrackingService extends Service implements SensorEventListener {
     @Override
     public void onSensorChanged(SensorEvent event) {
         double v = event.values[0];
-        // 1秒ごとの小さな揺れをならす（BarometerPlugin と同じ）
+        // 1秒ごとの小さな揺れをならす（約5秒の移動平均に相当）
         hPa = Double.isNaN(hPa) ? v : hPa + (v - hPa) * 0.2;
         hPaAt = System.currentTimeMillis() - (SystemClock.elapsedRealtimeNanos() - event.timestamp) / 1_000_000;
+        latestHPa = hPa;
+        latestHPaAt = hPaAt;
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
+    /** 記録中の記録（なければ null） */
+    String currentTrack() {
+        return track;
+    }
+
     /**
      * 記録をやめる。まとめて受け取る途中の測位を出し切って保存してから止め、done を呼ぶ。
+     * 止めている途中にもう一度頼まれたら、同じ止める処理が終わったときに done を呼ぶ。
      * byUser は通知の「停止」（JS がまだ知らないので、止めた時刻を残す）
      */
     void stopTracking(boolean byUser, Runnable done) {
+        final int gen;
+        synchronized (this) {
+            if (done != null) stopWaiters.add(done);
+            if (stopping) return;
+            stopping = true;
+            gen = generation;
+        }
         String t = track;
         if (!byUser) TrackingStore.log(this, "アプリから記録を止めた");
         Runnable finish = () -> {
-            if (t != null) {
-                summarize();
-                logBatteryUsage();
+            boolean superseded;
+            synchronized (this) {
+                // 止めているあいだに次の記録が始まっていたら、その記録は止めない
+                superseded = generation != gen;
             }
-            stopMeasuring();
-            fused.removeLocationUpdates(callback);
-            if (sensors != null) sensors.unregisterListener(this);
-            track = null;
-            running = null;
-            SharedPreferences.Editor e = prefs(this).edit().remove("track").remove("startedAt").remove("distance").remove("startBattery").remove("startBatteryAt");
-            if (byUser && t != null) e.putString("stoppedTrack", t).putLong("stoppedAt", System.currentTimeMillis());
-            e.apply();
-            if (byUser) TrackingPlugin.signal("stopped");
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
-            stopSelf();
-            if (done != null) done.run();
+            if (!superseded) {
+                if (t != null) {
+                    summarize();
+                    logBatteryUsage();
+                }
+                stopMeasuring();
+                fused.removeLocationUpdates(callback);
+                if (sensors != null) sensors.unregisterListener(this);
+                track = null;
+                running = null;
+                latestHPa = Double.NaN;
+                hPa = Double.NaN;
+                SharedPreferences.Editor e = prefs(this).edit()
+                    .remove("track").remove("startedAt").remove("startBattery").remove("startBatteryAt");
+                if (byUser && t != null) e.putString("stoppedTrack", t).putLong("stoppedAt", System.currentTimeMillis());
+                e.apply();
+                if (byUser) TrackingPlugin.signal("stopped");
+                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
+                stopSelf();
+            }
+            runStopWaiters();
         };
         if (t == null) {
-            finish.run();
+            if (!handler.post(finish)) finish.run();
             return;
         }
-        // flush で届く測位は thread で処理されるので、そのあとに止める
-        fused.flushLocations().addOnCompleteListener(task -> handler.post(finish));
+        // flush で届く測位は記録用のスレッドで処理されるので、そのあとに止める（スレッドが終わっていればすぐ）
+        fused.flushLocations().addOnCompleteListener(task -> {
+            if (!handler.post(finish)) finish.run();
+        });
+    }
+
+    private void runStopWaiters() {
+        List<Runnable> waiters;
+        synchronized (this) {
+            stopping = false;
+            waiters = new ArrayList<>(stopWaiters);
+            stopWaiters.clear();
+        }
+        for (Runnable r : waiters) r.run();
     }
 
     @Override
@@ -383,11 +461,17 @@ public class TrackingService extends Service implements SensorEventListener {
     @Override
     public void onDestroy() {
         if (track != null) TrackingStore.log(this, "記録中に記録のサービスが終了した");
-        stopMeasuring();
         if (running == this) running = null;
         fused.removeLocationUpdates(callback);
         if (sensors != null) sensors.unregisterListener(this);
+        try {
+            unregisterReceiver(screenReceiver);
+        } catch (IllegalArgumentException ignored) {
+            // 登録していない
+        }
         thread.quitSafely();
+        // 止める処理を待っている呼び出しがあれば返す
+        runStopWaiters();
         super.onDestroy();
     }
 
@@ -424,10 +508,10 @@ public class TrackingService extends Service implements SensorEventListener {
     private void notifyProgress() {
         notifiedAt = SystemClock.elapsedRealtime();
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null && track != null) nm.notify(NOTIFICATION_ID, buildNotification());
+        if (nm != null && track != null) nm.notify(NOTIFICATION_ID, buildNotification(distance));
     }
 
-    private Notification buildNotification() {
+    private Notification buildNotification(double meters) {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm != null && nm.getNotificationChannel(CHANNEL) == null) {
             NotificationChannel ch = new NotificationChannel(CHANNEL, getString(R.string.tracking_channel_name), NotificationManager.IMPORTANCE_LOW);
@@ -444,9 +528,9 @@ public class TrackingService extends Service implements SensorEventListener {
             new Intent(this, TrackingService.class).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
         );
-        String km = distance < 1000
-            ? String.format(Locale.JAPAN, "%d m", Math.round(distance))
-            : String.format(Locale.JAPAN, "%.2f km", distance / 1000);
+        String km = meters < 1000
+            ? String.format(Locale.JAPAN, "%d m", Math.round(meters))
+            : String.format(Locale.JAPAN, "%.2f km", meters / 1000);
         return new NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_tracking)
             .setColor(ContextCompat.getColor(this, R.color.tracking))

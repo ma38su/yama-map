@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { newOffRouteState, OFF_ROUTE, stepOffRoute } from '../src/nav/offRoute';
 import { angleDiff, headingFrom, smoothHeading } from '../src/nav/heading';
 import { parsePlaces } from '../src/nav/placeSearch';
-import { parseExifTime, readExif } from '../src/track/exif';
+import { jpegSize, parseExifTime, readExif } from '../src/track/exif';
 import { placePhoto, positionAt, TIME_TOLERANCE_MS } from '../src/track/photoPlace';
 import { BaroFusion, pressureAltitude } from '../src/track/baroAltitude';
 
@@ -189,5 +189,25 @@ describe('地名の検索', () => {
   });
   it('配列でなければ空', () => {
     expect(parsePlaces({ error: 1 }, [0, 0])).toEqual([]);
+  });
+});
+
+describe('jpegSize', () => {
+  it('SOF の印から幅と高さを読む（JPEG でなければ null）', () => {
+    // FFD8, APP0(長さ4), SOF0: 長さ17・精度8・高さ 6144・幅 8160
+    const bytes = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x18, 0x00, 0x1f, 0xe0, 0x03];
+    expect(jpegSize(new Uint8Array(bytes).buffer)).toEqual({ width: 8160, height: 6144 });
+    expect(jpegSize(new Uint8Array([1, 2, 3, 4]).buffer)).toBeNull();
+  });
+});
+
+describe('placePhoto（位置情報がある写真の時刻）', () => {
+  const pts = [
+    { t: 0, lng: 139, lat: 36 },
+    { t: 120_000, lng: 139.02, lat: 36.02 },
+  ];
+  it('撮った時刻が記録の時間から外れていれば、位置情報があっても置かない', () => {
+    expect(placePhoto({ time: 120_000 + TIME_TOLERANCE_MS + 1, lng: 140, lat: 35 }, 0, pts, null)).toBeNull();
+    expect(placePhoto({ lng: 140, lat: 35 }, 999_999_999, pts, null)?.located).toBe('gps');
   });
 });

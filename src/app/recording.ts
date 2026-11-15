@@ -2,11 +2,11 @@
 import { distance, formatDistance, type LngLat } from '../geo';
 import { log } from '../log';
 import { listTracks, type Track } from '../track/db';
-import { backgroundCapable, trackingStatus, type Fix } from '../track/location';
+import { backgroundCapable, pendingRecordedTracks, stopTrackingService, trackingStatus, type Fix } from '../track/location';
 import { TrackRecorder, fillMissingElevations } from '../track/recorder';
 import { saveSettings, settings } from '../settings';
 import { $, fmtM } from '../ui/dom';
-import { dem, geolocate, lineFC, src } from './mapView';
+import { dem, geolocate, lineFC, map, src } from './mapView';
 import { refreshTrackList } from './menu';
 import { setProfileSource } from './profileView';
 import { replayActive, startReplay, stopReplay } from './replay';
@@ -65,6 +65,11 @@ export function hereLngLat(): LngLat | null {
 
 /** 現在地の追従をオンにする（trigger() はオン/オフの切り替えなので、オフのときだけ押す） */
 export function startGeolocate() {
+  // 地図の読み込み前は、現在地ボタンの準備ができていないので、読み込んでから
+  if (!map.loaded()) {
+    map.once('load', startGeolocate);
+    return;
+  }
   if (geolocate._watchState === 'OFF') geolocate.trigger();
 }
 
@@ -136,7 +141,22 @@ function onRecordingEnded(t: Track) {
 recorder.keepScreenOn = settings.wakeLock;
 
 const recBtn = $<HTMLButtonElement>('btn-rec');
+/** 押したあとの処理の途中（続けて押しても二重に始め・終えないように） */
+let recBtnBusy = false;
 recBtn.addEventListener('click', async () => {
+  if (recBtnBusy) return;
+  recBtnBusy = true;
+  try {
+    await onRecButton();
+  } finally {
+    recBtnBusy = false;
+  }
+});
+async function onRecButton() {
+  const wasRecording = recorder.recording;
+  // 前回の途中の記録を確かめ終わるまで待つ（裏で続いていた記録を、新しい記録と取り違えないように）
+  await unfinishedChecked;
+  if (recorder.recording !== wasRecording) return; // 確かめているあいだに、裏の記録を続けた
   if (!recorder.recording) {
     if (!('geolocation' in navigator)) {
       alert('この端末・ブラウザでは位置情報が使えません');
@@ -160,7 +180,7 @@ recBtn.addEventListener('click', async () => {
     await recorder.stop();
   }
   void refreshTrackList();
-});
+}
 
 export function updateRecButton() {
   const rec = recorder.recording;
@@ -232,11 +252,36 @@ export function renderTrack() {
  *  - それ以外（端末の再起動・Web 版で閉じた）は、続きを記録するか聞く
  * アプリ版は、裏で記録した測位を取り込んでから続ける・締める
  */
-export async function checkUnfinished() {
+/** 前回の途中の記録を確かめ終わったら解決する（それまで「記録開始」は待つ） */
+let unfinishedChecked: Promise<void> = Promise.resolve();
+export function checkUnfinished(): Promise<void> {
+  unfinishedChecked = resolveUnfinished().catch((e) => console.error('途中の記録を確かめられませんでした', e));
+  return unfinishedChecked;
+}
+
+async function resolveUnfinished() {
   const tracks = await listTracks().catch(() => [] as Track[]);
-  const open = tracks.find((t) => t.status === 'recording');
-  if (!open) return;
   const native = await trackingStatus();
+  // 記録のサービスが、IndexedDB にない（記録中でない）記録をしていたら止める（持ち主のいない記録）
+  if (native?.recording && native.trackId && !tracks.some((t) => t.id === native.trackId && t.status === 'recording')) {
+    log(`持ち主のいない記録のサービスを止めた（${native.trackId.slice(0, 8)}）`);
+    await stopTrackingService(native.trackId);
+  }
+  const open = tracks.find((t) => t.status === 'recording');
+  if (open) await resumeOrFinish(open, native);
+  // 終えた記録で、端末に測位が残っているもの（終えるときに取り込めなかった）を取り込む
+  for (const id of await pendingRecordedTracks()) {
+    if (id === open?.id) continue;
+    const done = tracks.find((t) => t.id === id && t.status === 'done');
+    if (!done) continue;
+    log(`終えた記録の、端末に残っていた測位を取り込む（${id.slice(0, 8)}）`);
+    // 表示中の記録を変えないよう、別の TrackRecorder で取り込む
+    await new TrackRecorder(dem, () => undefined).finish(done, done.endedAt);
+    void refreshTrackList();
+  }
+}
+
+async function resumeOrFinish(open: Track, native: Awaited<ReturnType<typeof trackingStatus>>) {
   log(`途中の記録がある（${open.id.slice(0, 8)}）: ${native?.recording && native.trackId === open.id ? '裏で記録が続いている' : native?.stoppedTrack === open.id ? '通知で止められていた' : '止まっていた'}`);
   if (native?.recording && native.trackId === open.id) {
     await recorder.resume(open);

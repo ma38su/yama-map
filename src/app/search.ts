@@ -20,6 +20,8 @@ dialog.addEventListener('click', (e) => {
 
 let timer = 0;
 let ctrl: AbortController | null = null;
+/** 電波が弱いときに「検索中…」のまま止まらないよう、これで打ち切る */
+const TIMEOUT_MS = 10_000;
 input.addEventListener('input', () => {
   clearTimeout(timer);
   timer = window.setTimeout(() => void run(input.value.trim()), 400);
@@ -39,19 +41,33 @@ async function run(q: string) {
     return;
   }
   if (!navigator.onLine) {
+    list.replaceChildren();
     note.textContent = '圏外のため検索できません（地図をタップして選んでください）';
     return;
   }
-  ctrl = new AbortController();
+  const mine = new AbortController();
+  ctrl = mine;
   const c = map.getCenter();
   note.textContent = '検索中…';
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    mine.abort();
+  }, TIMEOUT_MS);
   try {
-    const places = await searchPlaces(q, [c.lng, c.lat], ctrl.signal);
+    const places = await searchPlaces(q, [c.lng, c.lat], mine.signal);
     note.textContent = places.length ? '地図の中心から近い順（地図に載っている地名を先に）' : '見つかりませんでした';
     list.replaceChildren(...places.map(item));
-  } catch (e) {
-    if ((e as Error).name === 'AbortError') return;
-    note.textContent = e instanceof Error ? e.message : '地名を検索できませんでした';
+  } catch {
+    // 次の入力で取り消した（新しい検索が始まった）ときは何もしない
+    if (mine.signal.aborted && !timedOut) return;
+    list.replaceChildren();
+    // 通信の失敗はブラウザの英語のメッセージになるので、日本語にする
+    note.textContent = timedOut
+      ? '時間がかかりすぎたので、検索をやめました（電波の届くところで試してください）'
+      : '地名を検索できませんでした（電波の状態を確かめてください）';
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

@@ -11,6 +11,8 @@ import android.util.Log;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 
+import java.util.List;
+
 /**
  * 記録中の測位を端末に保存する（TrackingService が書き、TrackingPlugin が JS へ渡す）。
  * WebView が止まっていても点が欠けないよう、届いた測位はその場でここに入れる。
@@ -98,17 +100,64 @@ class TrackingStore extends SQLiteOpenHelper {
         }
     }
 
-    /** hpa は気圧 (hPa)。気圧計がない・値が古ければ null */
-    void add(String track, Location loc, Double hpa) {
-        ContentValues v = new ContentValues();
-        v.put("track", track);
-        v.put("t", loc.getTime());
-        v.put("lat", loc.getLatitude());
-        v.put("lng", loc.getLongitude());
-        v.put("acc", loc.hasAccuracy() ? loc.getAccuracy() : 9999);
-        if (loc.hasAltitude()) v.put("alt", loc.getAltitude());
-        if (hpa != null) v.put("hpa", hpa);
-        getWritableDatabase().insert("fixes", null, v);
+    /** 1回に届いた測位をまとめて保存する。hpa は気圧 (hPa)。気圧計がない・値が古ければ null */
+    void addAll(String track, List<Location> locations, Double hpa) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (Location loc : locations) {
+                ContentValues v = new ContentValues();
+                v.put("track", track);
+                v.put("t", loc.getTime());
+                v.put("lat", loc.getLatitude());
+                v.put("lng", loc.getLongitude());
+                v.put("acc", loc.hasAccuracy() ? loc.getAccuracy() : 9999);
+                if (loc.hasAltitude()) v.put("alt", loc.getAltitude());
+                if (hpa != null) v.put("hpa", hpa);
+                db.insert("fixes", null, v);
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    /**
+     * 記録の距離 (m) を、残っている測位から数え直す（サービスが再起動したとき、通知の距離を続きから出すため）。
+     * 数え方は TrackingService と同じ（誤差 maxAccuracy 以内・minStep 以上動いたとき）
+     */
+    double distance(String track, float maxAccuracy, float minStep) {
+        double total = 0;
+        double lastLat = Double.NaN;
+        double lastLng = Double.NaN;
+        float[] d = new float[1];
+        try (Cursor c = getReadableDatabase().query("fixes", new String[] { "lat", "lng", "acc" }, "track = ?", new String[] { track }, null, null, "id")) {
+            while (c.moveToNext()) {
+                if (c.getDouble(2) > maxAccuracy) continue;
+                double lat = c.getDouble(0);
+                double lng = c.getDouble(1);
+                if (Double.isNaN(lastLat)) {
+                    lastLat = lat;
+                    lastLng = lng;
+                    continue;
+                }
+                Location.distanceBetween(lastLat, lastLng, lat, lng, d);
+                if (d[0] < minStep) continue;
+                total += d[0];
+                lastLat = lat;
+                lastLng = lng;
+            }
+        }
+        return total;
+    }
+
+    /** まだ取り込まれていない測位が残っている記録の id */
+    JSArray pendingTracks() {
+        JSArray out = new JSArray();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT DISTINCT track FROM fixes", null)) {
+            while (c.moveToNext()) out.put(c.getString(0));
+        }
+        return out;
     }
 
     /** track の測位のうち、番号が afterId より後のものを古い順に limit 件まで */

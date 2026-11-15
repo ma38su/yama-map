@@ -162,10 +162,6 @@ export function updateElevations(trackId: string, eles: Map<number, number>): Pr
   });
 }
 
-export function getTrack(id: string): Promise<Track | undefined> {
-  return withDb((db) => wrap(db.transaction('tracks').objectStore('tracks').get(id)));
-}
-
 export async function listTracks(): Promise<Track[]> {
   const all = await withDb((db) => wrap<Track[]>(db.transaction('tracks').objectStore('tracks').getAll()));
   return all.sort((a, b) => b.startedAt - a.startedAt);

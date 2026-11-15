@@ -16,11 +16,11 @@ import { GainCounter, distance, formatDistance } from '../geo';
 import { log } from '../log';
 import type { DemSampler } from '../map/gsiDem';
 import { BaroFusion } from './baroAltitude';
-import { readPressure, setBarometer } from './barometer';
 import { appendPoints, getPoints, putTrack, updateElevations, type Track, type TrackPoint } from './db';
 import {
   backgroundCapable,
   clearRecordedFixes,
+  currentPressure,
   readRecordedFixes,
   requestTrackingPermissions,
   watchLocation,
@@ -54,6 +54,10 @@ export class TrackRecorder {
   /** 端末への保存に失敗した点。次の点と一緒に保存し直す */
   private unsaved: TrackPoint[] = [];
   private queue: Promise<void> = Promise.resolve();
+  /** 記録を始めている・続けている途中（「記録開始」を続けて押したときなどに、二重に始めないように） */
+  private starting = false;
+  /** 終えている途中の記録（二重に終えないように、2回目は同じものを待つ） */
+  private stopping: Promise<Track | null> | null = null;
   private wakeLock: WakeLockSentinel | null = null;
   keepScreenOn = true;
 
@@ -65,7 +69,7 @@ export class TrackRecorder {
       if (document.visibilityState !== 'visible' || !this.recording) return;
       // Web版はバックグラウンドから戻ったら測位を取り直す（iOSで止まることがあるため）。
       // アプリ版の測位はバックグラウンドでも続いているので、そのままにする
-      if (!backgroundCapable) this.startWatch();
+      if (!backgroundCapable) void this.startWatch();
       void this.acquireWakeLock();
     });
   }
@@ -87,7 +91,16 @@ export class TrackRecorder {
 
   /** 記録を始める。位置情報が許可されていなければ始めずに false */
   async start(): Promise<boolean> {
-    if (this.recording) return true;
+    if (this.recording || this.starting) return true;
+    this.starting = true;
+    try {
+      return await this.begin();
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  private async begin(): Promise<boolean> {
     // 許可を先に求める（拒否されたときに、点のない「記録中」の記録を残さないように）
     if (!(await requestTrackingPermissions())) return false;
     const now = Date.now();
@@ -108,12 +121,11 @@ export class TrackRecorder {
     this.gain = new GainCounter();
     this.baro = new BaroFusion();
     this.error = null;
-    void setBarometer(true);
     // 記録がブラウザに消されないよう、保存領域の永続化を求める（拒否されても続ける）
     void navigator.storage?.persist?.().catch(() => false);
     await putTrack(this.track);
     log(`記録を開始（${this.track.id.slice(0, 8)}）`);
-    this.startWatch();
+    await this.startWatch();
     await this.acquireWakeLock();
     this.emit();
     return true;
@@ -121,22 +133,35 @@ export class TrackRecorder {
 
   /** 前回途中で閉じられた記録を再開する（アプリ版で裏で記録が続いていれば、そのまま続ける） */
   async resume(track: Track): Promise<void> {
-    await this.load(track);
-    log(`記録を続ける（${track.id.slice(0, 8)}・${this.points.length}点）`);
-    void setBarometer(true);
-    await requestTrackingPermissions();
-    this.startWatch();
-    await this.acquireWakeLock();
-    this.emit();
+    // もう記録している（読み込み中に「記録開始」を押した）なら、何もしない
+    if (this.recording || this.starting) return;
+    this.starting = true;
+    try {
+      await this.load(track);
+      log(`記録を続ける（${track.id.slice(0, 8)}・${this.points.length}点）`);
+      await requestTrackingPermissions();
+      await this.startWatch();
+      await this.acquireWakeLock();
+      this.emit();
+    } finally {
+      this.starting = false;
+    }
   }
 
   /** 記録を終える。アプリ版は端末にたまっている測位を取り込み終えてから締める。endedAt は終えた時刻（通知の「停止」のとき） */
-  async stop(endedAt = Date.now()): Promise<Track | null> {
-    if (!this.track) return null;
-    await this.stopWatch();
-    void setBarometer(false);
-    await this.queue;
-    return this.close(endedAt);
+  stop(endedAt = Date.now()): Promise<Track | null> {
+    if (!this.track) return Promise.resolve(null);
+    // 終えている途中（通知の「停止」とアプリの「記録終了」が重なったときなど）なら、同じものを待つ
+    this.stopping ??= (async () => {
+      try {
+        const drained = await this.stopWatch();
+        await this.queue;
+        return await this.close(endedAt, drained);
+      } finally {
+        this.stopping = null;
+      }
+    })();
+    return this.stopping;
   }
 
   /**
@@ -146,18 +171,25 @@ export class TrackRecorder {
   async finish(track: Track, endedAt?: number): Promise<Track> {
     await this.load(track);
     this.emit();
-    await readRecordedFixes(track.id, this.points.at(-1)?.t ?? 0, (fix) => this.enqueue(fix));
+    let drained = true;
+    try {
+      await readRecordedFixes(track.id, this.points.at(-1)?.t ?? 0, (fix) => this.enqueue(fix));
+    } catch (e) {
+      console.error('端末に残った測位を取り込めませんでした（次に開いたときにもう一度取り込みます）', e);
+      drained = false;
+    }
     await this.queue;
-    return (await this.close(endedAt ?? this.points.at(-1)?.t ?? track.startedAt))!;
+    return (await this.close(endedAt ?? this.points.at(-1)?.t ?? track.startedAt, drained))!;
   }
 
-  private async close(endedAt: number): Promise<Track | null> {
+  /** drained：アプリ版の端末側の測位をすべて取り込めたか（取り込めていなければ、端末側の測位を消さない） */
+  private async close(endedAt: number, drained: boolean | void = true): Promise<Track | null> {
     if (!this.track) return null;
     this.track = { ...this.track, status: 'done', endedAt };
     await this.save();
-    log(`記録を終了（${this.track.id.slice(0, 8)}・${this.points.length}点・${formatDistance(this.track.distance)}${this.unsaved.length ? `・保存できていない点 ${this.unsaved.length}` : ''}）`);
-    // IndexedDB に保存し終えたら、アプリ版の端末側の測位は消す（保存できていなければ残しておく）
-    if (!this.unsaved.length) await clearRecordedFixes(this.track.id);
+    log(`記録を終了（${this.track.id.slice(0, 8)}・${this.points.length}点・${formatDistance(this.track.distance)}${this.unsaved.length ? `・保存できていない点 ${this.unsaved.length}` : ''}${drained === false ? '・端末に測位が残っている' : ''}）`);
+    // IndexedDB に保存し終えたら、アプリ版の端末側の測位は消す（残っていれば、次に開いたときに取り込む：app/recording.ts）
+    if (!this.unsaved.length && drained !== false) await clearRecordedFixes(this.track.id);
     await this.releaseWakeLock();
     const finished = this.track;
     this.emit();
@@ -182,7 +214,7 @@ export class TrackRecorder {
   /** 記録中の今の標高を気圧計から求める（気圧計がない・まだ合わせられていなければ null） */
   async currentAltitude(): Promise<number | null> {
     if (!this.recording) return null;
-    const hpa = await readPressure();
+    const hpa = await currentPressure();
     return hpa != null ? this.baro.altitude(hpa) : null;
   }
 
@@ -207,10 +239,11 @@ export class TrackRecorder {
     this.queue = this.queue.then(() => this.handle(fix)).catch((e) => console.error(e));
   }
 
-  private startWatch(): void {
+  private async startWatch(): Promise<void> {
     const track = this.track;
     if (!track) return;
-    void this.stopWatch();
+    // 前の測位を止め終えてから始める（前の止める依頼が、新しい記録を止めないように）
+    await this.stopWatch();
     this.watch = watchLocation(
       (fix) => this.enqueue(fix),
       (err) => {
@@ -231,10 +264,11 @@ export class TrackRecorder {
     );
   }
 
-  private async stopWatch(): Promise<void> {
+  /** 測位をやめる。アプリ版で、端末側の測位を取り込みきれなかったら false */
+  private async stopWatch(): Promise<boolean> {
     const watch = this.watch;
     this.watch = null;
-    await watch?.stop();
+    return (await watch?.stop()) ?? true;
   }
 
   private async handle(pos: Fix): Promise<void> {
@@ -254,8 +288,11 @@ export class TrackRecorder {
       }
     }
     this.rejectedJumps = 0;
-    // アプリ版は測位と一緒に残した気圧を使う（取り込むのが後になっても、その時の気圧）
-    const [dem, hpa] = await Promise.all([this.dem.elevation(lng, lat), pos.hpa !== undefined ? pos.hpa : readPressure()]);
+    // 標高タイルが手元になければ、待つのは少しだけ（まとめて取り込んでいるときは待たない）。
+    // 取れなかった標高は、記録を終えたときに埋める（fillMissingElevations）。電波が弱いと1枚に何秒もかかるため
+    const dem = await this.dem.elevation(lng, lat, pos.more ? 0 : 1000);
+    // 気圧はアプリ版で測位と一緒に残したもの（取り込むのが後になっても、その時の気圧）。Web 版にはない
+    const hpa = pos.hpa ?? null;
     const ele = hpa != null ? this.baro.push(pos.timestamp, hpa, dem) : dem;
     const point: TrackPoint = {
       trackId: track.id,

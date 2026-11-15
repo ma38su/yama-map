@@ -3,7 +3,7 @@
  *  1. 写真に位置情報があればそこ
  *  2. なければ撮った時刻に軌跡のどこにいたかを、前後の点から補って求める
  *  3. 記録中で、最後の点より後に撮った写真（今撮った写真）は、今の現在地
- * 時刻が記録の前後 TIME_TOLERANCE_MS より外れていたら置けない（別の日の写真など）
+ * 時刻が記録の前後 TIME_TOLERANCE_MS より外れていたら置けない（別の日の写真など）。位置情報がある写真も、撮った時刻が分かれば確かめる
  */
 import type { LngLat } from '../geo';
 import type { PhotoMeta } from './exif';
@@ -47,11 +47,17 @@ export function placePhoto(
   here: { lngLat: LngLat; t: number } | null,
 ): Placed | null {
   const t = meta.time ?? fileTime;
-  if (meta.lng != null && meta.lat != null) return { t, lngLat: [meta.lng, meta.lat], located: 'gps' };
   const first = points[0];
   const last = points[points.length - 1];
+  const nearNow = (time: number) => !!here && Math.abs(time - here.t) <= TIME_TOLERANCE_MS;
+  const inTrack = (time: number) => !!first && time >= first.t - TIME_TOLERANCE_MS && time <= last.t + TIME_TOLERANCE_MS;
+  if (meta.lng != null && meta.lat != null) {
+    // 撮った時刻が分かっていて、記録の時間から外れていれば置かない（去年の写真など）
+    if (meta.time != null && first && !inTrack(meta.time) && !nearNow(meta.time)) return null;
+    return { t, lngLat: [meta.lng, meta.lat], located: 'gps' };
+  }
   // 今撮った写真：最後の点より後で、今の現在地が分かっている
-  if (here && (!last || t > last.t) && Math.abs(t - here.t) <= TIME_TOLERANCE_MS) return { t, lngLat: here.lngLat, located: 'here' };
-  if (!first || t < first.t - TIME_TOLERANCE_MS || t > last.t + TIME_TOLERANCE_MS) return null;
+  if (here && (!last || t > last.t) && nearNow(t)) return { t, lngLat: here.lngLat, located: 'here' };
+  if (!inTrack(t)) return null;
   return { t, lngLat: positionAt(points, t)!, located: 'time' };
 }

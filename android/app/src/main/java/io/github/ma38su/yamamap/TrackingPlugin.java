@@ -70,20 +70,25 @@ public class TrackingPlugin extends Plugin {
             call.reject("位置情報が許可されていません", "NOT_AUTHORIZED");
             return;
         }
-        Long startedAt = call.getLong("startedAt");
+        // 数は JSON の数の大きさで Integer にも Long にもなる（PluginCall.getLong は Long しか読まない）ので、optLong で読む
+        long startedAt = call.getData().optLong("startedAt", System.currentTimeMillis());
         try {
-            TrackingService.start(getContext(), track, startedAt != null ? startedAt : System.currentTimeMillis());
+            TrackingService.start(getContext(), track, startedAt);
             call.resolve();
         } catch (Exception e) {
             call.reject("記録を始められませんでした: " + e.getMessage(), "UNAVAILABLE", e);
         }
     }
 
-    /** 記録をやめる。まとめて受け取る途中の測位も保存してから返す */
+    /**
+     * 記録をやめる。まとめて受け取る途中の測位も保存してから返す。
+     * trackId を渡したら、その記録をしているときだけ止める（別の記録を始めたあとに、古い記録の止める依頼が届いても止めないように）
+     */
     @PluginMethod
     public void stop(PluginCall call) {
         TrackingService s = TrackingService.running;
-        if (s == null) {
+        String track = call.getString("trackId");
+        if (s == null || (track != null && !track.equals(s.currentTrack()))) {
             call.resolve();
             return;
         }
@@ -101,6 +106,18 @@ public class TrackingPlugin extends Plugin {
         String stopped = p.getString("stoppedTrack", null);
         ret.put("stoppedTrack", stopped != null ? stopped : JSObject.NULL);
         ret.put("stoppedAt", stopped != null ? p.getLong("stoppedAt", 0) : JSObject.NULL);
+        // 今の気圧（記録中で、気圧計があれば）
+        double hPa = TrackingService.latestHPa;
+        ret.put("hPa", Double.isNaN(hPa) ? JSObject.NULL : hPa);
+        ret.put("hPaAt", TrackingService.latestHPaAt);
+        call.resolve(ret);
+    }
+
+    /** まだ取り込まれていない測位が残っている記録の id（記録を終えるときに取り込めなかった分を、次に開いたときに取り込む） */
+    @PluginMethod
+    public void pendingTracks(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("tracks", TrackingStore.get(getContext()).pendingTracks());
         call.resolve(ret);
     }
 
@@ -111,8 +128,9 @@ public class TrackingPlugin extends Plugin {
             call.reject("trackId がありません");
             return;
         }
-        long afterId = call.getLong("afterId", 0L);
-        int limit = call.getInt("limit", 500);
+        // afterId は小さい数なので JSON では Integer になる。PluginCall.getLong だと読めずに 0 になり、毎回最初から返してしまう
+        long afterId = call.getData().optLong("afterId", 0);
+        int limit = call.getData().optInt("limit", 500);
         JSObject ret = new JSObject();
         ret.put("fixes", TrackingStore.get(getContext()).list(track, afterId, limit));
         call.resolve(ret);
