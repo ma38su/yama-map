@@ -3,7 +3,8 @@
  *
  * 電池と精度のバランスのため、
  *  - 精度が悪い測位（誤差40m超）は捨てる
- *  - 前回記録点から一定距離（8m以上・誤差の半分以上）動いたときだけ記録する
+ *  - 前回記録点から一定距離（8m以上・誤差の半分以上）動いたときだけ記録する。
+ *    歩数があれば、歩数で説明できない動き（屋内・山小屋の GPS のぶれ）は、誤差を大きく超えるまで動いたとみなさない（countsAsMove）
  *  - 歩行ではありえない速度の飛び（GPSの跳ね）は捨てる
  * 標高はGPS高度ではなく国土地理院の標高タイルから求める（GPS高度は誤差が大きいため）。
  * 気圧計がある端末（アプリ版）では、気圧の変化で標高を補う（./baroAltitude.ts）。
@@ -32,10 +33,29 @@ import {
 const MAX_ACCURACY_M = 40;
 const MIN_STEP_M = 8;
 const MAX_SPEED_MPS = 12;
+/** 1歩で進める長さの上限（歩数で説明できる動きの見積もり。歩幅は山道で 0.5〜0.8m。歩数計の数え漏れも見込んで多めに） */
+const MAX_STRIDE_M = 1.2;
+/** 歩数で説明できない動きは、前の点と今の点の誤差の和のこの倍を超えたときだけ数える */
+const UNEXPLAINED_ACCURACY_FACTOR = 2;
 /** まとめて取り込んでいるときも、この点数ごとに保存する（裏で長く記録したあと、取り込み終わるまで待たないように） */
 const SAVE_EVERY = 50;
 /** 保存に失敗したら、点が増えなくてもこの間隔でやり直す */
 const RETRY_MS = 15_000;
+
+/**
+ * 前の点から d (m) 離れた測位を、動いたとみなすか。lastAcc・acc は前の点と今の測位の誤差 (m)、steps はそのあいだの歩数。
+ * 歩数があれば、歩数（1歩 MAX_STRIDE_M まで）で説明できる動きは、ふだんどおり数える。
+ * 説明できない分は、誤差の和の UNEXPLAINED_ACCURACY_FACTOR 倍を超えたときだけ数える（乗り物は誤差よりずっと大きく動くので数え、
+ * 屋内・山小屋で座っている・少し歩くあいだの GPS のぶれは数えない）。
+ * 歩数がなければ（歩数計がない・許可がない・Web 版）、8m 以上・誤差の半分以上だけで決める。
+ * 端末側の通知の距離（TrackingStore.countsAsMove）も同じ決まり
+ */
+export function countsAsMove(d: number, lastAcc: number, acc: number, steps: number | null): boolean {
+  if (d < Math.max(MIN_STEP_M, acc / 2)) return false;
+  if (steps == null) return true;
+  const walked = steps * MAX_STRIDE_M;
+  return d <= walked || d - walked >= UNEXPLAINED_ACCURACY_FACTOR * (lastAcc + acc);
+}
 
 export interface RecorderState {
   track: Track | null;
@@ -315,7 +335,8 @@ export class TrackRecorder {
     let step = 0;
     if (last) {
       step = distance([last.lng, last.lat], [lng, lat]);
-      if (step < Math.max(MIN_STEP_M, accuracy / 2)) return this.settle(pos);
+      const steps = pos.steps != null && last.steps != null && pos.steps >= last.steps ? pos.steps - last.steps : null;
+      if (!countsAsMove(step, last.acc, accuracy, steps)) return this.settle(pos);
       const dt = (pos.timestamp - last.t) / 1000;
       if (dt > 0 && step / dt > MAX_SPEED_MPS && this.rejectedJumps < 3) {
         this.rejectedJumps++;

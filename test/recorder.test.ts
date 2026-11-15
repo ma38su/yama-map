@@ -34,7 +34,7 @@ vi.mock('../src/track/location', () => ({
 }));
 vi.mock('../src/log', () => ({ log: () => undefined }));
 
-const { TrackRecorder } = await import('../src/track/recorder');
+const { TrackRecorder, countsAsMove } = await import('../src/track/recorder');
 type RecState = import('../src/track/recorder').RecorderState;
 
 /** 北へ 20m ずつ進む測位 */
@@ -114,5 +114,77 @@ describe('記録の保存', () => {
     expect(db.saved).toHaveLength(1);
     expect(rec.state.saveFailed).toBe(false);
     expect(states.at(-1)!.saveFailed).toBe(false);
+  });
+});
+
+describe('動いたとみなす決まり', () => {
+  it('歩数がなければ、8m 以上・誤差の半分以上で数える', () => {
+    expect(countsAsMove(7, 5, 5, null)).toBe(false);
+    expect(countsAsMove(10, 5, 5, null)).toBe(true);
+    expect(countsAsMove(12, 30, 30, null)).toBe(false);
+    expect(countsAsMove(30, 30, 30, null)).toBe(true);
+  });
+
+  it('歩いているあいだは、歩数で説明できる動きをふだんどおり数える', () => {
+    // 15歩で 12m（1歩 0.8m）
+    expect(countsAsMove(12, 5, 5, 15)).toBe(true);
+    // 歩数計が少し遅れても、外の誤差（5m）なら誤差の和の2倍（20m）を超えた分で数える
+    expect(countsAsMove(25, 5, 5, 3)).toBe(true);
+  });
+
+  it('屋内で座っている・少し歩くあいだの GPS のぶれは、誤差の和の2倍を超えるまで数えない', () => {
+    // 誤差 20m 同士で 30m の跳ね（歩数なし）
+    expect(countsAsMove(30, 20, 20, 0)).toBe(false);
+    // 10歩（12m まで）で 40m 動いた：残りの 28m は誤差の和（50m）の2倍に届かない
+    expect(countsAsMove(40, 25, 25, 10)).toBe(false);
+    // 誤差の和の2倍（80m）を超えれば数える
+    expect(countsAsMove(90, 20, 20, 0)).toBe(true);
+  });
+
+  it('乗り物は歩数が増えなくても誤差よりずっと大きく動くので数える', () => {
+    expect(countsAsMove(60, 8, 8, 0)).toBe(true);
+  });
+});
+
+describe('屋内の GPS のぶれ', () => {
+  let rec: InstanceType<typeof TrackRecorder>;
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', { addEventListener: () => undefined, visibilityState: 'visible' });
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('window', { setTimeout, clearTimeout });
+    db.fail = false;
+    db.saved = [];
+    db.calls = 0;
+    rec = new TrackRecorder({ elevation: async () => 500 } as never, () => undefined);
+    await rec.start();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** i 回目の測位（15秒おき） */
+  const at = (i: number, lat: number, lng: number, accuracy: number, steps: number): Fix => ({
+    lng,
+    lat,
+    accuracy,
+    altitude: null,
+    timestamp: 1_000_000 + i * 15_000,
+    steps,
+  });
+
+  it('歩数が増えないあいだのぶれは点にせず、歩き出したら・乗り物で大きく動いたら点にする', async () => {
+    // 誤差 25m で、止まったまま 20〜35m ずつ行ったり来たりする（今までの決まりなら毎回点になる）
+    for (let i = 0; i < 10; i++) loc.onFix!(at(i, 36.85 + (i % 2) * 0.00025, 139.4 + (i % 3) * 0.0002, 25, 100));
+    await settle();
+    expect(db.saved).toHaveLength(1);
+    // 30歩で北へ 20m
+    loc.onFix!(at(10, 36.85018, 139.4, 5, 130));
+    // 歩数が増えないまま北へ 150m（バスなど）
+    loc.onFix!(at(11, 36.85153, 139.4, 10, 130));
+    await settle();
+    expect(db.saved).toHaveLength(3);
   });
 });

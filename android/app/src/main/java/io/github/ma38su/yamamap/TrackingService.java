@@ -56,7 +56,7 @@ import java.util.Locale;
  *  - 測位は1秒間隔・5m 動いたときだけ。最大20秒ぶんまとめて受け取る（その間 CPU を眠らせておける）
  *  - 気圧計があれば、気圧も点と一緒に残す（JS の気圧高度計で標高を補う）。今の気圧は TrackingPlugin の status からも読める
  *  - 歩数計があり、身体活動の許可があれば、記録を始めてからの歩数も点と一緒に残す。
- *    3分間歩数が増えず、GPS でも30m以上動いていなければ（休憩・山小屋）、止まっているとみなして GPS を止め、
+ *    3分間歩数が増えず、GPS でも30m以上（屋内では誤差の和の2倍以上）動いていなければ（休憩・山小屋）、止まっているとみなして GPS を止め、
  *    低電力の測位（5分おき）にする。大きな動きを感じた（significant motion）・歩数が増えた・遠くの測位が届いたら、すぐ元に戻す
  *    （車やバスでは歩数が増えなくても GPS の位置が動くので、間引かない）
  *  - システムに止められて再起動されたら（START_STICKY）、記録中だった記録を続ける
@@ -84,7 +84,7 @@ public class TrackingService extends Service implements SensorEventListener {
     private static final long INTERVAL_MS = 1000;
     private static final float MIN_DISTANCE_M = 5;
     private static final long MAX_DELAY_MS = 20_000;
-    /** 通知の距離に数える測位（JS の記録と同じく、誤差40m以内・8m以上動いたとき） */
+    /** 通知の距離に数える測位（JS の記録と同じく、誤差40m以内で、8m以上・誤差の半分以上動いたとき。歩数で説明できない動きは TrackingStore.countsAsMove） */
     private static final float COUNT_ACCURACY_M = 40;
     private static final float COUNT_STEP_M = 8;
     /** これより古い気圧は点に付けない */
@@ -93,7 +93,7 @@ public class TrackingService extends Service implements SensorEventListener {
     private static final long STILL_AFTER_MS = 3 * 60_000;
     /** 止まっているかを確かめる間隔 */
     private static final long STILL_CHECK_MS = 30_000;
-    /** この半径の中なら、GPS では動いていないとみなす（測位のぶれを含めて） */
+    /** この半径の中なら、GPS では動いていないとみなす（測位のぶれを含めて。誤差が大きい屋内では、誤差の和の2倍まで広げる） */
     private static final float STILL_RADIUS_M = 30;
     /** 止まっているあいだの測位（低電力。Wi-Fi・基地局など）の間隔と、届けてもらう距離 */
     private static final long STILL_INTERVAL_MS = 5 * 60_000;
@@ -127,6 +127,8 @@ public class TrackingService extends Service implements SensorEventListener {
     // ---------- ここから下は記録用のスレッド（handler）だけで扱う ----------
     private double distance;
     private Location counted;
+    /** counted の時刻の歩数（歩数計がなければ null） */
+    private Long countedSteps;
     private long notifiedAt;
     private SensorManager sensors;
     private double hPa = Double.NaN;
@@ -169,7 +171,7 @@ public class TrackingService extends Service implements SensorEventListener {
     private long steps = -1;
     private long stepCounterBase = -1;
     private long stepsBase;
-    /** 最後に歩数が増えた時刻・GPS で STILL_RADIUS_M 以上動いた時刻（elapsedRealtime）と、そのときの位置 */
+    /** 最後に歩数が増えた時刻・GPS で動いた時刻（elapsedRealtime。trackMovement）と、そのときの位置 */
     private long steppedAt;
     private long movedAt;
     private Location anchor;
@@ -218,16 +220,21 @@ public class TrackingService extends Service implements SensorEventListener {
             // 1回に届いた分は、まとめて1回で保存する
             TrackingStore.get(TrackingService.this).addAll(t, locations, pressures, stepCounts);
             deliveries++;
-            for (Location loc : locations) {
+            for (int i = 0; i < n; i++) {
+                Location loc = locations.get(i);
                 received++;
                 if (!loc.hasAccuracy()) continue;
                 accuracies.add(loc.getAccuracy());
                 if (loc.getAccuracy() > COUNT_ACCURACY_M) continue;
                 trackMovement(loc);
-                if (counted == null) counted = loc;
-                else if (loc.distanceTo(counted) >= COUNT_STEP_M) {
+                if (counted == null) {
+                    counted = loc;
+                    countedSteps = stepCounts[i];
+                } else if (TrackingStore.countsAsMove(loc.distanceTo(counted), counted.getAccuracy(), loc.getAccuracy(),
+                    TrackingStore.stepsBetween(countedSteps, stepCounts[i]), COUNT_STEP_M)) {
                     distance += loc.distanceTo(counted);
                     counted = loc;
+                    countedSteps = stepCounts[i];
                 }
             }
             TrackingPlugin.signal("fixes");
@@ -333,6 +340,7 @@ public class TrackingService extends Service implements SensorEventListener {
             // 続きなら、ここまでの距離を残っている測位から数え直して、通知に出す
             distance = fresh ? 0 : TrackingStore.get(this).distance(startTrack, COUNT_ACCURACY_M, COUNT_STEP_M);
             counted = null;
+            countedSteps = null;
             if (!fresh) notifyProgress();
             available = null;
             startMeasuring(fresh);
@@ -596,7 +604,10 @@ public class TrackingService extends Service implements SensorEventListener {
         steps = Math.max(steps, now);
     }
 
-    /** GPS で STILL_RADIUS_M 以上動いたか（止まっているあいだは、遠くの測位で戻す） */
+    /**
+     * GPS で動いたか：STILL_RADIUS_M 以上、かつ誤差の和の2倍以上（屋内・山小屋のぶれを動いたとみなして、間引くのが遅れないように。
+     * 乗り物は誤差よりずっと大きく動く）。止まっているあいだは、遠くの測位で戻す
+     */
     private void trackMovement(Location loc) {
         if (anchor == null) {
             anchor = loc;
@@ -604,7 +615,7 @@ public class TrackingService extends Service implements SensorEventListener {
             return;
         }
         float d = loc.distanceTo(anchor);
-        if (d < STILL_RADIUS_M) return;
+        if (d < Math.max(STILL_RADIUS_M, TrackingStore.UNEXPLAINED_ACCURACY_FACTOR * (anchor.getAccuracy() + loc.getAccuracy()))) return;
         anchor = loc;
         movedAt = SystemClock.elapsedRealtime();
         if (still && d >= RESUME_DISTANCE_M) setStill(false, "離れた所の測位が届いた");
@@ -628,7 +639,7 @@ public class TrackingService extends Service implements SensorEventListener {
             stillSince = now;
             stepsAtStill = steps;
             if (motionSensor != null) sensors.requestTriggerSensor(motionListener, motionSensor);
-            TrackingStore.log(this, "止まっているので測位を間引いた（3分間 歩数が増えず、30m以上動いていない）");
+            TrackingStore.log(this, "止まっているので測位を間引いた（3分間 歩数が増えず、GPS でも動いていない）");
         } else {
             stillMs += now - stillSince;
             if (motionSensor != null) sensors.cancelTriggerSensor(motionListener, motionSensor);
