@@ -51,8 +51,10 @@ export const PLACES_ATTRIBUTION =
 
 // ---------- 表示・非表示 ----------
 export type LayerId = PlaceCat | 'saved' | TrailLayerId;
-/** その種類を出すか（初めは「保存した範囲」以外はすべて出す） */
-export const layerOn = (id: LayerId) => settings.layers?.[id] ?? id !== 'saved';
+/** 最初は隠しておく種類（写真・生きものは数が多く地図が埋まるので、見たいときに出す。保存した範囲も） */
+const OFF_BY_DEFAULT = new Set<LayerId>(['saved', 'photo', 'life']);
+/** その種類を出すか（切り替えていなければ、OFF_BY_DEFAULT 以外は出す） */
+export const layerOn = (id: LayerId) => settings.layers?.[id] ?? !OFF_BY_DEFAULT.has(id);
 
 const placesFilter = () => ['in', ['get', 'cat'], ['literal', PLACE_CAT_IDS.filter(layerOn)]] as ['in', unknown, unknown];
 
