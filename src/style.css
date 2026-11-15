@@ -1171,6 +1171,32 @@ dialog.photo-view {
 .pocket-sun {
   font-size: 18px;
 }
+.pocket-pace {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pocket-pace .label {
+  font-size: 14px;
+}
+.pocket-pace .value {
+  font-size: 34px;
+  color: #b9c0c8;
+}
+/* 速い・遅いは、標高グラフのペースと同じ青・赤の向きで、暗い画面向けに落ち着かせる */
+.pocket-pace .value.fast {
+  color: #8fb3e8;
+}
+.pocket-pace .value.slow {
+  color: #c98a6b;
+}
+.pocket-pace .value.muted {
+  font-size: 16px;
+  color: #8f98a3;
+}
+.pocket-pace small {
+  font-size: 15px;
+}
 .pocket-row.late .time,
 .pocket-sun.late,
 .pocket-warn {
@@ -1207,4 +1233,17 @@ dialog.photo-view {
 .pocket-exit.holding .fill {
   width: 100%;
   transition: width 1s linear;
+}
+
+/* ---------- 動作の記録（app/diagnostics.ts） ---------- */
+.log-text {
+  max-height: 60dvh;
+  margin: 0 0 12px;
+  padding: 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #f3f5f7;
+  font: 11px/1.45 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
 }

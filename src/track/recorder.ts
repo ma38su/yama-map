@@ -12,7 +12,8 @@
  * そのため記録中は Screen Wake Lock で画面を点けたままにできるようにしている。
  * Androidアプリ版ではネイティブのバックグラウンド測位を使うので、画面を消しても記録が続く（./location.ts）。
  */
-import { GainCounter, distance } from '../geo';
+import { GainCounter, distance, formatDistance } from '../geo';
+import { log } from '../log';
 import type { DemSampler } from '../map/gsiDem';
 import { BaroFusion } from './baroAltitude';
 import { readPressure, setBarometer } from './barometer';
@@ -111,6 +112,7 @@ export class TrackRecorder {
     // 記録がブラウザに消されないよう、保存領域の永続化を求める（拒否されても続ける）
     void navigator.storage?.persist?.().catch(() => false);
     await putTrack(this.track);
+    log(`記録を開始（${this.track.id.slice(0, 8)}）`);
     this.startWatch();
     await this.acquireWakeLock();
     this.emit();
@@ -120,6 +122,7 @@ export class TrackRecorder {
   /** 前回途中で閉じられた記録を再開する（アプリ版で裏で記録が続いていれば、そのまま続ける） */
   async resume(track: Track): Promise<void> {
     await this.load(track);
+    log(`記録を続ける（${track.id.slice(0, 8)}・${this.points.length}点）`);
     void setBarometer(true);
     await requestTrackingPermissions();
     this.startWatch();
@@ -152,6 +155,7 @@ export class TrackRecorder {
     if (!this.track) return null;
     this.track = { ...this.track, status: 'done', endedAt };
     await this.save();
+    log(`記録を終了（${this.track.id.slice(0, 8)}・${this.points.length}点・${formatDistance(this.track.distance)}${this.unsaved.length ? `・保存できていない点 ${this.unsaved.length}` : ''}）`);
     // IndexedDB に保存し終えたら、アプリ版の端末側の測位は消す（保存できていなければ残しておく）
     if (!this.unsaved.length) await clearRecordedFixes(this.track.id);
     await this.releaseWakeLock();

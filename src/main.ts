@@ -5,6 +5,8 @@
  */
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
+// 動作のログは、ほかのモジュールより先に（読み込み中のエラーも残すため）
+import { log } from './log';
 import type { Map as MlMap } from 'maplibre-gl';
 import type { ActiveRoute } from './nav/plan';
 import { backgroundCapable } from './track/location';
@@ -13,6 +15,7 @@ import { settings } from './settings';
 import { $ } from './ui/dom';
 import { addOverlayLayers, map, updateDaylight } from './app/mapView';
 import './app/backButton';
+import './app/diagnostics';
 import './app/install';
 import './app/mapTap';
 import './app/compass';
@@ -22,12 +25,15 @@ import { ensureBuiltinPlan } from './app/menu';
 import { updateNav, type Nav } from './app/nav';
 import './app/offline';
 import { pocketActive } from './app/pocket';
+import './app/perf';
 import { checkUnfinished, recorder, renderTrack, updateRecButton } from './app/recording';
 import { renderRoute } from './app/route';
 import './app/sheetView';
 import { whileVisible } from './app/scheduler';
 import { state } from './app/state';
 import { addWeatherLayers } from './app/weather';
+
+log(`起動 ${__APP_VERSION__}（${backgroundCapable ? 'アプリ版' : 'Web版'}）`);
 
 map.on('load', () => {
   addOverlayLayers();

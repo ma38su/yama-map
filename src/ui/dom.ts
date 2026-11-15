@@ -51,7 +51,7 @@ export const checkSeg = (wrap: HTMLElement, id: string) => {
  * アプリ版のWebViewは <a download> でのダウンロードに対応していないので、
  * 一時ファイルに書いてから共有シート（保存先・送り先を選ぶ画面）を開く。
  */
-export function download(filename: string, data: string | Blob) {
+export function download(filename: string, data: string | Blob, type = 'application/gpx+xml') {
   if (Capacitor.isNativePlatform()) {
     void shareFile(filename, data).catch((e) => {
       // 共有シートを閉じただけでも reject されるので、それ以外だけ知らせる
@@ -59,7 +59,7 @@ export function download(filename: string, data: string | Blob) {
     });
     return;
   }
-  const blob = typeof data === 'string' ? new Blob([data], { type: 'application/gpx+xml' }) : data;
+  const blob = typeof data === 'string' ? new Blob([data], { type }) : data;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;

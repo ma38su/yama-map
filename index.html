@@ -108,6 +108,20 @@
       <button type="button" class="pocket-exit" id="pocket-exit"><span class="fill" aria-hidden="true"></span><span>長押しで地図に戻る</span></button>
     </div>
 
+    <dialog id="log-dialog" class="sheet-dlg" aria-label="動作の記録">
+      <form method="dialog" class="dlg">
+        <header>
+          <h2>動作の記録</h2>
+          <button class="close" value="close" aria-label="閉じる">✕</button>
+        </header>
+        <pre id="log-text" class="log-text"></pre>
+        <div class="row">
+          <button type="button" class="btn primary" id="btn-log-send">ファイルで送る・保存する</button>
+          <button type="button" class="btn danger" id="btn-log-clear">ログを消す</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="menu" aria-label="メニュー">
       <form method="dialog" class="dlg">
         <header>
@@ -182,6 +196,12 @@
             <button type="button" class="btn primary" id="btn-install" hidden>アプリとしてインストール</button>
           </div>
           <p class="note" id="install-note"></p>
+        </section>
+
+        <section>
+          <h3>動作の記録（不具合とパフォーマンスの調査用）</h3>
+          <div class="row"><button type="button" class="btn" id="btn-log">動作の記録を見る・送る</button></div>
+          <p class="note">端末の状態とアプリの動き（記録の開始・終了、エラー、10分ごとの電池・測位などの計測）をまとめて見たり、ファイルで送ったりできます。位置（緯度・経度）は伏せます。</p>
         </section>
 
         <section class="about">

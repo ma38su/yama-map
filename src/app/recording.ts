@@ -1,5 +1,6 @@
 /** 現在地と記録（開始・終了、記録の線、途中で閉じた記録の再開） */
 import { distance, formatDistance, type LngLat } from '../geo';
+import { log } from '../log';
 import { listTracks, type Track } from '../track/db';
 import { backgroundCapable, trackingStatus, type Fix } from '../track/location';
 import { TrackRecorder, fillMissingElevations } from '../track/recorder';
@@ -142,6 +143,7 @@ recBtn.addEventListener('click', async () => {
       return;
     }
     if (!(await recorder.start())) {
+      log('位置情報が許可されていないため、記録を始められなかった');
       status('位置情報が許可されていないため、記録を始められません。端末の設定で許可してください', true);
       return;
     }
@@ -235,6 +237,7 @@ export async function checkUnfinished() {
   const open = tracks.find((t) => t.status === 'recording');
   if (!open) return;
   const native = await trackingStatus();
+  log(`途中の記録がある（${open.id.slice(0, 8)}）: ${native?.recording && native.trackId === open.id ? '裏で記録が続いている' : native?.stoppedTrack === open.id ? '通知で止められていた' : '止まっていた'}`);
   if (native?.recording && native.trackId === open.id) {
     await recorder.resume(open);
     startGeolocate();

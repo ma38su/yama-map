@@ -9,6 +9,7 @@
 import type { PluginListenerHandle } from '@capacitor/core';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { log } from '../log';
 
 export interface Fix {
   lng: number;
@@ -74,6 +75,26 @@ interface TrackingPlugin {
   addListener(event: 'fixes' | 'stopped', fn: () => void): Promise<PluginListenerHandle>;
   batteryOptimization(): Promise<{ ignoring: boolean }>;
   openBatterySettings(): Promise<void>;
+  diagnostics(): Promise<NativeDiagnostics>;
+  getLog(o: { limit: number }): Promise<{ lines: { t: number; msg: string }[] }>;
+  clearLog(): Promise<void>;
+  getLogcat(o: { lines: number }): Promise<{ text: string }>;
+}
+
+/** アプリ版の端末とアプリの状態（メニューの「動作の記録」） */
+export interface NativeDiagnostics {
+  device: string;
+  android: string;
+  app: string;
+  webview: string;
+  location: string;
+  locationEnabled: boolean;
+  notifications: boolean;
+  batteryOptimized: boolean;
+  powerSave: boolean;
+  serviceRunning: boolean;
+  serviceTrack: string | null;
+  pendingFixes: number;
 }
 const Tracking = registerPlugin<TrackingPlugin>('Tracking');
 
@@ -130,8 +151,14 @@ function watchWeb(onFix: (f: Fix) => void, onError: (e: FixError) => void): Loca
   return { stop: () => navigator.geolocation.clearWatch(id) };
 }
 
-/** 端末に保存された測位のうち、番号が afterId より後のものを、since より後の時刻のものだけ onFix に渡す。最後の番号を返す */
-async function drainFixes(trackId: string, afterId: number, since: number, onFix: (f: Fix) => void): Promise<{ afterId: number; since: number }> {
+/** 端末に保存された測位のうち、番号が afterId より後のものを、since より後の時刻のものだけ onFix に渡す。最後の番号と渡した数を返す */
+async function drainFixes(
+  trackId: string,
+  afterId: number,
+  since: number,
+  onFix: (f: Fix) => void,
+): Promise<{ afterId: number; since: number; count: number }> {
+  let count = 0;
   for (;;) {
     const { fixes } = await Tracking.getFixes({ trackId, afterId, limit: BATCH });
     const fresh = fixes.filter((f) => f.t > since);
@@ -148,7 +175,8 @@ async function drainFixes(trackId: string, afterId: number, since: number, onFix
     );
     if (fixes.length) afterId = fixes[fixes.length - 1].id;
     if (fresh.length) since = fresh[fresh.length - 1].t;
-    if (fixes.length < BATCH) return { afterId, since };
+    count += fresh.length;
+    if (fixes.length < BATCH) return { afterId, since, count };
   }
 }
 
@@ -157,25 +185,33 @@ function watchNative(onFix: (f: Fix) => void, onError: (e: FixError) => void, op
   let stopped = false;
   // 取り込みは1つずつ順に行う
   let busy: Promise<void> = Promise.resolve();
-  const drain = () => drainFixes(opts.trackId, cursor.afterId, cursor.since, onFix).then((c) => void (cursor = c));
-  const poll = () => {
+  /** reason はログ用。サービスからの知らせのたびの取り込みは、多いときだけログに残す */
+  const drain = async (reason: string) => {
+    const c = await drainFixes(opts.trackId, cursor.afterId, cursor.since, onFix);
+    cursor = c;
+    if (c.count && (reason !== '知らせ' || c.count >= 30)) log(`記録の測位を取り込んだ: ${c.count}件（${reason}）`);
+  };
+  const poll = (reason: string) => {
     busy = busy
       .then(async () => {
         if (stopped) return;
-        await drain();
+        await drain(reason);
         const s = await Tracking.status();
         // 通知の「停止」で止められた
-        if (!stopped && !s.recording && s.stoppedTrack === opts.trackId) opts.onEnded?.(s.stoppedAt ?? Date.now());
+        if (!stopped && !s.recording && s.stoppedTrack === opts.trackId) {
+          log('通知の「停止」で止められたので、記録を締める');
+          opts.onEnded?.(s.stoppedAt ?? Date.now());
+        }
       })
       .catch((e) => console.error('記録の取り込みに失敗しました', e));
     return busy;
   };
   // サービスからの知らせ（WebView が止まっていて届かなかった分は、表に出たときに取り込む）
-  const listeners = [Tracking.addListener('fixes', () => void poll()), Tracking.addListener('stopped', () => void poll())];
-  const onVisibility = () => document.visibilityState === 'visible' && void poll();
+  const listeners = [Tracking.addListener('fixes', () => void poll('知らせ')), Tracking.addListener('stopped', () => void poll('停止の知らせ'))];
+  const onVisibility = () => document.visibilityState === 'visible' && void poll('表に戻った');
   document.addEventListener('visibilitychange', onVisibility);
   void Tracking.start({ trackId: opts.trackId, startedAt: opts.startedAt })
-    .then(poll)
+    .then(() => poll('開始'))
     .catch((e) => {
       console.error(e);
       onError((e as { code?: string })?.code === 'NOT_AUTHORIZED' ? 'denied' : 'unavailable');
@@ -189,7 +225,7 @@ function watchNative(onFix: (f: Fix) => void, onError: (e: FixError) => void, op
       await busy;
       // まとめて受け取る途中の測位も保存させてから、残りを取り込む
       await Tracking.stop().catch((e) => console.error(e));
-      await drain().catch((e) => console.error('記録の取り込みに失敗しました', e));
+      await drain('終了').catch((e) => console.error('記録の取り込みに失敗しました', e));
     },
   };
 }
@@ -202,7 +238,24 @@ export async function trackingStatus(): Promise<TrackingStatus | null> {
 
 /** 端末に残っている、記録の測位をすべて取り込む（記録を締めるとき。Web では何もしない） */
 export async function readRecordedFixes(trackId: string, since: number, onFix: (f: Fix) => void): Promise<void> {
-  if (backgroundCapable) await drainFixes(trackId, 0, since, onFix);
+  if (!backgroundCapable) return;
+  const { count } = await drainFixes(trackId, 0, since, onFix);
+  log(`途中で閉じた記録の測位を取り込んだ: ${count}件`);
+}
+
+/** アプリ版の端末とアプリの状態・記録のサービスのログ・logcat（メニューの「動作の記録」。Web では null） */
+export async function nativeReport(): Promise<{ diag: NativeDiagnostics; log: string[]; logcat: string } | null> {
+  if (!backgroundCapable) return null;
+  const [diag, nlog, logcat] = await Promise.all([
+    Tracking.diagnostics(),
+    Tracking.getLog({ limit: 300 }).catch(() => ({ lines: [] })),
+    Tracking.getLogcat({ lines: 400 }).catch((e) => ({ text: `logcat を読めませんでした: ${e}` })),
+  ]);
+  return { diag, log: nlog.lines.reverse().map((l) => `${new Date(l.t).toLocaleString('ja-JP')} ${l.msg}`), logcat: logcat.text };
+}
+
+export async function clearNativeLog(): Promise<void> {
+  if (backgroundCapable) await Tracking.clearLog().catch(() => undefined);
 }
 
 /** IndexedDB に保存し終えた記録の測位を、端末から消す（Web では何もしない） */

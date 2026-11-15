@@ -7,6 +7,7 @@ import {
   elevationGain,
   formatDistance,
   formatDuration,
+  maskLocation,
   lngLatToTile,
   tileCount,
   tileRange,
@@ -123,5 +124,18 @@ describe('bbox', () => {
 describe('tileUrl', () => {
   it('{z}/{x}/{y} を埋める', () => {
     expect(tileUrl('https://example.com/{z}/{x}/{y}.png', 14, 14567, 6400)).toBe('https://example.com/14/14567/6400.png');
+  });
+});
+
+describe('maskLocation', () => {
+  it('緯度経度・地図タイルの番号・問い合わせの座標を伏せる', () => {
+    expect(maskLocation('現在地 36.87427, 139.40531 付近')).toBe('現在地 …, … 付近');
+    expect(maskLocation('https://cyberjapandata.gsi.go.jp/xyz/std/16/58145/25538.png')).toBe('https://cyberjapandata.gsi.go.jp/xyz/std/z/x/y.png');
+    expect(maskLocation('forecast?latitude=36.85,36.9&longitude=139.4&hourly=x')).toBe('forecast?latitude=…&longitude=…&hourly=x');
+  });
+
+  it('版の番号・時刻・標高は伏せない', () => {
+    expect(maskLocation('WebView 133.0.6943.137')).toBe('WebView 133.0.6943.137');
+    expect(maskLocation('08:47:20.933 標高 1543.6m 気圧 1013.25hPa')).toBe('08:47:20.933 標高 1543.6m 気圧 1013.25hPa');
   });
 });

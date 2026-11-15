@@ -9,4 +9,7 @@
     <string name="tracking_title">やまマップで記録中</string>
     <string name="tracking_text">%1$s・画面を消しても記録しています</string>
     <string name="tracking_stop">停止</string>
+    <string name="tracking_alert_channel_name">記録のお知らせ</string>
+    <string name="tracking_stopped_title">軌跡の記録が止まりました</string>
+    <string name="tracking_stopped_text">タップしてやまマップを開くと、続きを記録できます</string>
 </resources>

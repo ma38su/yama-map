@@ -39,9 +39,13 @@ function serviceWorker(): Plugin {
   };
 }
 
+const appVersion = (JSON.parse(readFileSync(here('package.json'), 'utf8')) as { version: string }).version;
+
 export default defineConfig({
   // GitHub Pages などサブパスに置いても動くよう相対パスで出力する
   base: './',
+  // アプリの版（package.json の version）。メニューの「動作の記録」に出す
+  define: { __APP_VERSION__: JSON.stringify(appVersion) },
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 1500,

@@ -3,6 +3,7 @@
  * Android やメーカー独自の省電力機能で記録が止められることがある。
  * 記録を始めたときに一度だけ外すか聞き、メニューの「記録」にも今の状態と設定を開くボタンを出す
  */
+import { log } from '../log';
 import { batteryOptimized, openBatterySettings } from '../track/location';
 import { saveSettings, settings } from '../settings';
 import { $ } from '../ui/dom';
@@ -12,9 +13,9 @@ export async function suggestBatteryExemption() {
   if (settings.batteryAsked || (await batteryOptimized()) !== true) return;
   settings.batteryAsked = true;
   saveSettings();
-  if (confirm('画面を消して長く記録していると、電池の節約のためにアプリが止められることがあります。\nやまマップを電池の最適化の対象から外しますか？（設定の画面が開きます）')) {
-    await openBatterySettings();
-  }
+  const ok = confirm('画面を消して長く記録していると、電池の節約のためにアプリが止められることがあります。\nやまマップを電池の最適化の対象から外しますか？（設定の画面が開きます）');
+  log(`電池の最適化から外すか聞いた: ${ok ? '設定を開く' : '外さない'}`);
+  if (ok) await openBatterySettings();
 }
 
 /** メニューの電池の最適化の表示を、今の状態に合わせる */

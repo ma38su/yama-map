@@ -158,6 +158,17 @@ export function elevationGain(
   return { ascent: c.ascent, descent: c.descent };
 }
 
+/**
+ * 文章から位置が分かるものを伏せる（ログを送るとき）：地図タイルの番号（/z/x/y）、URL の緯度経度、小数4桁以上の数（緯度経度）。
+ * 版の番号（133.0.6943.137 など、前後に「.」が続く数）は伏せない
+ */
+export function maskLocation(text: string): string {
+  return text
+    .replace(/\/\d{1,2}\/\d+\/\d+(\.(png|jpg|pbf|webp))/g, '/z/x/y$1')
+    .replace(/(latitude|longitude|lat|lng|lon)=[-\d.,%C]+/gi, '$1=…')
+    .replace(/(?<![\d.])-?\d{1,3}\.\d{4,}(?![\d.])/g, '…');
+}
+
 export function formatDistance(m: number): string {
   return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(m < 10000 ? 2 : 1)} km`;
 }

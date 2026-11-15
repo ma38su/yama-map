@@ -6,6 +6,7 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.location.Location;
+import android.util.Log;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -14,6 +15,7 @@ import com.getcapacitor.JSObject;
  * 記録中の測位を端末に保存する（TrackingService が書き、TrackingPlugin が JS へ渡す）。
  * WebView が止まっていても点が欠けないよう、届いた測位はその場でここに入れる。
  * JS は表に出たときに取り込んで IndexedDB に保存し、記録を終えたら消す。
+ * 記録のサービスの動作のログ（log）もここに残す（WebView が止まっていたあいだのことも、あとからメニューの「診断」で見られるように）。
  */
 class TrackingStore extends SQLiteOpenHelper {
     private static TrackingStore instance;
@@ -23,8 +25,13 @@ class TrackingStore extends SQLiteOpenHelper {
         return instance;
     }
 
+    private static final String TAG = "YamaTracking";
+    /** ログに残す行数 */
+    private static final int LOG_KEEP = 2000;
+    private int logAdded = 0;
+
     private TrackingStore(Context context) {
-        super(context, "tracking.db", null, 1);
+        super(context, "tracking.db", null, 2);
     }
 
     @Override
@@ -34,10 +41,62 @@ class TrackingStore extends SQLiteOpenHelper {
             " lat REAL NOT NULL, lng REAL NOT NULL, acc REAL NOT NULL, alt REAL, hpa REAL)"
         );
         db.execSQL("CREATE INDEX fixes_track ON fixes (track, id)");
+        createLog(db);
     }
 
     @Override
-    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {}
+    public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion < 2) createLog(db);
+    }
+
+    private static void createLog(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE log (id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER NOT NULL, msg TEXT NOT NULL)");
+    }
+
+    /** 動作のログを1行残す（logcat にも出す）。位置（緯度経度）は書かない */
+    static void log(Context context, String msg) {
+        Log.i(TAG, msg);
+        try {
+            get(context).addLog(msg);
+        } catch (Exception e) {
+            Log.w(TAG, "ログを保存できませんでした", e);
+        }
+    }
+
+    private synchronized void addLog(String msg) {
+        ContentValues v = new ContentValues();
+        v.put("t", System.currentTimeMillis());
+        v.put("msg", msg);
+        SQLiteDatabase db = getWritableDatabase();
+        db.insert("log", null, v);
+        // 古い行は、ときどきまとめて消す
+        if (++logAdded % 50 == 0) db.execSQL("DELETE FROM log WHERE id <= (SELECT MAX(id) - " + LOG_KEEP + " FROM log)");
+    }
+
+    /** 新しい順に limit 行（時刻とメッセージ） */
+    JSArray logLines(int limit) {
+        JSArray out = new JSArray();
+        try (Cursor c = getReadableDatabase().query("log", new String[] { "t", "msg" }, null, null, null, null, "id DESC", String.valueOf(limit))) {
+            while (c.moveToNext()) {
+                JSObject l = new JSObject();
+                l.put("t", c.getLong(0));
+                l.put("msg", c.getString(1));
+                out.put(l);
+            }
+        }
+        return out;
+    }
+
+    void clearLog() {
+        getWritableDatabase().delete("log", null, null);
+    }
+
+    /** まだ JS に取り込まれていない測位の数（すべての記録） */
+    long pendingFixes() {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM fixes", null)) {
+            return c.moveToFirst() ? c.getLong(0) : 0;
+        }
+    }
 
     /** hpa は気圧 (hPa)。気圧計がない・値が古ければ null */
     void add(String track, Location loc, Double hpa) {
