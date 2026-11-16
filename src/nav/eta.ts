@@ -4,7 +4,8 @@
  * 1. 標準の歩行時間（コースタイムに相当）を、経路の距離と勾配から求める。
  *    速度は Tobler のハイキング関数に係数をかけたもの（平地 約4km/h、急な登り・下りで遅くなる）。
  * 2. これまでの記録から「登り・平坦・下り」それぞれで標準の何倍かかっているか（ペース係数）を求める。
- *    記録が少ないうちは、設定したペース（ゆっくり/ふつう/速め）に寄せて推定する。
+ *    記録の標準時間は、GPS のぶれで線がジグザグになった分を除いた距離で数える（chordDistances）。
+ *    到着予想に使う係数は、記録が少ないうちは設定したペース（ゆっくり/ふつう/速め）に寄せて推定する。
  * 3. 休憩: 記録の中の立ち止まり時間から「歩行1時間あたりの休憩」を求め、残りの行程に上乗せする。
  */
 import { GainCounter, bisect, distance, type LngLat } from '../geo';
@@ -187,9 +188,12 @@ export interface PaceFactors {
 }
 
 export interface PaceStats {
+  /** 到着予想に使う係数（記録が少ないうちは設定のペースに寄せたもの） */
   factors: PaceFactors;
-  /** 全体のペース係数（標準の何倍かかっているか。1未満なら速い） */
+  /** 到着予想に使う全体の係数（ratio を、記録が少ないうちは設定のペースに寄せたもの） */
   overall: number;
+  /** 実際の倍率：歩行時間が標準タイムの何倍か（1より大きいほど遅い）。設定のペースに寄せない。画面にはこれを出す */
+  ratio: number;
   elapsedMs: number;
   movingMs: number;
   restMs: number;
@@ -203,6 +207,9 @@ export interface PaceStats {
   /** 推定に使えた標準時間（分）。多いほど係数が信頼できる */
   evidenceMin: number;
 }
+
+/** 倍率（標準タイムの何倍かかったか）を、ことばにする */
+export const paceWord = (r: number) => (r < 0.85 ? '速い' : r < 0.95 ? 'やや速い' : r <= 1.05 ? '標準' : r <= 1.2 ? 'やや遅い' : '遅い');
 
 /** ペース設定（記録が少ないときの事前値） */
 export const PACE_PRESETS = {
@@ -222,6 +229,11 @@ const REST_PRIOR_MOVING_MIN = 60; // 休憩率を事前値に寄せる強さ（�
 const STOP_SPEED = 0.15;
 const STOP_MIN_GAP_S = 90;
 const ASSUMED_WALK = 0.8; // m/s 立ち止まり区間の移動分の見積もり
+/**
+ * 標準時間に使う距離で、つなぐ点どうしの間隔の下限 (m)。GPS のぶれで線がジグザグになった分を、標準時間に数えない。
+ * 実際の記録（手白澤温泉→女夫渕）で、ルートに当てはめて測った距離にいちばん近かった値
+ */
+const STD_CHORD_M = 20;
 
 export function defaultFactors(preset: PacePreset = 'normal'): PaceFactors {
   const f = PACE_PRESETS[preset].factor;
@@ -244,6 +256,28 @@ export interface Moving {
   cumD: Float64Array;
   cumMove: Float64Array;
   rests: RestSpan[];
+  /** 標準時間に使う累積距離 (m)：GPS のぶれのジグザグを除いたもの（chordDistances） */
+  stdD: Float64Array;
+}
+
+/**
+ * 点ごとの、GPS のぶれを除いた累積距離 (m)。前につないだ点から gapM 以上離れた点だけを直線でつなぎ（最後の点は必ずつなぐ）、
+ * あいだの点には記録の距離の割合で振り分ける。歩きながらのジグザグや、立ち止まっているあいだのぶれで増えた距離を数えない
+ */
+export function chordDistances(points: TrackSample[], cumD: ArrayLike<number>, gapM = STD_CHORD_M): Float64Array {
+  const n = points.length;
+  const out = new Float64Array(n);
+  let last = 0;
+  for (let i = 1; i < n; i++) {
+    const a = points[last];
+    const b = points[i];
+    const d = distance([a.lng, a.lat], [b.lng, b.lat]);
+    if (d < gapM && i < n - 1) continue;
+    const span = cumD[i] - cumD[last];
+    for (let j = last + 1; j <= i; j++) out[j] = out[last] + (span > 0 ? ((cumD[j] - cumD[last]) / span) * d : d);
+    last = i;
+  }
+  return out;
 }
 
 /**
@@ -269,7 +303,7 @@ export function splitMoving(points: TrackSample[]): Moving {
     cumD[i] = cumD[i - 1] + d;
     cumMove[i] = cumMove[i - 1] + moving;
   }
-  return { cumD, cumMove, rests };
+  return { cumD, cumMove, rests, stdD: chordDistances(points, cumD) };
 }
 
 /** 記録を区切った区間ごとのペース */
@@ -294,17 +328,19 @@ export function paceSegments(
   moving: Moving = splitMoving(points),
 ): { segments: PaceSegment[]; rests: RestSpan[] } {
   if (points.length < 2) return { segments: [], rests: [] };
-  const { cumD, cumMove, rests } = moving;
+  const { cumD, cumMove, rests, stdD } = moving;
   const total = cumD[points.length - 1];
   const step = segmentM ?? Math.max(100, Math.min(500, Math.round(total / 40 / 50) * 50));
-  const timeline = new RouteTimeline(Array.from(cumD), points.map((p) => p.ele));
+  // 区間は記録の距離で区切り（グラフの横軸）、標準時間はぶれを除いた距離で数える
+  const timeline = new RouteTimeline(Array.from(stdD), points.map((p) => p.ele));
+  const stdAt = (d: number) => interp(cumD, stdD, d);
   const times = points.map((p) => p.t);
   const segments: PaceSegment[] = [];
   for (let d0 = 0; d0 < total - 1; d0 += step) {
     const d1 = Math.min(total, d0 + step);
     // 端数の短い区間は前の区間にまとめる
     const end = total - d1 < step / 3 ? total : d1;
-    const std = timeline.between(d0, end).total;
+    const std = timeline.between(stdAt(d0), stdAt(end)).total;
     const actual = (interp(cumD, cumMove, end) - interp(cumD, cumMove, d0)) / 60;
     segments.push({
       d0,
@@ -318,12 +354,30 @@ export function paceSegments(
   return { segments, rests };
 }
 
+/**
+ * 時刻 since から最後の点までの実際の倍率（歩行時間 / 標準時間）。そのあいだに、ぶれを除いて minM 以上歩いていなければ null。
+ * ポケット表示の「直近20分」に使う（区間ごとの倍率を距離で平均するのではなく、時間どうしで割る）
+ */
+export function ratioSince(points: TrackSample[], moving: Moving, since: number, minM = 300): number | null {
+  const n = points.length;
+  if (n < 2) return null;
+  const { cumMove, stdD } = moving;
+  const times = points.map((p) => p.t);
+  const s0 = interp(times, stdD, since);
+  const s1 = stdD[n - 1];
+  if (s1 - s0 < minM) return null;
+  const std = new RouteTimeline(Array.from(stdD), points.map((p) => p.ele)).between(s0, s1).total;
+  const actual = (cumMove[n - 1] - interp(times, cumMove, since)) / 60;
+  return std > 0 ? clamp(actual / std, 0.3, 4) : null;
+}
+
 /** moving は splitMoving(points) の結果（求めてあれば渡す） */
 export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal', now = Date.now(), moving?: Moving): PaceStats {
   const prior = PACE_PRESETS[preset].factor;
   const empty: PaceStats = {
     factors: defaultFactors(preset),
     overall: prior,
+    ratio: prior,
     elapsedMs: points.length ? Math.max(0, now - points[0].t) : 0,
     movingMs: 0,
     restMs: 0,
@@ -336,22 +390,23 @@ export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal'
   if (points.length < 2) return empty;
 
   // 1) 生の点列から歩行時間と休憩時間を分ける（今の休憩は、最後に paceNow が足す）
-  const { cumD, cumMove, rests } = moving ?? splitMoving(points);
+  const { cumD, cumMove, rests, stdD } = moving ?? splitMoving(points);
   const restDoneS = rests.reduce((sum, r) => sum + (r.t1 - r.t0) / 1000, 0);
   const total = cumD[points.length - 1];
   const movingS = cumMove[points.length - 1];
 
-  // 2) 50m ごとに区切り、勾配区分ごとに「実際の歩行時間 / 標準時間」を集計
+  // 2) GPS のぶれを除いた距離で 50m ごとに区切り、勾配区分ごとに「実際の歩行時間 / 標準時間」を集計
   const eles = fillElevations(points.map((p) => p.ele));
   const A = { up: 0, flat: 0, down: 0 };
   const S = { up: 0, flat: 0, down: 0 };
   let climbM = 0;
   let climbMin = 0;
-  const n = Math.ceil(total / STEP_M);
+  const totalStd = stdD[points.length - 1];
+  const n = Math.ceil(totalStd / STEP_M);
   const rs = new Float64Array(n + 1);
-  for (let k = 1; k <= n; k++) rs[k] = Math.min(k * STEP_M, total);
-  const re = smoothSeries(Array.from(rs, (s) => interp(cumD, eles, s)));
-  const rt = Array.from(rs, (s) => interp(cumD, cumMove, s));
+  for (let k = 1; k <= n; k++) rs[k] = Math.min(k * STEP_M, totalStd);
+  const re = smoothSeries(Array.from(rs, (s) => interp(stdD, eles, s)));
+  const rt = Array.from(rs, (s) => interp(stdD, cumMove, s));
   for (let k = 1; k <= n; k++) {
     const h = rs[k] - rs[k - 1];
     if (h <= 1) continue;
@@ -367,6 +422,7 @@ export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal'
   }
   const sumA = A.up + A.flat + A.down;
   const sumS = S.up + S.flat + S.down;
+  const ratio = sumS > 0 ? clamp(sumA / sumS, 0.4, 3) : prior;
   const overall = clamp((sumA + prior * PRIOR_WEIGHT_MIN) / (sumS + PRIOR_WEIGHT_MIN), 0.4, 3);
   const cls = (c: SlopeClass) => clamp((A[c] + overall * CLASS_WEIGHT_MIN) / (S[c] + CLASS_WEIGHT_MIN), 0.4, 3);
   const movingMin = movingS / 60;
@@ -377,6 +433,7 @@ export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal'
     {
       factors: { up: cls('up'), flat: cls('flat'), down: cls('down'), rest: clamp(rest, 0, 1) },
       overall,
+      ratio,
       elapsedMs: 0,
       movingMs: movingS * 1000,
       restMs: restDoneS * 1000,

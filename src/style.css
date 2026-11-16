@@ -603,7 +603,7 @@ button,
   touch-action: none;
 }
 
-/* 詳細のタブ（行程／標高・ペース）。スクロールしても上に残す */
+/* 詳細のタブ（行程／標高／ペース）。スクロールしても上に残す */
 .tabs {
   position: sticky;
   top: 0;
@@ -1606,7 +1606,7 @@ dialog.photo-view {
   width: 100%;
   height: 92px;
   margin: 2px 0 2px;
-  pointer-events: none; /* 触るとシートの上げ下げ（グラフで調べるのは「標高・ペース」タブで） */
+  pointer-events: none; /* 触るとシートの上げ下げ（グラフで調べるのは「標高」タブで） */
 }
 
 /* リプレイの始めのタイトル（経路名と日時）。録画にも同じものを描く（app/replayVideo.ts） */

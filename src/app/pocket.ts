@@ -5,7 +5,8 @@
  */
 import { SystemBars } from '@capacitor/core';
 import { formatDistance } from '../geo';
-import { paceSegments } from '../nav/eta';
+import { fmtKcal, hikingKcal } from '../nav/calorie';
+import { paceWord, ratioSince } from '../nav/eta';
 import { log } from '../log';
 import { backgroundCapable } from '../track/location';
 import { $, fmtClock, fmtHM, fmtM, fmtMin, h, renderInto, setText } from '../ui/dom';
@@ -66,36 +67,29 @@ export function exitPocket() {
 }
 
 // ---------- ペース ----------
-/** 標準タイム（コースタイム相当）の何倍かかっているかを、ことばにする */
-const paceWord = (r: number) => (r < 0.85 ? '速い' : r < 0.95 ? 'やや速い' : r <= 1.05 ? '標準' : r <= 1.2 ? 'やや遅い' : '遅い');
-
 interface PaceView {
   /** 記録全体（休憩を除く歩行中）の倍率。記録が少なければ null */
   overall: number | null;
   /** 直近20分の倍率。歩いた距離が短ければ null */
   recent: number | null;
+  /** ここまでの消費エネルギーの目安 (kcal)。点が2つ未満なら null */
+  kcal: number | null;
 }
 let paceCache: { key: string; at: number; value: PaceView } | null = null;
 
-/** ペース。重い計算なので、点が増えたときに、多くても1分に1回だけ計算し直す */
+/** ペースと消費エネルギー。重い計算なので、点が増えたときに、多くても1分に1回だけ計算し直す */
 function paceView(): PaceView {
-  const pts = recorder.state.points;
+  const { points: pts, track } = recorder.state;
   const key = `${pts[0]?.trackId}:${pts.length}`;
   const now = Date.now();
   if (paceCache && (paceCache.key === key || now - paceCache.at < PACE_MS)) return paceCache.value;
-  const value: PaceView = { overall: null, recent: null };
+  const value: PaceView = { overall: null, recent: null, kcal: null };
   if (pts.length > 1) {
     const p = paceOf(pts);
-    if (p.evidenceMin > 10) value.overall = p.overall;
-    // 直近20分に歩いた区間の倍率を、距離で重み付けして平均する（300m 以上歩いていれば）
-    let sum = 0;
-    let len = 0;
-    for (const s of paceSegments(pts, undefined, movingOf(pts)).segments) {
-      if (s.t1 < now - RECENT_MS) continue;
-      sum += s.ratio * (s.d1 - s.d0);
-      len += s.d1 - s.d0;
-    }
-    if (len >= 300) value.recent = sum / len;
+    if (p.evidenceMin > 10) value.overall = p.ratio;
+    if (track) value.kcal = hikingKcal(p.movingMs / 60_000, track.distance, track.ascent, track.descent);
+    // 直近20分の歩行時間を、そのあいだの標準時間で割る（300m 以上歩いていれば）
+    value.recent = ratioSince(pts, movingOf(pts), now - RECENT_MS);
   }
   paceCache = { key, at: now, value };
   return value;
@@ -105,7 +99,7 @@ function paceView(): PaceView {
 function paceLine(): HTMLElement {
   const { overall, recent } = paceView();
   const el = h('div', 'pocket-pace');
-  el.append(h('span', 'label', 'ペース（標準タイムと比べて）'));
+  el.append(h('span', 'label', 'ペース（標準タイムの何倍かかったか）'));
   const r = recent ?? overall;
   if (r == null) {
     el.append(h('span', 'value muted', '歩き始めて10分ほどで分かります'));
@@ -187,6 +181,8 @@ function renderPocket() {
       }
     }
     stats.append(...batteryStats(nav));
+    const { kcal } = paceView();
+    if (kcal != null) stats.append(statTile('消費（目安）', fmtKcal(kcal)));
   });
   renderInto($('pocket-rows'), (rows) => {
     rows.append(paceLine());

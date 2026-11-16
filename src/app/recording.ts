@@ -127,7 +127,26 @@ function feedNativeFix(fix: Fix | null) {
   };
   geolocate._onSuccess({ coords, timestamp: fix.timestamp } as GeolocationPosition);
 }
-document.addEventListener('visibilitychange', () => feedNativeFix(recorder.state.lastFix));
+/**
+ * 表に戻ってからこの時間のうちに増えた点は、すぐ描く。表に戻ったときは、取り込む前の点でまず描いてしまうため
+ * （戻ったときに取り込む測位・端末がまとめていた測位は、そのあとに届く）。それより後は30秒ごと（nav.ts の refreshNow）
+ */
+const SHOWN_DRAW_MS = 5000;
+let shownAt = 0;
+let shownDrawTimer = 0;
+function pointsAdded() {
+  markTrackStale();
+  if (document.hidden || pocketActive() || shownDrawTimer || Date.now() - shownAt > SHOWN_DRAW_MS) return;
+  // 取り込んだ測位は1点ずつ届くので、少し待ってまとめて描く
+  shownDrawTimer = window.setTimeout(() => {
+    shownDrawTimer = 0;
+    void refreshNow();
+  }, 300);
+}
+document.addEventListener('visibilitychange', () => {
+  feedNativeFix(recorder.state.lastFix);
+  if (document.visibilityState === 'visible') shownAt = Date.now();
+});
 
 // ---------- 記録 ----------
 /** 前に知らせを受けたときの、記録（id と状態）と、エラー・保存の失敗・画面点灯の印 */
@@ -145,7 +164,7 @@ export const recorder = new TrackRecorder(dem, (s) => {
   else if (state.shown && !recorder.recording) state.shown = null;
   // 開始・終了はすぐ全部描き直す。エラー・保存の失敗・画面点灯が変わっただけなら、上の状態表示だけ（GPS が途切れがちだと
   // エラーが出たり消えたりするので、そのたびに記録の線全体を描き直さない）。点が増えただけなら、次にまとめて描き直す
-  // （記録中は測位のたびに呼ばれ、アプリ版では画面を消していても届くため）
+  // （記録中は測位のたびに呼ばれ、アプリ版では画面を消していても届くため。表に戻った直後だけはすぐ描く）
   const trackKey = `${s.track?.id}:${s.track?.status}`;
   const flags = `${s.error}:${s.saveFailed}:${s.wakeLock}`;
   const trackChanged = trackKey !== lastTrackKey;
@@ -160,7 +179,7 @@ export const recorder = new TrackRecorder(dem, (s) => {
     if (s.track && !recorder.recording) void showTrackRoute(s.track);
   } else {
     if (flags !== lastFlags) renderStatus();
-    if (s.points.length !== lastPointCount) markTrackStale();
+    if (s.points.length !== lastPointCount) pointsAdded();
   }
   // 道迷いの判定は点が届いたらすぐ（画面を消していても知らせるため）
   if (s.points.length !== lastPointCount || trackChanged) checkOffRoute(s.points, recorder.recording);

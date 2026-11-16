@@ -4,6 +4,7 @@ import {
   RouteTimeline,
   addEstimates,
   analyzePace,
+  chordDistances,
   estimate,
   estimateFlat,
   fillElevations,
@@ -11,6 +12,7 @@ import {
   paceNow,
   paceSegments,
   projectOnRoute,
+  ratioSince,
   splitMoving,
   segmentStdMinutes,
   stdSpeedKmh,
@@ -147,6 +149,67 @@ describe('analyzePace', () => {
     expect(paceSegments(pts, undefined, moving)).toEqual(paceSegments(pts));
     // 点が1つ・0個のとき
     expect(paceNow(analyzePace(pts.slice(0, 1), 'normal', pts[0].t), pts.slice(0, 1), pts[0].t + 5000)).toEqual(analyzePace(pts.slice(0, 1), 'normal', pts[0].t + 5000));
+  });
+});
+
+/**
+ * 東へまっすぐ平地を、標準タイムの pace 倍で歩いた記録（10m ごとの点）。jitter (m) で南北に交互にぶらす（GPS のぶれのジグザグ）
+ */
+function straightWalk(pace: number, jitter: number, lengthM = 2000): TrackSample[] {
+  const kx = 111_320 * Math.cos((36.8 * Math.PI) / 180);
+  const minPerM = segmentStdMinutes(1000, 0) / 1000;
+  const t0 = Date.parse('2026-11-16T10:00:00+09:00');
+  const pts: TrackSample[] = [];
+  for (let x = 0, i = 0; x <= lengthM; x += 10, i++) {
+    const side = i === 0 || x === lengthM ? 0 : i % 2 ? jitter : -jitter;
+    pts.push({ t: t0 + x * minPerM * pace * 60_000, lng: 139 + x / kx, lat: 36.8 + side / 110_574, ele: 1000 });
+  }
+  return pts;
+}
+
+describe('GPS のぶれを除いた距離', () => {
+  it('ジグザグの分を数えない', () => {
+    const pts = straightWalk(1, 4);
+    const m = splitMoving(pts);
+    // 記録の距離は2割以上伸びる。点ごとに左右へ交互にぶれる強いジグザグでも、伸びは4%ほどまでにおさまる
+    expect(m.cumD[pts.length - 1]).toBeGreaterThan(2400);
+    expect(m.stdD[pts.length - 1]).toBeGreaterThan(1990);
+    expect(m.stdD[pts.length - 1]).toBeLessThan(2080);
+    expect(chordDistances(pts, m.cumD)).toEqual(m.stdD);
+  });
+  it('ぶれていなければ記録の距離と同じ', () => {
+    const pts = straightWalk(1, 0);
+    const m = splitMoving(pts);
+    expect(m.stdD[pts.length - 1]).toBeCloseTo(m.cumD[pts.length - 1], 6);
+  });
+  it('標準どおりに歩けば、ぶれていても倍率は 1（ぶれを数えると速く見える）', () => {
+    const pts = straightWalk(1, 4);
+    const p = analyzePace(pts, 'normal', pts.at(-1)!.t);
+    expect(p.ratio).toBeGreaterThan(0.95);
+    expect(p.ratio).toBeLessThan(1.03);
+    // ぶれを数えていた前のやり方では 0.8 ほど（速いと出る）
+    const m = splitMoving(pts);
+    expect(analyzePace(pts, 'normal', pts.at(-1)!.t, { ...m, stdD: m.cumD }).ratio).toBeLessThan(0.85);
+  });
+  it('画面に出す倍率は設定のペースに寄せない（到着予想の係数は寄せる）', () => {
+    const pts = straightWalk(1.5, 0, 1000);
+    const p = analyzePace(pts, 'normal', pts.at(-1)!.t);
+    expect(p.ratio).toBeCloseTo(1.5, 1);
+    expect(p.overall).toBeLessThan(1.45);
+  });
+});
+
+describe('ratioSince', () => {
+  it('その時刻から後の歩行時間を、そのあいだの標準時間で割る', () => {
+    const pts = straightWalk(1.5, 4);
+    const r = ratioSince(pts, splitMoving(pts), pts.at(-1)!.t - 20 * 60_000);
+    expect(r).toBeGreaterThan(1.45);
+    expect(r).toBeLessThan(1.55);
+  });
+  it('そのあいだに歩いた距離が短ければ null', () => {
+    const pts = straightWalk(1, 0, 250);
+    expect(ratioSince(pts, splitMoving(pts), pts[0].t)).toBeNull();
+    expect(ratioSince(pts.slice(0, 1), splitMoving(pts.slice(0, 1)), pts[0].t)).toBeNull();
   });
 });
 
