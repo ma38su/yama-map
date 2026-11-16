@@ -9,6 +9,7 @@ import { saveSettings, settings } from '../settings';
 import { $, fmtM, onLongPress } from '../ui/dom';
 import { dem, geolocate, map, mapReady } from './mapView';
 import { refreshTrackList } from './tracks';
+import { keepRouteWithTrack, restorePlanRoute, showTrackRoute } from './route';
 import { setProfileSource } from './profileView';
 import { onReplayStopped, replayActive, startReplay, stopReplay } from './replay';
 import { sheet } from './sheetView';
@@ -139,7 +140,8 @@ export const recorder = new TrackRecorder(dem, (s) => {
   // 記録を終えたとき（「記録終了」ボタン、またはアプリ版の通知の「停止」）
   const ended = wasRecording && !recorder.recording && s.track?.status === 'done';
   wasRecording = recorder.recording;
-  if (s.track) state.shown = { track: s.track, points: s.points, all: s.points };
+  // 記録のルート（記録を終えたあとに読んだもの）は、同じ記録のあいだ残す
+  if (s.track) state.shown = { track: s.track, points: s.points, all: s.points, route: state.shown?.track.id === s.track.id ? state.shown.route : undefined };
   else if (state.shown && !recorder.recording) state.shown = null;
   // 開始・終了はすぐ全部描き直す。エラー・保存の失敗・画面点灯が変わっただけなら、上の状態表示だけ（GPS が途切れがちだと
   // エラーが出たり消えたりするので、そのたびに記録の線全体を描き直さない）。点が増えただけなら、次にまとめて描き直す
@@ -154,6 +156,8 @@ export const recorder = new TrackRecorder(dem, (s) => {
       updateRecButton();
       updateNav();
     }
+    // 記録を終えた（途中の記録を締めた）ら、その記録のルートを出す（記録中に設定していたルート）
+    if (s.track && !recorder.recording) void showTrackRoute(s.track);
   } else {
     if (flags !== lastFlags) renderStatus();
     if (s.points.length !== lastPointCount) markTrackStale();
@@ -217,6 +221,9 @@ async function onRecButton() {
       status('位置情報が許可されていないため、記録を始められません。端末の設定で許可してください', true);
       return;
     }
+    // 今のルートを記録と一緒に保存する（あとで別のルートを設定しても、この記録はこのルートで見る）
+    const started = recorder.state.track;
+    if (started) void keepRouteWithTrack(started.id);
     // 記録を始めたら、出発時刻は現在時刻に
     if (settings.departAt) {
       settings.departAt = null;
@@ -259,6 +266,8 @@ export function closeTrack() {
   stopReplay();
   recorder.clear();
   state.shown = null;
+  // 記録のルートを出していたなら、隠していた計画に戻す
+  restorePlanRoute();
   setProfileSource('route');
   renderTrack();
   updateRecButton();
@@ -297,7 +306,7 @@ onLongPress($('btn-replay'), () => {
   sheet.setState('mini');
   startReplay({ capture: true });
   updateRecButton();
-  status('録画しながらリプレイします（● か ✕ で止めると保存します）');
+  status('録画しながらリプレイします（最後まで再生するか、✕ で終えると保存します）');
 });
 $('btn-replay').addEventListener('click', () => {
   if (replayActive()) stopReplay();
@@ -376,6 +385,8 @@ async function resumeOrFinish(open: Track, native: Awaited<ReturnType<typeof tra
   log(`途中の記録がある（${open.id.slice(0, 8)}）: ${native?.recording && native.trackId === open.id ? '裏で記録が続いている' : native?.stoppedTrack === open.id ? '通知で止められていた' : '止まっていた'}`);
   if (native?.recording && native.trackId === open.id) {
     await recorder.resume(open);
+    // 記録と一緒にルートを保存していなければ（この版より前に始めた記録）、今のルートを保存する
+    void keepRouteWithTrack(open.id, true);
     startGeolocate();
     status('裏で続けていた記録を取り込みました');
   } else if (native && native.stoppedTrack === open.id) {
@@ -383,6 +394,7 @@ async function resumeOrFinish(open: Track, native: Awaited<ReturnType<typeof tra
     void refreshTrackList();
   } else if (confirm(`「${trackTitle(open)}」の記録が途中です。続きを記録しますか？\n（キャンセルするとここまでで保存します）`)) {
     await recorder.resume(open);
+    void keepRouteWithTrack(open.id, true);
     startGeolocate();
   } else {
     await recorder.finish(open);

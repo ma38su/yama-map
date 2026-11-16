@@ -12,6 +12,7 @@ import {
   placeOnRoute,
   preferredOption,
   reverseRoute,
+  routeSnapshot,
   routeSpan,
   saveRoute,
   type ActiveRoute,
@@ -19,29 +20,102 @@ import {
   type PlanPoint,
   type PointKind,
 } from '../nav/plan';
+import { getTrackRoute, putTrackRoute, type Track } from '../track/db';
 import { parseGpx, toGpx } from '../track/gpx';
 import { settings } from '../settings';
 import { $, download, h } from '../ui/dom';
 import { elevation, fitTo, map, src, lineFC } from './mapView';
 import { popup } from './mapTap';
 import { updateNav, type Nav } from './nav';
-import { hereLngLat } from './recording';
+import { hereLngLat, recorder } from './recording';
 import { openSheet } from './sheetView';
 import { state } from './state';
 import { setProgress, status } from './status';
 
 // ---------- 行程（ルート・出発地・経由地・目的地） ----------
 let markers: Marker[] = [];
+/** 記録を開いて、その記録のルートを出しているあいだ、隠している計画（ルートと、ルートになる前の地点）。記録を閉じたら戻す */
+let planBehind: { route: ActiveRoute | null; pending: PlanPoint[] } | null = null;
 
-export function setRoute(r: ActiveRoute | null, fit = false) {
+/** ルートを表示中のルートにして、地図・到着予想を描き直す（端末への保存はしない） */
+function applyRoute(r: ActiveRoute | null, fit: boolean) {
   state.route = r;
   state.timeline = r ? new RouteTimeline(r.dists, r.eles) : null;
   state.lastNav = null;
   state.pending = [];
-  saveRoute(r);
   renderRoute();
   if (fit && r) fitTo(r.coords);
   updateNav();
+}
+
+/** ルートを設定する（計画のルートとして端末に保存する） */
+export function setRoute(r: ActiveRoute | null, fit = false) {
+  // 記録のルートを出しているあいだに変えたら、それが新しい計画になる（記録を閉じても、隠していた計画には戻さない）
+  planBehind = null;
+  saveRoute(r);
+  applyRoute(r, fit);
+  // 記録中に変えたら、記録と一緒に保存するルートも新しくする（消したときは、それまでのルートを残す）
+  const track = recorder.recording ? recorder.state.track : null;
+  if (track && r) void keepRouteWithTrack(track.id);
+}
+
+// ---------- 記録と一緒に保存するルート ----------
+/** おすすめルート（女夫渕 ⇄ 手白澤温泉）の GPX。ルートを保存していない記録にも、このルートを付ける */
+export const TESHIROSAWA_GPX = 'routes/okukinu-teshirosawa.gpx';
+
+/**
+ * 今のルートを、記録と一緒に保存する（記録を始めた・記録中にルートを変えたとき。ルートがなければ「ルートなし」と保存する）。
+ * onlyIfMissing なら、まだ保存していないときだけ（途中の記録を続けたとき）
+ */
+export async function keepRouteWithTrack(trackId: string, onlyIfMissing = false) {
+  try {
+    if (onlyIfMissing && (await getTrackRoute(trackId))) return;
+    await putTrackRoute({ trackId, route: state.route ? routeSnapshot(state.route) : null });
+  } catch (e) {
+    console.warn('記録のルートを保存できませんでした', e);
+  }
+}
+
+/**
+ * 記録のルート。保存していなければ（この版より前の記録・読み込んだ記録）、いつも歩くルート（奥鬼怒の女夫渕 → 手白澤温泉）を付けて保存する
+ */
+async function routeOfTrack(t: Track): Promise<ActiveRoute | null> {
+  const saved = await getTrackRoute(t.id).catch(() => null);
+  if (saved) return saved.route;
+  const res = await fetch(TESHIROSAWA_GPX);
+  if (!res.ok) return null;
+  const route = routeSnapshot({ ...(await buildGpxRoute(parseGpx(await res.text()), elevation)), name: '女夫渕 → 手白澤温泉' });
+  await putTrackRoute({ trackId: t.id, route }).catch((e) => console.warn('記録のルートを保存できませんでした', e));
+  return route;
+}
+
+/**
+ * 開いた記録のルート（記録したときのルート）を、地図・行程・グラフの目盛り・リプレイに出す。今の計画は隠しておき、
+ * 記録を閉じたら restorePlanRoute で戻す（端末に保存してある計画は変えない）。あとで別のルートを設定していても、ちぐはぐにならないように
+ */
+export async function showTrackRoute(t: Track) {
+  const route = await routeOfTrack(t).catch((e) => {
+    console.warn('記録のルートを読めませんでした', e);
+    return null;
+  });
+  // 読んでいるあいだに閉じた・別の記録を開いた・記録を始めた
+  if (state.shown?.track.id !== t.id || recorder.recording) return;
+  // 記録の行程の地点名・グラフの目盛りは、あとで計画を変えても、このルートで出す
+  state.shown = { ...state.shown, route };
+  planBehind ??= { route: state.route, pending: state.pending };
+  applyRoute(route, false);
+}
+
+/** 記録を閉じたとき、隠していた計画に戻す */
+export function restorePlanRoute() {
+  const plan = planBehind;
+  if (!plan) return;
+  planBehind = null;
+  applyRoute(plan.route, false);
+  if (plan.pending.length) {
+    state.pending = plan.pending;
+    renderRoute();
+  }
 }
 
 /** 設定の「ルートの探し方」に合う候補に切り替える（候補は作り直さない） */
@@ -94,6 +168,8 @@ export function markPassed(nav: Nav | null) {
 export async function choosePoint(kind: PointKind, lngLat: LngLat, name?: string) {
   popup.remove();
   if (state.building) return;
+  // 記録のルートを出しているあいだに地点を選んだら、隠していた計画に戻してから足す（記録のルートは変えない）
+  restorePlanRoute();
   const pt = makePoint(kind, lngLat, name);
   if (state.route?.kind === 'gpx') {
     const placed = placeOnRoute(state.route, pt);

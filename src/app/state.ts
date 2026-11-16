@@ -19,8 +19,11 @@ export const state = {
   pending: [] as PlanPoint[],
   /** ルートを計算中か */
   building: false,
-  /** 地図に表示している記録（記録中ならその記録）。points は記録の範囲（track.trim）の中の点、all は全部の点 */
-  shown: null as { track: Track; points: TrackPoint[]; all: TrackPoint[] } | null,
+  /**
+   * 地図に表示している記録（記録中ならその記録）。points は記録の範囲（track.trim）の中の点、all は全部の点。
+   * route は記録と一緒に保存したルート（null はルートなし。読み込むまでと計画のリプレイは undefined で、そのあいだは表示中のルートを使う）
+   */
+  shown: null as { track: Track; points: TrackPoint[]; all: TrackPoint[]; route?: ActiveRoute | null } | null,
   /** 最後に計算した到着予想 */
   lastNav: null as Nav | null,
   /** 地図の現在地ボタンで最後に分かった位置 */

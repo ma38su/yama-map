@@ -793,19 +793,6 @@ button,
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.replay-rec span {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--rec);
-}
-.replay-rec.on {
-  border-color: var(--rec);
-}
-.replay-rec.on span {
-  border-radius: 3px;
-  animation: blink 1.2s ease-in-out infinite;
-}
 .icon-btn.small {
   width: 36px;
   height: 36px;
@@ -833,6 +820,10 @@ button,
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+/* display を決めているので、hidden で隠すには打ち消しが要る（行程の下のボタンの行は、記録を開いているあいだ隠す） */
+.row[hidden] {
+  display: none;
 }
 .stack {
   display: flex;

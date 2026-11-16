@@ -215,9 +215,11 @@ async function saveRange(track: Track, all: TrackPoint[], range: TrimRange) {
     return;
   }
   stopReplay();
+  // 記録のルートは表示し直しても残す（下の clear で表示中の記録がいったん空になるので、先に覚えておく）
+  const route = state.shown?.route;
   // 終えたばかりの記録は、記録の仕組みから離してから表示し直す（あとから古い範囲で上書きされないように）
   if (!recorder.recording && recorder.state.track?.id === updated.id) recorder.clear();
-  state.shown = shownOf(updated, all);
+  state.shown = { ...shownOf(updated, all), route };
   state.revision++;
   draft = null;
   renderTrack();

@@ -4,6 +4,7 @@
  * 地図に重ねる場所の情報（マス目ごと）と、オフライン用に保存した範囲もここに置く。
  * 版を上げるときは、ストアを足すだけにする（アプリを更新しても記録が消えないように）
  */
+import type { ActiveRoute } from '../nav/plan';
 import type { PlaceItem, PlaceSource } from '../places/sources';
 import type { TrimRange } from './trim';
 import type { TrackWeather } from './weatherLog';
@@ -112,8 +113,17 @@ export interface SavedArea {
   failed: number;
 }
 
+/**
+ * 記録と一緒に保存したルート（記録したときに設定していたルート。記録ごとに1つ）。route が null なら、ルートなしで記録した。
+ * あとで別のルートを設定していても、記録を開いたときはこのルートで行程・リプレイを出す（ちぐはぐにならないように）
+ */
+export interface TrackRoute {
+  trackId: string;
+  route: ActiveRoute | null;
+}
+
 const DB_NAME = 'yama-map';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -139,6 +149,8 @@ function open(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('imports')) db.createObjectStore('imports', { keyPath: 'id' });
       // 版4：記録した天気（記録ごとに1つ。./weatherLog.ts）
       if (!db.objectStoreNames.contains('weather')) db.createObjectStore('weather', { keyPath: 'trackId' });
+      // 版5：記録と一緒に保存したルート（記録ごとに1つ）
+      if (!db.objectStoreNames.contains('routes')) db.createObjectStore('routes', { keyPath: 'trackId' });
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -298,10 +310,10 @@ export class LockedTrackError extends Error {
   }
 }
 
-/** 記録を点・写真・天気ごと消す。ロックしている記録は消さずに LockedTrackError */
+/** 記録を点・写真・天気・ルートごと消す。ロックしている記録は消さずに LockedTrackError */
 export function deleteTrack(id: string): Promise<void> {
   return withDb((db) => {
-    const tx = db.transaction(['tracks', 'points', 'photos', 'weather'], 'readwrite');
+    const tx = db.transaction(['tracks', 'points', 'photos', 'weather', 'routes'], 'readwrite');
     const tracks = tx.objectStore('tracks');
     let locked = false;
     const req = tracks.get(id);
@@ -313,6 +325,7 @@ export function deleteTrack(id: string): Promise<void> {
       }
       tracks.delete(id);
       tx.objectStore('weather').delete(id);
+      tx.objectStore('routes').delete(id);
       for (const name of ['points', 'photos']) {
         const store = tx.objectStore(name);
         const cursorReq = store.index('trackId').openKeyCursor(IDBKeyRange.only(id));
@@ -327,6 +340,19 @@ export function deleteTrack(id: string): Promise<void> {
     return done(tx).catch((e) => {
       throw locked ? new LockedTrackError() : e;
     });
+  });
+}
+
+/** 記録と一緒に保存したルート（保存していなければ null：この版より前の記録・読み込んだ記録） */
+export async function getTrackRoute(trackId: string): Promise<TrackRoute | null> {
+  return (await withDb((db) => wrap<TrackRoute | undefined>(db.transaction('routes').objectStore('routes').get(trackId)))) ?? null;
+}
+
+export function putTrackRoute(rec: TrackRoute): Promise<void> {
+  return withDb((db) => {
+    const tx = db.transaction('routes', 'readwrite');
+    tx.objectStore('routes').put(rec);
+    return done(tx);
   });
 }
 

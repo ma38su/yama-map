@@ -12,6 +12,7 @@ import { fitTo } from './mapView';
 import { updateNav } from './nav';
 import { setProfileSource } from './profileView';
 import { closeTrack, fillShownElevations, recorder, renderTrack, stopGeolocate, updateRecButton } from './recording';
+import { showTrackRoute } from './route';
 import { stopReplay } from './replay';
 import { setTab } from './sheetView';
 import { state } from './state';
@@ -165,6 +166,8 @@ async function showSavedTrack(t: Track) {
   recorder.clear();
   const all = await getPoints(t.id);
   state.shown = shownOf(t, all);
+  // 記録したときのルートを出す（今設定しているルートは隠し、記録を閉じたら戻す）
+  void showTrackRoute(t);
   const points = state.shown.points;
   setProfileSource('track');
   stopGeolocate();

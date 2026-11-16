@@ -442,6 +442,14 @@ export function trailShare(o: RouteOption): number | null {
 // ---------- 保存 ----------
 const KEY = 'yama-map:route';
 
+/** 記録と一緒に保存するルートの写し（候補は省く。選んだ候補の中身はルートそのものに入っている） */
+export function routeSnapshot(r: ActiveRoute): ActiveRoute {
+  const out = { ...r };
+  delete out.options;
+  delete out.chosen;
+  return out;
+}
+
 export function saveRoute(route: ActiveRoute | null): void {
   try {
     if (route) localStorage.setItem(KEY, JSON.stringify(route));

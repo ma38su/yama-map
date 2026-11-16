@@ -152,8 +152,12 @@ function hereRow(nav: Nav & { pos: NonNullable<Nav['pos']> }, span: { from: numb
  */
 export function shownActualKey(): string {
   const shown = state.shown!;
-  return `${shown.track.id}:${shown.points.length}:${shown.points[0]?.t}:${state.revision}:${state.route?.name ?? ''}:${state.route?.marks.length ?? 0}`;
+  const route = shownRoute();
+  return `${shown.track.id}:${shown.points.length}:${shown.points[0]?.t}:${state.revision}:${route?.name ?? ''}:${route?.marks.length ?? 0}`;
 }
+
+/** 開いている記録のルート：記録と一緒に保存したもの（読み込むまで・計画のリプレイは、表示中のルート） */
+const shownRoute = () => (state.shown?.route !== undefined ? state.shown.route : state.route);
 
 /** 開いている記録の実績（ルートの地点を通った時刻など）。点が増えたときだけ計算し直す */
 let actualCache: { key: string; rows: ActualRow[] } | null = null;
@@ -161,7 +165,7 @@ export function shownActual(): ActualRow[] {
   const key = shownActualKey();
   if (actualCache?.key !== key) {
     const points = state.shown!.points;
-    actualCache = { key, rows: actualRows(points, state.route?.marks, movingOf(points)) };
+    actualCache = { key, rows: actualRows(points, shownRoute()?.marks, movingOf(points)) };
   }
   return actualCache.rows;
 }
@@ -180,12 +184,16 @@ function actualLine(first: ActualRow, last: ActualRow): HTMLElement {
   return el;
 }
 
-/** 開いている記録の標高のまんなか（天気のまとめで、気温を補正するのに使う）。点が変わったときだけ求める */
-let medianEle: { points: TrackPoint[]; n: number; ele: number | null } | null = null;
+/**
+ * 開いている記録の標高のまんなか（天気のまとめで、気温を補正するのに使う）。点が変わったときだけ求める
+ * （標高を埋めると、同じ点の標高がその場で書き換わって revision が上がるので、revision も見る）
+ */
+let medianEle: { points: TrackPoint[]; key: string; ele: number | null } | null = null;
 function shownMedianEle(points: TrackPoint[]): number | null {
-  if (medianEle?.points !== points || medianEle.n !== points.length) {
+  const key = `${points.length}:${state.revision}`;
+  if (medianEle?.points !== points || medianEle.key !== key) {
     const eles = points.map((q) => q.ele).filter((v): v is number => v != null).sort((x, y) => x - y);
-    medianEle = { points, n: points.length, ele: eles.length ? eles[Math.floor(eles.length / 2)] : null };
+    medianEle = { points, key, ele: eles.length ? eles[Math.floor(eles.length / 2)] : null };
   }
   return medianEle.ele;
 }

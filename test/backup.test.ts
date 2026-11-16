@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { routeSnapshot, type ActiveRoute } from '../src/nav/plan';
 import { backupHeader, parseBackupHeader, parseBackupLine, prepareTrack } from '../src/track/backup';
 import type { Track, TrackPoint } from '../src/track/db';
 
@@ -39,6 +40,27 @@ describe('parseBackupLine', () => {
     const photo = { id: 'p', trackId: 'a', t: 1, lng: 1, lat: 1, located: 'gps', image: 'data:', thumb: 'data:' };
     expect('photo' in parseBackupLine(JSON.stringify({ photo }))).toBe(true);
     expect(() => parseBackupLine(JSON.stringify({ x: 1 }))).toThrow('壊れています');
+  });
+});
+
+describe('記録のルート', () => {
+  const route = { name: '手白澤温泉 → 女夫渕', coords: [[139.39, 36.86], [139.43, 36.88]], dists: [0, 3000], eles: [1400, 1000], marks: [] };
+  it('記録の行のルートを読む（ルートなしの印 null も）。線のないものは読まない', () => {
+    const l = parseBackupLine(JSON.stringify({ track: track('a'), points: [], route }));
+    expect('track' in l && l.route?.name).toBe('手白澤温泉 → 女夫渕');
+    const none = parseBackupLine(JSON.stringify({ track: track('a'), points: [], route: null }));
+    expect('track' in none && none.route).toBeNull();
+    const broken = parseBackupLine(JSON.stringify({ track: track('a'), points: [], route: { name: 'x', coords: [[1, 2]] } }));
+    expect('track' in broken && 'route' in broken).toBe(false);
+    // ルートを持たない前の版のファイルは、route なし（あとで開いたときに、いつものルートを付ける）
+    expect('route' in parseBackupLine(JSON.stringify({ track: track('a'), points: [] }))).toBe(false);
+  });
+  it('記録と一緒に保存する写しには、ルートの候補を入れない', () => {
+    const full = { ...route, kind: 'auto', options: [route, route], chosen: 1 } as unknown as ActiveRoute;
+    const snap = routeSnapshot(full);
+    expect('options' in snap || 'chosen' in snap).toBe(false);
+    expect(snap.coords).toBe(full.coords);
+    expect(full.options).toHaveLength(2);
   });
 });
 

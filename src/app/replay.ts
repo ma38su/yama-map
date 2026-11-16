@@ -13,7 +13,7 @@ import { emptyFC, lineFC, map, replayDoneGradient, setTerrain, showScale, src, u
 import { showPhotoMarks } from './photos';
 import { setReplayMarker } from './profileView';
 import { updateRecButton } from './recording';
-import { CAPTURE_FPS, captureSupported, capturing, startCapture, stopCapture } from './replayVideo';
+import { CAPTURE_FPS, capturing, startCapture, stopCapture } from './replayVideo';
 import { saveSettings, savedOverrides, settings, type Settings } from '../settings';
 import { state } from './state';
 import { recordedWeatherSource, showingPlan, weatherShort } from './trackWeather';
@@ -242,6 +242,8 @@ let clockDrawn = '';
 let seekDrawn = '';
 /** 歩き終えた線を最後に塗り直した実時間 */
 let progressRealAt = 0;
+/** シートの全画面のあいだに、カメラを追いかけずに飛ばしたか（全画面をやめたら追いかけ直す） */
+let followSkipped = false;
 
 /** 位置・カメラ・時刻の表示を t に合わせる */
 function render(follow: boolean) {
@@ -266,8 +268,13 @@ function render(follow: boolean) {
     lastIndex = i;
     setReplayMarker(i);
   }
-  // シートを全画面にしていて地図が見えないあいだは、地図は動かさない（録画中は写すので動かす）。戻ったら次のコマで合わせる
-  if (document.body.classList.contains('sheet-full') && !capturing()) return;
+  // シートを全画面にしていて地図が見えないあいだは、地図は動かさない（録画中は写すので動かす）。
+  // 戻ったら、再生中は次のコマで、止めていればシートの ResizeObserver で合わせる（追いかけるのを飛ばしたなら追いかけ直す）
+  if (document.body.classList.contains('sheet-full') && !capturing()) {
+    followSkipped ||= follow;
+    return;
+  }
+  followSkipped = false;
   drawMarker(here, i, !resting && t < pts[pts.length - 1].t, follow);
   // 視点を変えている途中と「全体」のときは、カメラを動かさない
   if (follow && view !== 'whole' && now >= easingUntil) {
@@ -313,7 +320,7 @@ function frame(now: number) {
     pause();
     render(true);
     // 最後の場面が少し映ってから録画を止める（そのあいだに再生・録画を始めたら止めない：play と beginCapture で取り消す）
-    if (capturing()) endTimer = window.setTimeout(() => void stopRecording(), 800);
+    if (capturing()) endTimer = window.setTimeout(() => void stopCapture(), 800);
     return;
   }
   render(true);
@@ -355,8 +362,9 @@ function fitPadding() {
 new ResizeObserver(() => {
   if (!replayActive()) return;
   fitPadding();
-  // 止めているあいだにシートの全画面をやめたら、描かずにいた地図の位置を合わせる（再生中は次のコマで合う）
-  if (!playing) render(false);
+  // 止めているあいだにシートの全画面をやめたら、描かずにいた地図を合わせる（全画面のあいだにシークした・最後まで来たなら、
+  // カメラも今の位置へ追いかけ直す）。再生中は次のコマで合う
+  if (!playing) render(followSkipped);
 }).observe($('sheet'));
 
 /**
@@ -376,6 +384,7 @@ export function startReplay(opts: { capture?: boolean } = {}) {
   markerDrawn = '';
   clockDrawn = '';
   seekDrawn = '';
+  followSkipped = false;
   src('replay-done')?.setData(lineFC(coords));
   bar.hidden = false;
   wxAt = -Infinity;
@@ -416,7 +425,7 @@ export function onReplayStopped(fn: () => void) {
 /** リプレイをやめる */
 export function stopReplay() {
   if (!replayActive()) return;
-  void stopRecording();
+  void stopCapture();
   pause();
   bar.hidden = true;
   hideTitle();
@@ -453,19 +462,9 @@ playBtn.addEventListener('click', () => {
 });
 
 // ---------- 録画 ----------
-const recBtn = $<HTMLButtonElement>('replay-rec');
-recBtn.hidden = !captureSupported();
-function updateRecBtn() {
-  const on = capturing();
-  recBtn.classList.toggle('on', on);
-  recBtn.setAttribute('aria-pressed', String(on));
-  recBtn.setAttribute('aria-label', on ? '録画を止めて保存' : '録画');
-}
-async function stopRecording() {
-  if (!capturing()) return;
-  await stopCapture();
-  updateRecBtn();
-}
+// 録画を始めるのは、リプレイボタン・「計画をリプレイ」の長押しだけ（始めのタイトルから録るため。途中から録っても仕方がないので）。
+// 止めて保存するのは、最後まで再生したとき（最後の場面を少し映してから）と、リプレイを終えたとき（✕）。操作バーにボタンは置かない
+
 /** 録画を始める（字幕は経路名と日付・時刻、始めのタイトルも録画に描く） */
 function beginCapture() {
   const track = state.shown?.track;
@@ -481,20 +480,7 @@ function beginCapture() {
     () => (title ? { lines: title.lines, alpha: titleAlpha() } : null),
   );
   if (title) repaintWhileTitle();
-  updateRecBtn();
 }
-recBtn.addEventListener('click', () => {
-  if (capturing()) {
-    void stopRecording();
-    return;
-  }
-  beginCapture();
-  // 止まっていたら再生を始める（最後まで行っていたら最初から）
-  if (!playing) {
-    hideTitle();
-    play();
-  }
-});
 $('replay-close').addEventListener('click', () => {
   stopReplay();
   updateRecButton();

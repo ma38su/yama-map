@@ -2,8 +2,8 @@
 import { distance, type LngLat } from '../geo';
 import { BASE_LAYERS, TERRAIN_EXAGGERATION_RANGE, setBaseLayer, setHillshade, type BaseLayerId } from '../map/style';
 import { PACE_PRESETS, type PacePreset } from '../nav/eta';
-import { ROUTE_PREFS, buildGpxRoute, makePoint, type RoutePref } from '../nav/plan';
-import { appendPoints, deleteTrack, listTracks } from '../track/db';
+import { ROUTE_PREFS, buildGpxRoute, makePoint, routeSnapshot, type RoutePref } from '../nav/plan';
+import { appendPoints, deleteTrack, listTracks, putTrackRoute } from '../track/db';
 import { parseGpx } from '../track/gpx';
 import { backgroundCapable } from '../track/location';
 import { generateSampleTrack } from '../track/sample';
@@ -14,7 +14,7 @@ import { updateNav } from './nav';
 import { refreshStorage } from './offline';
 import { recorder } from './recording';
 import { refreshBattery } from './battery';
-import { applyRoutePref, loadGpxText, rebuild, reverseCurrentRoute, setRoute } from './route';
+import { TESHIROSAWA_GPX, applyRoutePref, loadGpxText, rebuild, reverseCurrentRoute, setRoute } from './route';
 import { openSheet } from './sheetView';
 import { state } from './state';
 import { setProgress, status } from './status';
@@ -40,12 +40,12 @@ menu.addEventListener('click', (e) => {
 
 export const PRESETS = [
   {
-    file: 'routes/okukinu-teshirosawa.gpx',
+    file: TESHIROSAWA_GPX,
     title: '女夫渕 → 手白澤温泉',
     desc: '奥鬼怒歩道・八丁の湯・加仁湯経由 約6km',
   },
   {
-    file: 'routes/okukinu-teshirosawa.gpx',
+    file: TESHIROSAWA_GPX,
     title: '手白澤温泉 → 女夫渕',
     desc: '帰り道。加仁湯・八丁の湯経由 約6km',
     reverse: true,
@@ -228,6 +228,8 @@ export async function ensureBuiltinPlan() {
       restMin: [BUILTIN_PLAN.restMin, BUILTIN_PLAN.restMin],
     });
     await appendPoints({ ...track, route: preset.title }, points);
+    // 元にしたルートを記録と一緒に保存する（記録を開いたとき、行程の地点名やリプレイの地点の印に使う）
+    await putTrackRoute({ trackId: BUILTIN_PLAN.id, route: routeSnapshot({ ...r, name: preset.title }) }).catch((e) => console.warn('予定の記録のルートを保存できませんでした', e));
     for (const t of tracks) if (t.id.startsWith('sample-')) await deleteTrack(t.id).catch(() => {}); // ロックしていれば残す
     settings.builtinPlan = true;
     saveSettings();
