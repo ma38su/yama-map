@@ -64,12 +64,11 @@ export function setRoute(r: ActiveRoute | null, fit = false) {
 export const TESHIROSAWA_GPX = 'routes/okukinu-teshirosawa.gpx';
 
 /**
- * 今のルートを、記録と一緒に保存する（記録を始めた・記録中にルートを変えたとき。ルートがなければ「ルートなし」と保存する）。
- * onlyIfMissing なら、まだ保存していないときだけ（途中の記録を続けたとき）
+ * 今のルートを、記録と一緒に保存する（記録を始めた・記録中にルートを変えたとき。ルートがなければ「ルートなし」と保存する。
+ * 途中の記録を続けたときは resumeTrackRoute）
  */
-export async function keepRouteWithTrack(trackId: string, onlyIfMissing = false) {
+export async function keepRouteWithTrack(trackId: string) {
   try {
-    if (onlyIfMissing && (await getTrackRoute(trackId))) return;
     await putTrackRoute({ trackId, route: state.route ? routeSnapshot(state.route) : null });
   } catch (e) {
     console.warn('記録のルートを保存できませんでした', e);
@@ -104,6 +103,37 @@ export async function showTrackRoute(t: Track) {
   state.shown = { ...state.shown, route };
   planBehind ??= { route: state.route, pending: state.pending };
   applyRoute(route, false);
+}
+
+/** ルートを使わずに記録するとき、計画を隠す（端末に保存してある計画は変えない）。記録を終えて閉じたら restorePlanRoute で戻す */
+export function hidePlanRoute() {
+  if (!state.route) return;
+  planBehind ??= { route: state.route, pending: state.pending };
+  applyRoute(null, false);
+}
+
+/** ルートを使わずに記録しているあいだ、隠している計画のルートの名前（なければ null） */
+export const hiddenPlanName = () => (recorder.recording && planBehind?.route ? planBehind.route.name : null);
+
+/** ルートを使わずに始めた記録で、隠している計画のルートを使う（記録と一緒に保存するルートも、このルートにする） */
+export function useHiddenPlan() {
+  restorePlanRoute();
+  const track = recorder.recording ? recorder.state.track : null;
+  if (track && state.route) void keepRouteWithTrack(track.id);
+}
+
+/**
+ * 続けた記録のルート：記録と一緒にルートを保存していなければ（この版より前に始めた記録）、今のルートを保存する。
+ * ルートを使わずに始めた記録（「ルートなし」と保存してある）なら、計画を隠す
+ */
+export async function resumeTrackRoute(trackId: string) {
+  // 読めなければ何もしない（保存してある「ルートなし」を、今のルートで上書きしないように）
+  const saved = await getTrackRoute(trackId).catch((e) => {
+    console.warn('記録のルートを読めませんでした', e);
+    return undefined;
+  });
+  if (saved === null) await keepRouteWithTrack(trackId);
+  else if (saved && !saved.route && recorder.state.track?.id === trackId && recorder.recording) hidePlanRoute();
 }
 
 /** 記録を閉じたとき、隠していた計画に戻す */

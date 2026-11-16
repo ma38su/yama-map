@@ -146,6 +146,7 @@ export function updateProfile(nav: Nav | null) {
     const ser = trackSeries(track);
     profileCoords = ser.coords;
     const pace = cachedPace(track);
+    $('pace-legend-vehicle').hidden = !pace.segments.some((s) => s.vehicle);
     // 目盛り（通った地点）は実績と同じ目印で変わる
     const ticksKey = recorder.recording ? '' : shownActualKey();
     if (seriesChanged([ser, pace, ticksKey])) {

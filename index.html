@@ -56,6 +56,10 @@
             </div>
           </section>
           <p class="note" id="plan-empty" hidden>目的地を設定すると、ここに行程と到着予想が出ます。</p>
+          <div id="plan-hidden" hidden>
+            <p class="note" id="plan-hidden-note"></p>
+            <button type="button" class="btn" id="plan-btn-use-hidden">このルートを使う</button>
+          </div>
           <section id="sec-trim" hidden>
             <h3>記録の始めと終わり</h3>
             <p class="note trim-suggest" id="trim-suggest" hidden></p>
@@ -86,6 +90,7 @@
             <p class="pace-legend" id="pace-legend" hidden>
               <span>速い</span><span class="pace-scale" aria-hidden="true"></span><span>遅い</span>
               <span>（棒の高さ＝速さ、点線＝標準）</span><span><b class="rest-mark">休</b> 休憩</span>
+              <span id="pace-legend-vehicle" hidden><b class="vehicle-mark" aria-hidden="true"></b> 乗り物</span>
             </p>
             <p class="note" id="profile-empty" hidden>ルートを作るか記録を表示すると、標高グラフが出ます。</p>
           </section>
@@ -287,6 +292,19 @@
           </div>
           <p class="note">別の端末（Pixel 8a と 9 Pro など）へ記録を移したり、バックアップにしたりできます。書き出したファイルを Quick Share や Google ドライブで送り、もう一方の端末の「記録を読み込む」で選びます（写真も含みます）。同じ記録がすでにあれば飛ばします。</p>
         </section>
+      </div>
+    </dialog>
+
+    <dialog id="rec-start" class="sheet-dlg" aria-label="記録を始める">
+      <div class="dlg">
+        <header>
+          <h2>記録を始める</h2>
+          <button class="close" type="button" data-close aria-label="閉じる">✕</button>
+        </header>
+        <div class="stack">
+          <button type="button" class="btn block" id="rec-start-route"><span>ルートを使って記録</span><small id="rec-start-route-name"></small></button>
+          <button type="button" class="btn block" id="rec-start-only"><span>記録だけ</span><small>ルートは消さずに取っておき、記録を終えて閉じたら戻します</small></button>
+        </div>
       </div>
     </dialog>
 

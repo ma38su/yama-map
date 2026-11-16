@@ -196,11 +196,18 @@ public class TrackingService extends Service implements SensorEventListener {
                 screenOnSince = 0;
             }
             if (track != null) TrackingStore.log(TrackingService.this, on ? "画面オン" : "画面オフ");
-            // 画面を点けたら、まとめて届けるために端末が持っている測位（最大 MAX_DELAY_MS ぶん）をすぐ届けさせる
-            // （アプリを開いたときに取り込んで、記録の線を現在地まで描けるように）
-            if (on && track != null) fused.flushLocations();
+            // 画面を点けたら、端末が持っている測位をすぐ届けさせる（アプリを開いたときに取り込んで、記録の線を現在地まで描けるように）
+            if (on) flushNow();
         }
     };
+
+    /**
+     * まとめて届けるために端末が持っている測位（最大 MAX_DELAY_MS ぶん）を、すぐ届けさせる（記録中だけ）。
+     * 画面を点けたときと、アプリが前に出たとき（画面が点いたまま、ほかのアプリから戻ったときも）に呼ぶ
+     */
+    void flushNow() {
+        if (track != null) fused.flushLocations();
+    }
 
     private final LocationCallback callback = new LocationCallback() {
         @Override

@@ -7,6 +7,8 @@
  *    記録の標準時間は、GPS のぶれで線がジグザグになった分を除いた距離で数える（chordDistances）。
  *    到着予想に使う係数は、記録が少ないうちは設定したペース（ゆっくり/ふつう/速め）に寄せて推定する。
  * 3. 休憩: 記録の中の立ち止まり時間から「歩行1時間あたりの休憩」を求め、残りの行程に上乗せする。
+ * 記録の中の乗り物の区間（車・バス・ロープウェイなど。歩数がほとんど増えずに速く動いたところ）は、歩いていないので
+ * ペース・休憩に数えない（vehicleGaps）。
  */
 import { GainCounter, bisect, distance, type LngLat } from '../geo';
 
@@ -177,6 +179,8 @@ export interface TrackSample {
   lng: number;
   lat: number;
   ele: number | null;
+  /** 記録を始めてからの歩数（歩数計がない端末・Web 版・読み込んだ GPX にはない） */
+  steps?: number | null;
 }
 
 export interface PaceFactors {
@@ -206,6 +210,8 @@ export interface PaceStats {
   climbRate: number | null;
   /** 推定に使えた標準時間（分）。多いほど係数が信頼できる */
   evidenceMin: number;
+  /** 乗り物の区間の合計（distance と elapsedMs には含み、歩行・休憩・ペースには含めない） */
+  vehicle: VehicleTotals;
 }
 
 /** 倍率（標準タイムの何倍かかったか）を、ことばにする */
@@ -234,6 +240,22 @@ const ASSUMED_WALK = 0.8; // m/s 立ち止まり区間の移動分の見積も�
  * 実際の記録（手白澤温泉→女夫渕）で、ルートに当てはめて測った距離にいちばん近かった値
  */
 const STD_CHORD_M = 20;
+// 乗り物（車・バス・電車・ロープウェイなど）の判定。点のあいだを1つずつ見て、
+// 歩数があれば VEHICLE_SPEED より速く、歩数（1歩 VEHICLE_STRIDE_M まで）で距離の VEHICLE_STEP_SHARE も説明できないところ、
+// 歩数がなければ（Web 版・歩数計がない・読み込んだ GPX）走っても続かない VEHICLE_SPEED_NO_STEPS より速いところを、速く動いたとする
+const VEHICLE_SPEED = 2.5; // m/s
+const VEHICLE_SPEED_NO_STEPS = 4; // m/s
+/** 1歩で進める長さの上限（track/recorder.ts の MAX_STRIDE_M と同じ） */
+const VEHICLE_STRIDE_M = 1.2;
+const VEHICLE_STEP_SHARE = 0.3;
+/** 速く動いたところが合わせてこれだけ続いたものだけ乗り物とみなす（GPS の跳ねで決めない） */
+const VEHICLE_MIN_M = 300;
+const VEHICLE_MIN_S = 60;
+/** 乗り物の区間のあいだの、これより短い停車（信号・バス停など）は、歩いていなければ乗り物に含める */
+const VEHICLE_JOIN_S = 180;
+/** 停車のあいだに歩いていないとみなす歩数（歩数がなければ、停車のあいだに進んだ距離 VEHICLE_JOIN_M 未満） */
+const VEHICLE_JOIN_STEPS = 20;
+const VEHICLE_JOIN_M = 100;
 
 export function defaultFactors(preset: PacePreset = 'normal'): PaceFactors {
   const f = PACE_PRESETS[preset].factor;
@@ -251,59 +273,190 @@ export interface RestSpan {
   t1: number;
 }
 
-/** 記録の点ごとの累積距離 (m) と累積の歩行時間 (s)、休憩の区間（splitMoving の結果） */
+/** 記録の中の乗り物の区間 */
+export interface VehicleSpan {
+  /** 記録の始点からの距離 (m) */
+  d0: number;
+  d1: number;
+  /** 始まりと終わり (ms) */
+  t0: number;
+  t1: number;
+}
+
+/** 乗り物の区間の合計：距離 (m)・時間 (ms)・登りと下り (m) */
+export interface VehicleTotals {
+  m: number;
+  ms: number;
+  ascent: number;
+  descent: number;
+}
+
+/** 記録の点ごとの累積距離 (m) と累積の歩行時間 (s)、休憩と乗り物の区間（splitMoving の結果） */
 export interface Moving {
   cumD: Float64Array;
+  /** 累積の歩行時間 (s)。休憩と乗り物の区間は増えない */
   cumMove: Float64Array;
   rests: RestSpan[];
-  /** 標準時間に使う累積距離 (m)：GPS のぶれのジグザグを除いたもの（chordDistances） */
+  /** 標準時間に使う累積距離 (m)：GPS のぶれのジグザグを除き、乗り物の区間は増えない（chordDistances） */
   stdD: Float64Array;
+  /** 標準時間に使う標高 (m)：null を前後の値で埋め、乗り物の区間の上り下りを除いて前後をつないだもの */
+  stdEle: Float64Array;
+  /** 点ごとの、乗り物で進んだ累積距離 (m) */
+  cumV: Float64Array;
+  vehicles: VehicleSpan[];
+  vehicle: VehicleTotals;
 }
 
 /**
  * 点ごとの、GPS のぶれを除いた累積距離 (m)。前につないだ点から gapM 以上離れた点だけを直線でつなぎ（最後の点は必ずつなぐ）、
- * あいだの点には記録の距離の割合で振り分ける。歩きながらのジグザグや、立ち止まっているあいだのぶれで増えた距離を数えない
+ * あいだの点には記録の距離の割合で振り分ける。歩きながらのジグザグや、立ち止まっているあいだのぶれで増えた距離を数えない。
+ * vehicle（vehicleGaps）があれば、乗り物の区間は数えず、乗り物を降りた点からつなぎ直す
  */
-export function chordDistances(points: TrackSample[], cumD: ArrayLike<number>, gapM = STD_CHORD_M): Float64Array {
+export function chordDistances(points: TrackSample[], cumD: ArrayLike<number>, gapM = STD_CHORD_M, vehicle?: Uint8Array): Float64Array {
   const n = points.length;
   const out = new Float64Array(n);
   let last = 0;
-  for (let i = 1; i < n; i++) {
+  const link = (i: number) => {
     const a = points[last];
     const b = points[i];
     const d = distance([a.lng, a.lat], [b.lng, b.lat]);
-    if (d < gapM && i < n - 1) continue;
     const span = cumD[i] - cumD[last];
     for (let j = last + 1; j <= i; j++) out[j] = out[last] + (span > 0 ? ((cumD[j] - cumD[last]) / span) * d : d);
     last = i;
+  };
+  for (let i = 1; i < n; i++) {
+    if (vehicle?.[i]) {
+      out[i] = out[i - 1];
+      last = i;
+      continue;
+    }
+    // 乗り物に乗る手前の点と最後の点は、近くてもつなぐ
+    const end = i === n - 1 || !!vehicle?.[i + 1];
+    const a = points[last];
+    const b = points[i];
+    if (!end && distance([a.lng, a.lat], [b.lng, b.lat]) < gapM) continue;
+    link(i);
   }
   return out;
 }
 
 /**
- * 点ごとの累積距離 (m) と累積の歩行時間 (s)、休憩の区間。全部の点の距離を求めるので、同じ記録に何度も使うときは
+ * 点のあいだ（i-1 から i）ごとに、乗り物で動いたなら 1（添字は後ろの点の番号）。速く動いたところ（VEHICLE_SPEED など）が
+ * 合わせて VEHICLE_MIN_M・VEHICLE_MIN_S 以上続いたものを乗り物とする。あいだの短い停車は、歩いていなければ含める
+ */
+export function vehicleGaps(points: TrackSample[]): Uint8Array {
+  const n = points.length;
+  const out = new Uint8Array(n);
+  const d = new Float64Array(n);
+  const dt = new Float64Array(n);
+  /** そのあいだの歩数（分からなければ -1） */
+  const ds = new Float64Array(n);
+  const fast = new Uint8Array(n);
+  for (let i = 1; i < n; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    d[i] = distance([a.lng, a.lat], [b.lng, b.lat]);
+    dt[i] = Math.max(0, (b.t - a.t) / 1000);
+    ds[i] = a.steps != null && b.steps != null && b.steps >= a.steps ? b.steps - a.steps : -1;
+    if (dt[i] <= 0) continue;
+    const v = d[i] / dt[i];
+    fast[i] = (ds[i] >= 0 ? v >= VEHICLE_SPEED && ds[i] * VEHICLE_STRIDE_M < VEHICLE_STEP_SHARE * d[i] : v >= VEHICLE_SPEED_NO_STEPS) ? 1 : 0;
+  }
+  // 速く動いたところを、あいだの短い停車（歩いていない）をはさんでつなぐ
+  let i = 1;
+  while (i < n) {
+    if (!fast[i]) {
+      i++;
+      continue;
+    }
+    const start = i;
+    let end = i;
+    let fastM = 0;
+    let fastS = 0;
+    for (;;) {
+      while (end < n && fast[end]) {
+        fastM += d[end];
+        fastS += dt[end];
+        end++;
+      }
+      // end は速くないところの始まり。次に速く動くまでが短い停車なら、つないで続ける
+      let j = end;
+      let stopS = 0;
+      let stopM = 0;
+      let steps = 0;
+      let known = true;
+      while (j < n && !fast[j] && stopS <= VEHICLE_JOIN_S) {
+        stopS += dt[j];
+        stopM += d[j];
+        if (ds[j] < 0) known = false;
+        else steps += ds[j];
+        j++;
+      }
+      const walked = known ? steps > VEHICLE_JOIN_STEPS : stopM >= VEHICLE_JOIN_M;
+      if (j < n && fast[j] && stopS <= VEHICLE_JOIN_S && !walked) end = j;
+      else break;
+    }
+    if (fastM >= VEHICLE_MIN_M && fastS >= VEHICLE_MIN_S) out.fill(1, start, end);
+    i = end;
+  }
+  return out;
+}
+
+/**
+ * 点ごとの累積距離 (m) と累積の歩行時間 (s)、休憩と乗り物の区間。全部の点の距離を求めるので、同じ記録に何度も使うときは
  * 1回だけ求めて、analyzePace・paceSegments・actualRows に渡す
  */
 export function splitMoving(points: TrackSample[]): Moving {
-  const cumD = new Float64Array(points.length);
-  const cumMove = new Float64Array(points.length);
+  const n = points.length;
+  const cumD = new Float64Array(n);
+  const cumMove = new Float64Array(n);
+  const cumV = new Float64Array(n);
   const rests: RestSpan[] = [];
-  for (let i = 1; i < points.length; i++) {
+  const vehicle = vehicleGaps(points);
+  const filled = fillElevations(points.map((p) => p.ele));
+  const stdEle = new Float64Array(n);
+  stdEle[0] = filled[0] ?? 0;
+  let lift = 0;
+  for (let i = 1; i < n; i++) {
     const a = points[i - 1];
     const b = points[i];
     const d = distance([a.lng, a.lat], [b.lng, b.lat]);
-    const d3 = a.ele != null && b.ele != null ? Math.hypot(d, b.ele - a.ele) : d;
     const dt = Math.max(0, (b.t - a.t) / 1000);
+    cumD[i] = cumD[i - 1] + d;
+    if (vehicle[i]) {
+      // 乗り物：歩行にも休憩にも数えず、上り下りは標準時間の標高から除く
+      cumMove[i] = cumMove[i - 1];
+      cumV[i] = cumV[i - 1] + d;
+      lift += filled[i] - filled[i - 1];
+      stdEle[i] = filled[i] - lift;
+      continue;
+    }
+    cumV[i] = cumV[i - 1];
+    stdEle[i] = filled[i] - lift;
+    const d3 = a.ele != null && b.ele != null ? Math.hypot(d, b.ele - a.ele) : d;
     let moving = dt;
     if (dt > STOP_MIN_GAP_S && d3 / dt < STOP_SPEED) {
       moving = Math.min(dt, d / ASSUMED_WALK);
       // 歩いた分は休憩の前に置く
       rests.push({ d: cumD[i - 1] + d, t0: a.t + moving * 1000, t1: b.t });
     }
-    cumD[i] = cumD[i - 1] + d;
     cumMove[i] = cumMove[i - 1] + moving;
   }
-  return { cumD, cumMove, rests, stdD: chordDistances(points, cumD) };
+  // 乗り物の区間（続いている点のあいだをまとめる）と、その合計
+  const vehicles: VehicleSpan[] = [];
+  const totals: VehicleTotals = { m: cumV[n - 1] ?? 0, ms: 0, ascent: 0, descent: 0 };
+  for (let i = 1; i < n; i++) {
+    if (!vehicle[i]) continue;
+    const from = i - 1;
+    while (i + 1 < n && vehicle[i + 1]) i++;
+    vehicles.push({ d0: cumD[from], d1: cumD[i], t0: points[from].t, t1: points[i].t });
+    totals.ms += points[i].t - points[from].t;
+    const g = new GainCounter();
+    for (let j = from; j <= i; j++) g.push(filled[j]);
+    totals.ascent += g.ascent;
+    totals.descent += g.descent;
+  }
+  return { cumD, cumMove, rests, stdD: chordDistances(points, cumD, STD_CHORD_M, vehicle), stdEle, cumV, vehicles, vehicle: totals };
 }
 
 /** 記録を区切った区間ごとのペース */
@@ -316,11 +469,13 @@ export interface PaceSegment {
   t1: number;
   /** 標準時間に対する実際の歩行時間の比（1 で標準どおり、大きいほど遅い） */
   ratio: number;
+  /** 区間の半分以上が乗り物（ratio は使わない） */
+  vehicle?: boolean;
 }
 
 /**
  * 記録を一定の距離ごとに区切って、区間ごとのペース（標準時間の何倍で歩いたか）を求める。
- * 区間の長さは、全体を40区間ほどに分ける長さ（100m〜500m）。休憩は歩行時間に含めない。
+ * 区間の長さは、全体を40区間ほどに分ける長さ（100m〜500m）。休憩と乗り物の区間は歩行時間に含めない。
  */
 export function paceSegments(
   points: TrackSample[],
@@ -328,11 +483,11 @@ export function paceSegments(
   moving: Moving = splitMoving(points),
 ): { segments: PaceSegment[]; rests: RestSpan[] } {
   if (points.length < 2) return { segments: [], rests: [] };
-  const { cumD, cumMove, rests, stdD } = moving;
+  const { cumD, cumMove, rests, stdD, stdEle, cumV } = moving;
   const total = cumD[points.length - 1];
   const step = segmentM ?? Math.max(100, Math.min(500, Math.round(total / 40 / 50) * 50));
-  // 区間は記録の距離で区切り（グラフの横軸）、標準時間はぶれを除いた距離で数える
-  const timeline = new RouteTimeline(Array.from(stdD), points.map((p) => p.ele));
+  // 区間は記録の距離で区切り（グラフの横軸）、標準時間はぶれと乗り物を除いた距離で数える
+  const timeline = new RouteTimeline(Array.from(stdD), Array.from(stdEle));
   const stdAt = (d: number) => interp(cumD, stdD, d);
   const times = points.map((p) => p.t);
   const segments: PaceSegment[] = [];
@@ -342,12 +497,14 @@ export function paceSegments(
     const end = total - d1 < step / 3 ? total : d1;
     const std = timeline.between(stdAt(d0), stdAt(end)).total;
     const actual = (interp(cumD, cumMove, end) - interp(cumD, cumMove, d0)) / 60;
+    const byVehicle = interp(cumD, cumV, end) - interp(cumD, cumV, d0);
     segments.push({
       d0,
       d1: end,
       t0: interp(cumD, times, d0),
       t1: interp(cumD, times, end),
       ratio: std > 0.05 ? clamp(actual / std, 0.3, 4) : 1,
+      ...(byVehicle * 2 >= end - d0 ? { vehicle: true } : {}),
     });
     if (end === total) break;
   }
@@ -361,12 +518,12 @@ export function paceSegments(
 export function ratioSince(points: TrackSample[], moving: Moving, since: number, minM = 300): number | null {
   const n = points.length;
   if (n < 2) return null;
-  const { cumMove, stdD } = moving;
+  const { cumMove, stdD, stdEle } = moving;
   const times = points.map((p) => p.t);
   const s0 = interp(times, stdD, since);
   const s1 = stdD[n - 1];
   if (s1 - s0 < minM) return null;
-  const std = new RouteTimeline(Array.from(stdD), points.map((p) => p.ele)).between(s0, s1).total;
+  const std = new RouteTimeline(Array.from(stdD), Array.from(stdEle)).between(s0, s1).total;
   const actual = (cumMove[n - 1] - interp(times, cumMove, since)) / 60;
   return std > 0 ? clamp(actual / std, 0.3, 4) : null;
 }
@@ -386,17 +543,17 @@ export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal'
     movingKmh: null,
     climbRate: null,
     evidenceMin: 0,
+    vehicle: { m: 0, ms: 0, ascent: 0, descent: 0 },
   };
   if (points.length < 2) return empty;
 
-  // 1) 生の点列から歩行時間と休憩時間を分ける（今の休憩は、最後に paceNow が足す）
-  const { cumD, cumMove, rests, stdD } = moving ?? splitMoving(points);
+  // 1) 生の点列から歩行時間と休憩時間を分ける（今の休憩は、最後に paceNow が足す）。乗り物の区間はどちらにも数えない
+  const { cumD, cumMove, rests, stdD, stdEle: eles, vehicle } = moving ?? splitMoving(points);
   const restDoneS = rests.reduce((sum, r) => sum + (r.t1 - r.t0) / 1000, 0);
   const total = cumD[points.length - 1];
   const movingS = cumMove[points.length - 1];
 
-  // 2) GPS のぶれを除いた距離で 50m ごとに区切り、勾配区分ごとに「実際の歩行時間 / 標準時間」を集計
-  const eles = fillElevations(points.map((p) => p.ele));
+  // 2) GPS のぶれと乗り物を除いた距離で 50m ごとに区切り、勾配区分ごとに「実際の歩行時間 / 標準時間」を集計
   const A = { up: 0, flat: 0, down: 0 };
   const S = { up: 0, flat: 0, down: 0 };
   let climbM = 0;
@@ -439,9 +596,10 @@ export function analyzePace(points: TrackSample[], preset: PacePreset = 'normal'
       restMs: restDoneS * 1000,
       stoppedForMs: 0,
       distance: total,
-      movingKmh: movingS > 60 ? total / 1000 / (movingS / 3600) : null,
+      movingKmh: movingS > 60 ? (total - vehicle.m) / 1000 / (movingS / 3600) : null,
       climbRate: climbMin > 5 ? (climbM / climbMin) * 60 : null,
       evidenceMin: sumS,
+      vehicle,
     },
     points,
     now,

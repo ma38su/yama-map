@@ -16,6 +16,7 @@ import {
   splitMoving,
   segmentStdMinutes,
   stdSpeedKmh,
+  vehicleGaps,
   type PaceFactors,
   type TrackSample,
 } from '../src/nav/eta';
@@ -272,5 +273,131 @@ describe('estimateFlat / addEstimates', () => {
     const sum = addEstimates(e, e);
     expect(sum.totalMin).toBeCloseTo(e.totalMin * 2);
     expect(sum.restMin).toBeCloseTo(e.restMin * 2);
+  });
+});
+
+// ---------- 乗り物の区間 ----------
+const M_PER_DEG_LNG = 111_320 * Math.cos((36.8 * Math.PI) / 180);
+/** s 秒のあいだ、速さ v (m/s)・勾配 slope で東へ進み、dt 秒ごとに点を置く。spm は1秒あたりの歩数（null なら歩数なし） */
+interface Leg {
+  s: number;
+  v: number;
+  dt: number;
+  slope?: number;
+  spm?: number | null;
+}
+function trip(legs: Leg[]): TrackSample[] {
+  const withSteps = legs[0].spm != null;
+  const pts: TrackSample[] = [{ t: 0, lng: 139, lat: 36.8, ele: 600, ...(withSteps ? { steps: 0 } : {}) }];
+  let steps = 0;
+  for (const leg of legs) {
+    for (let s = leg.dt; s <= leg.s + 1e-6; s += leg.dt) {
+      const prev = pts[pts.length - 1];
+      const d = leg.v * leg.dt;
+      steps += (leg.spm ?? 0) * leg.dt;
+      pts.push({
+        t: prev.t + leg.dt * 1000,
+        lng: prev.lng + d / M_PER_DEG_LNG,
+        lat: 36.8,
+        ele: (prev.ele ?? 0) + d * (leg.slope ?? 0),
+        ...(withSteps ? { steps: Math.floor(steps) } : {}),
+      });
+    }
+  }
+  return pts;
+}
+const FLAT = (stdSpeedKmh(0) * 1000) / 3600;
+const UP15 = (stdSpeedKmh(0.15) * 1000) / 3600;
+
+describe('乗り物の区間', () => {
+  it('歩数が増えずに速く動いた区間（車）は、歩行・休憩・ペースに数えない', () => {
+    const pts = trip([
+      { s: 1800, v: FLAT, dt: 10, spm: 1.7 },
+      { s: 1200, v: 11, dt: 5, spm: 0.01 },
+      { s: 1800, v: FLAT, dt: 10, spm: 1.7 },
+    ]);
+    const m = splitMoving(pts);
+    expect(m.vehicles).toHaveLength(1);
+    expect(m.vehicle.m).toBeCloseTo(13_200, -2);
+    expect(m.vehicle.ms).toBe(1_200_000);
+    // 標準時間に使う距離は、歩いた分だけ
+    expect(m.stdD[pts.length - 1]).toBeGreaterThan(3900);
+    expect(m.stdD[pts.length - 1]).toBeLessThan(4100);
+    const p = analyzePace(pts, 'normal', pts.at(-1)!.t, m);
+    expect(p.movingMs / 60_000).toBeCloseTo(60, 0);
+    expect(p.restMs).toBe(0);
+    expect(p.ratio).toBeGreaterThan(0.95);
+    expect(p.ratio).toBeLessThan(1.05);
+    expect(p.movingKmh).toBeCloseTo(stdSpeedKmh(0), 1);
+    expect(p.distance).toBeGreaterThan(17_000);
+  });
+
+  it('歩数がなければ速さだけで見分け、ロープウェイで登った分は登りの係数に入れない', () => {
+    const pts = trip([
+      { s: 1200, v: FLAT, dt: 10 },
+      { s: 420, v: 2000 / 420, dt: 5, slope: 0.45 },
+      { s: 3600, v: UP15, dt: 10, slope: 0.15 },
+    ]);
+    const p = analyzePace(pts, 'normal', pts.at(-1)!.t);
+    expect(p.vehicle.ascent).toBeGreaterThan(870);
+    expect(p.vehicle.ascent).toBeLessThan(930);
+    expect(p.factors.up).toBeGreaterThan(0.9);
+    expect(p.factors.up).toBeLessThan(1.1);
+    expect(p.ratio).toBeGreaterThan(0.95);
+    expect(p.ratio).toBeLessThan(1.05);
+  });
+
+  it('歩数で説明できる速さ（走っている）は乗り物にしない', () => {
+    const pts = trip([{ s: 600, v: 3, dt: 5, spm: 2.8 }]);
+    expect(splitMoving(pts).vehicle.m).toBe(0);
+  });
+
+  it('一度だけ速い点のあいだ（GPS の跳ね）は乗り物にしない', () => {
+    const pts = trip([
+      { s: 600, v: FLAT, dt: 10 },
+      { s: 10, v: 15, dt: 10 },
+      { s: 600, v: FLAT, dt: 10 },
+    ]);
+    expect(vehicleGaps(pts).some((v) => v === 1)).toBe(false);
+  });
+
+  it('信号などの短い停車は乗り物に含めて、休憩にしない', () => {
+    const pts = trip([
+      { s: 300, v: 11, dt: 5, spm: 0 },
+      { s: 120, v: 0, dt: 120, spm: 0 },
+      { s: 300, v: 11, dt: 5, spm: 0 },
+    ]);
+    const m = splitMoving(pts);
+    expect(m.vehicles).toHaveLength(1);
+    expect(m.rests).toHaveLength(0);
+    expect(m.vehicle.ms).toBe(720_000);
+  });
+
+  it('あいだで歩いていれば、乗り物の区間はつながない', () => {
+    const pts = trip([
+      { s: 300, v: 11, dt: 5, spm: 0 },
+      { s: 120, v: 1.2, dt: 10, spm: 1.7 },
+      { s: 300, v: 11, dt: 5, spm: 0 },
+    ]);
+    const m = splitMoving(pts);
+    expect(m.vehicles).toHaveLength(2);
+    expect(m.cumMove[pts.length - 1]).toBeCloseTo(120, 0);
+  });
+
+  it('区間ごとのペースでは、乗り物の区間に印を付ける', () => {
+    const pts = trip([
+      { s: 1800, v: FLAT, dt: 10, spm: 1.7 },
+      { s: 1200, v: 11, dt: 5, spm: 0 },
+      { s: 1800, v: FLAT, dt: 10, spm: 1.7 },
+    ]);
+    const { segments } = paceSegments(pts);
+    const inCar = segments.filter((s) => s.d0 > 3000 && s.d1 < 14_000);
+    expect(inCar.length).toBeGreaterThan(5);
+    expect(inCar.every((s) => s.vehicle)).toBe(true);
+    expect(segments[0].vehicle).toBeUndefined();
+    expect(segments.at(-1)!.vehicle).toBeUndefined();
+    // 歩いた区間は標準どおり
+    expect(segments[0].ratio).toBeGreaterThan(0.9);
+    expect(segments[0].ratio).toBeLessThan(1.1);
   });
 });

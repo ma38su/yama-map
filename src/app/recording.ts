@@ -9,7 +9,7 @@ import { saveSettings, settings } from '../settings';
 import { $, fmtM, onLongPress } from '../ui/dom';
 import { dem, geolocate, map, mapReady } from './mapView';
 import { refreshTrackList } from './tracks';
-import { keepRouteWithTrack, restorePlanRoute, showTrackRoute } from './route';
+import { hidePlanRoute, keepRouteWithTrack, restorePlanRoute, resumeTrackRoute, showTrackRoute } from './route';
 import { setProfileSource } from './profileView';
 import { onReplayStopped, replayActive, startReplay, stopReplay } from './replay';
 import { sheet } from './sheetView';
@@ -225,6 +225,36 @@ recBtn.addEventListener('click', async () => {
     recBtnBusy = false;
   }
 });
+const recStart = $<HTMLDialogElement>('rec-start');
+recStart.addEventListener('click', (e) => {
+  if (e.target === recStart) recStart.close();
+});
+/** ルートを使って記録するか、記録だけにするかを聞く（どちらも選ばずに閉じたら null） */
+function askRecordMode(routeName: string): Promise<'route' | 'only' | null> {
+  $('rec-start-route-name').textContent = `「${routeName}」の到着予想・道迷いアラートを出します`;
+  let mode: 'route' | 'only' | null = null;
+  const pick = (m: 'route' | 'only') => () => {
+    mode = m;
+    recStart.close();
+  };
+  const buttons = [
+    [$('rec-start-route'), pick('route')],
+    [$('rec-start-only'), pick('only')],
+  ] as const;
+  for (const [b, f] of buttons) b.addEventListener('click', f);
+  recStart.showModal();
+  return new Promise((resolve) =>
+    recStart.addEventListener(
+      'close',
+      () => {
+        for (const [b, f] of buttons) b.removeEventListener('click', f);
+        resolve(mode);
+      },
+      { once: true },
+    ),
+  );
+}
+
 async function onRecButton() {
   const wasRecording = recorder.recording;
   // 前回の途中の記録を確かめ終わるまで待つ（裏で続いていた記録を、新しい記録と取り違えないように）
@@ -235,7 +265,14 @@ async function onRecButton() {
       alert('この端末・ブラウザでは位置情報が使えません');
       return;
     }
+    // ルートがあれば、ルートを使って記録するか、記録だけにするかを選ぶ（記録だけなら、ルートは隠して記録を閉じたら戻す）
+    if (state.route) {
+      const mode = await askRecordMode(state.route.name);
+      if (!mode) return;
+      if (mode === 'only') hidePlanRoute();
+    }
     if (!(await recorder.start(routeNameOf(state.route?.name) ?? undefined))) {
+      restorePlanRoute();
       log('位置情報が許可されていないため、記録を始められなかった');
       status('位置情報が許可されていないため、記録を始められません。端末の設定で許可してください', true);
       return;
@@ -249,7 +286,7 @@ async function onRecButton() {
       saveSettings();
     }
     startGeolocate();
-    status('記録を開始しました。歩いた実績から到着予想を調整します');
+    status(state.route ? '記録を開始しました。歩いた実績から到着予想を調整します' : '記録を開始しました');
     void suggestBatteryExemption();
   } else {
     if (!confirm('記録を終了しますか？')) return;
@@ -404,8 +441,8 @@ async function resumeOrFinish(open: Track, native: Awaited<ReturnType<typeof tra
   log(`途中の記録がある（${open.id.slice(0, 8)}）: ${native?.recording && native.trackId === open.id ? '裏で記録が続いている' : native?.stoppedTrack === open.id ? '通知で止められていた' : '止まっていた'}`);
   if (native?.recording && native.trackId === open.id) {
     await recorder.resume(open);
-    // 記録と一緒にルートを保存していなければ（この版より前に始めた記録）、今のルートを保存する
-    void keepRouteWithTrack(open.id, true);
+    // 記録と一緒にルートを保存していなければ今のルートを保存し、ルートを使わずに始めた記録ならルートを隠す
+    void resumeTrackRoute(open.id);
     startGeolocate();
     status('裏で続けていた記録を取り込みました');
   } else if (native && native.stoppedTrack === open.id) {
@@ -413,7 +450,7 @@ async function resumeOrFinish(open: Track, native: Awaited<ReturnType<typeof tra
     void refreshTrackList();
   } else if (confirm(`「${trackTitle(open)}」の記録が途中です。続きを記録しますか？\n（キャンセルするとここまでで保存します）`)) {
     await recorder.resume(open);
-    void keepRouteWithTrack(open.id, true);
+    void resumeTrackRoute(open.id);
     startGeolocate();
   } else {
     await recorder.finish(open);

@@ -1,6 +1,6 @@
 /** 下から出るシート：カード（到着予想の要約）と、詳細のタブ（行程／標高／ペース） */
 import { formatDistance, formatDuration, type LngLat } from '../geo';
-import { KCAL_NOTE, fmtKcal, hikingKcal } from '../nav/calorie';
+import { KCAL_NOTE, fmtKcal, hikingKcal, walkingKcal } from '../nav/calorie';
 import { PACE_PRESETS, estimate, paceWord, type PaceStats } from '../nav/eta';
 import { DEPART_DATE_TIME, DEPART_TIME, routeSpan } from '../nav/plan';
 import { saveSettings, settings } from '../settings';
@@ -16,7 +16,7 @@ import { departureTime, isLate, movingOf, paceOf, updateNav, type Nav, type Row 
 import { pocketActive } from './pocket';
 import { miniProfileFor, updateProfile } from './profileView';
 import { pauseFollow, recorder, replayPlan, viewingTrack } from './recording';
-import { clearRoute, exportRoute, removeMark, reverseCurrentRoute, searchAlternativesForGpx } from './route';
+import { clearRoute, exportRoute, hiddenPlanName, removeMark, reverseCurrentRoute, searchAlternativesForGpx, useHiddenPlan } from './route';
 import { state } from './state';
 import { renderTrimEditor } from './trimView';
 import { showingPlan, shownWeather } from './trackWeather';
@@ -202,8 +202,11 @@ function shownMedianEle(points: TrackPoint[]): number | null {
 /** ペースの一言：ことばを先に出し、倍率は「標準タイムの何倍か」と書く（「標準の1.4倍」だけだと速さの倍率に読めるため） */
 const paceText = (r: number) => `${paceWord(r)}（標準タイムの${r.toFixed(2)}倍）`;
 
-/** 歩いた記録の消費エネルギーの目安：歩行時間と、記録の距離・登り・下り（範囲を変えていれば範囲の中） */
-const trackKcal = (track: Track, p: PaceStats) => fmtKcal(hikingKcal(p.movingMs / 60_000, track.distance, track.ascent, track.descent));
+/** 歩いた記録の消費エネルギーの目安：歩行時間と、記録の距離・登り・下り（範囲を変えていれば範囲の中。乗り物の区間を除く） */
+const trackKcal = (track: Track, p: PaceStats) => fmtKcal(walkingKcal(p.movingMs, track, p.vehicle));
+
+/** 乗り物の区間があれば「（うち乗り物 32.1 km）」（短いものは出さない） */
+const vehicleNote = (p: PaceStats | null) => (p && p.vehicle.m >= 100 ? `（うち乗り物 ${formatDistance(p.vehicle.m)}）` : '');
 
 /** 開いている記録のカード：出発と到着を1行にまとめ、所要・ペース（地点の入った小さな標高グラフは renderCard が足す） */
 function renderActualCard(card: HTMLElement) {
@@ -217,10 +220,13 @@ function renderActualCard(card: HTMLElement) {
   if (first && last) card.append(actualLine(first, last));
   const p = points.length > 1 ? paceOf(points, true) : null;
   const sub = h('div', 'nav-sub');
-  if (first && last) sub.append(h('span', '', `所要 ${fmtHM((last.t - first.t) / 60_000)} · ${formatDistance(track.distance)}`));
-  if (p) sub.append(h('span', '', `歩行 ${fmtHM(p.movingMs / 60_000)} · 休憩 ${fmtHM(p.restMs / 60_000)}`));
+  if (first && last) sub.append(h('span', '', `所要 ${fmtHM((last.t - first.t) / 60_000)} · ${formatDistance(track.distance)}${vehicleNote(p)}`));
+  if (p) {
+    const ride = p.vehicle.ms >= 60_000 ? ` · 乗り物 ${fmtHM(p.vehicle.ms / 60_000)}` : '';
+    sub.append(h('span', '', `歩行 ${fmtHM(p.movingMs / 60_000)} · 休憩 ${fmtHM(p.restMs / 60_000)}${ride}`));
+  }
   sub.append(h('span', '', `登り ${fmtM(track.ascent)} · 下り ${fmtM(track.descent)}`));
-  if (p) sub.append(h('span', '', `消費 ${trackKcal(track, p)}`));
+  if (p && p.movingMs >= 60_000) sub.append(h('span', '', `消費 ${trackKcal(track, p)}`));
   if (track.steps) sub.append(h('span', '', `${track.steps.toLocaleString('ja-JP')}歩`));
   if (p && p.evidenceMin > 10) sub.append(h('span', '', paceText(p.ratio)));
   // 記録した実際の天気のまとめ：雨の量（解析雨量）と気温（アメダスを、歩いた標高のまんなかに補正）
@@ -366,7 +372,11 @@ function renderPlanTab(nav: Nav | null) {
   const route = viewing ? null : state.route;
   const planning = !!(nav && route && state.timeline);
   $('sec-plan').hidden = !state.route && !viewing;
-  $('plan-empty').hidden = !!state.route || viewing;
+  // ルートを使わずに記録しているあいだは、隠しているルートを出して、使うこともできるようにする
+  const hiddenPlan = state.route || viewing ? null : hiddenPlanName();
+  $('plan-hidden').hidden = !hiddenPlan;
+  if (hiddenPlan) setText($('plan-hidden-note'), `ルート「${hiddenPlan}」を使わずに記録しています。記録を終えて閉じると、ルートに戻ります。`);
+  $('plan-empty').hidden = !!state.route || viewing || !!hiddenPlan;
   $('depart-field').hidden = viewing;
   $('plan-actions').hidden = !planning;
   let total = '';
@@ -456,6 +466,7 @@ const planReplay = planButton('plan-btn-replay', () => replayPlan());
 onLongPress(planReplay, () => replayPlan({ capture: true }));
 planButton('plan-btn-export', exportRoute);
 planButton('plan-btn-clear', clearRoute);
+planButton('plan-btn-use-hidden', useHiddenPlan);
 // 経由地の ✕（行程表は描き直すたびに組み立てるので、押したときの処理は行程表に1つ）
 $('timeline').addEventListener('click', (e) => {
   const b = (e.target as Element).closest<HTMLButtonElement>('button.del');
@@ -478,12 +489,13 @@ function renderPaceTab(nav: Nav | null) {
         ['経過', formatDuration(p.elapsedMs)],
         ['歩行', formatDuration(p.movingMs)],
         ['休憩', formatDuration(p.restMs)],
+        ...(p.vehicle.m >= 100 ? [['乗り物', `${formatDistance(p.vehicle.m)} · ${formatDuration(p.vehicle.ms)}`] as [string, string]] : []),
         ['距離', formatDistance(p.distance)],
         ['平均(歩行中)', p.movingKmh ? `${p.movingKmh.toFixed(1)}km/h` : '–'],
         ['登りの速さ', p.climbRate ? `${Math.round(p.climbRate)}m/h` : '–'],
         ['標準タイム比', p.evidenceMin > 10 ? `${p.ratio.toFixed(2)}倍` : '–'],
         ['登/平/下', p.evidenceMin > 10 ? `${p.factors.up.toFixed(1)}/${p.factors.flat.toFixed(1)}/${p.factors.down.toFixed(1)}` : '–'],
-        ['消費(目安)', track ? trackKcal(track, p) : '–'],
+        ['消費(目安)', track && p.movingMs >= 60_000 ? trackKcal(track, p) : '–'],
         // 今の標高は記録中だけ（保存した記録を開いているときは出すものがない）
         ...(recorder.recording ? [['標高', fmtM(state.currentEle ?? recorder.state.points.at(-1)?.ele)] as [string, string]] : []),
       ]
@@ -503,7 +515,7 @@ function renderPaceTab(nav: Nav | null) {
   setText(
     $('pace-note'),
     p
-      ? `「標準タイム比」は、地形（距離と勾配）から求めた標準タイムの何倍の時間をかけて歩いたか。1より大きいほど遅く、小さいほど速いペースです（GPS のぶれで線がジグザグになった分は距離に数えません）。到着予想は登り・平坦・下りそれぞれの実績から出し（記録が少ないうちは設定のペースに寄せます）、休憩は歩行1時間あたり約${Math.round(p.factors.rest * 60)}分の見込みで含めています。${KCAL_NOTE}`
+      ? `「標準タイム比」は、地形（距離と勾配）から求めた標準タイムの何倍の時間をかけて歩いたか。1より大きいほど遅く、小さいほど速いペースです（GPS のぶれで線がジグザグになった分は距離に数えません）。${p.vehicle.m >= 100 ? `歩数がほとんど増えずに速く動いた ${formatDistance(p.vehicle.m)} は、乗り物（車・バス・ロープウェイなど）とみなし、歩行・休憩・ペースに数えていません。` : ''}到着予想は登り・平坦・下りそれぞれの実績から出し（記録が少ないうちは設定のペースに寄せます）、休憩は歩行1時間あたり約${Math.round(p.factors.rest * 60)}分の見込みで含めています。${KCAL_NOTE}`
       : `記録を開始すると、歩いた実績（登り・平坦・下りの速さ、休憩の取り方）から到着予想を自動で調整します。${KCAL_NOTE}`,
   );
 }

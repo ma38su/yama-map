@@ -687,6 +687,15 @@ button,
   border-radius: 50%;
   font-size: 9.5px;
 }
+/* 乗り物の区間（グラフの薄い灰色と、下の細い帯） */
+.vehicle-mark {
+  display: inline-block;
+  width: 16px;
+  height: 10px;
+  vertical-align: -1px;
+  background: rgba(31, 41, 51, 0.07);
+  border-bottom: 2px solid #7a8491;
+}
 
 .field {
   margin: 12px 0 6px;

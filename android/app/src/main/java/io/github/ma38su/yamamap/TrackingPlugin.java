@@ -61,6 +61,13 @@ public class TrackingPlugin extends Plugin {
         if (loaded == this) loaded = null;
     }
 
+    /** アプリが前に出たら、端末が持っている測位をすぐ届けさせる（ほかのアプリから戻ったとき、記録の線を現在地まで描けるように） */
+    @Override
+    protected void handleOnResume() {
+        TrackingService s = TrackingService.running;
+        if (s != null) s.flushNow();
+    }
+
     /** JS に知らせる（WebView がなければ何もしない。点は TrackingStore に残っているので、次に開いたときに取り込まれる） */
     static void signal(String event) {
         TrackingPlugin p = loaded;

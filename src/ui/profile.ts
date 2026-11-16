@@ -41,6 +41,9 @@ const COLORS = {
   here: '#d6334a',
   rest: 'rgba(91, 100, 112, 0.16)',
   restInk: '#5b6470',
+  /** 乗り物の区間（ペースの色は付けない） */
+  vehicle: 'rgba(31, 41, 51, 0.07)',
+  vehicleInk: '#7a8491',
 };
 
 /** ペースの色：標準どおりは灰色、速いほど青、遅いほど赤（ルートの青・記録の赤と同じ色味） */
@@ -397,7 +400,7 @@ export class ElevationProfile {
       for (const seg of pace.segments) {
         const x0 = sx(isTime ? seg.t0 : seg.d0);
         const x1 = sx(isTime ? seg.t1 : seg.d1);
-        ctx.fillStyle = paceColor(seg.ratio, 0.32);
+        ctx.fillStyle = seg.vehicle ? COLORS.vehicle : paceColor(seg.ratio, 0.32);
         ctx.fillRect(x0, pad.top, x1 - x0 + 0.5, ph);
       }
       ctx.restore();
@@ -434,6 +437,12 @@ export class ElevationProfile {
         const x0 = sx(isTime ? seg.t0 : seg.d0);
         const x1 = sx(isTime ? seg.t1 : seg.d1);
         if (x1 < pad.left || x0 > w) continue;
+        // 乗り物の区間は、ペースの棒の代わりに下に細い帯
+        if (seg.vehicle) {
+          ctx.fillStyle = COLORS.vehicleInk;
+          ctx.fillRect(x0, base - 2, Math.max(1, x1 - x0), 2);
+          continue;
+        }
         // 休憩を含む区間も、棒は歩いていた速さで描く
         const speed = Math.min(2, 1 / seg.ratio);
         const bh = Math.max(2, (speed / 2) * full);
@@ -565,7 +574,7 @@ export class ElevationProfile {
           const parts = [formatDistance(dists[i]), `${Math.round(e).toLocaleString()}m`];
           if (this.hasTime) parts.push(fmtClock(this.s.times![i]));
           const seg = pace?.segments.find((sg) => dists[i] >= sg.d0 && dists[i] <= sg.d1);
-          if (seg) parts.push(`標準の${seg.ratio.toFixed(1)}倍`);
+          if (seg) parts.push(seg.vehicle ? '乗り物' : `標準タイムの${seg.ratio.toFixed(1)}倍`);
           ctx.font = 'bold 12px system-ui, sans-serif';
           const label = parts.join('  ');
           const right = x > w / 2;

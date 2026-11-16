@@ -5,7 +5,7 @@
  */
 import { SystemBars } from '@capacitor/core';
 import { formatDistance } from '../geo';
-import { fmtKcal, hikingKcal } from '../nav/calorie';
+import { fmtKcal, walkingKcal } from '../nav/calorie';
 import { paceWord, ratioSince } from '../nav/eta';
 import { log } from '../log';
 import { backgroundCapable } from '../track/location';
@@ -72,7 +72,7 @@ interface PaceView {
   overall: number | null;
   /** 直近20分の倍率。歩いた距離が短ければ null */
   recent: number | null;
-  /** ここまでの消費エネルギーの目安 (kcal)。点が2つ未満なら null */
+  /** ここまでの消費エネルギーの目安 (kcal)。点が2つ未満・まだ歩いていない（乗り物だけ）なら null */
   kcal: number | null;
 }
 let paceCache: { key: string; at: number; value: PaceView } | null = null;
@@ -87,7 +87,7 @@ function paceView(): PaceView {
   if (pts.length > 1) {
     const p = paceOf(pts);
     if (p.evidenceMin > 10) value.overall = p.ratio;
-    if (track) value.kcal = hikingKcal(p.movingMs / 60_000, track.distance, track.ascent, track.descent);
+    if (track && p.movingMs >= 60_000) value.kcal = walkingKcal(p.movingMs, track, p.vehicle);
     // 直近20分の歩行時間を、そのあいだの標準時間で割る（300m 以上歩いていれば）
     value.recent = ratioSince(pts, movingOf(pts), now - RECENT_MS);
   }
