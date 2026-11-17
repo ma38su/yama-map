@@ -351,6 +351,28 @@ button,
   font: inherit;
   font-variant-numeric: tabular-nums;
 }
+.nasu-places {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nasu-places label {
+  display: grid;
+  grid-template-columns: 4em 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.nasu-places select {
+  min-height: 40px;
+  padding: 4px 10px;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+}
+.nasu-places .btn {
+  align-self: flex-start;
+}
 #depart-note:empty {
   display: none;
 }

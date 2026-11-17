@@ -38,7 +38,33 @@ menu.addEventListener('click', (e) => {
   if (e.target === menu) menu.close(); // 背景タップで閉じる
 });
 
-export const PRESETS = [
+/** 那須岳まわりの地点（出発地・経由地・目的地に選べる）。座標は地理院の注記・道の分岐から取ったもの */
+export const NASU_PLACES: { name: string; lngLat: LngLat }[] = [
+  { name: '峠の茶屋駐車場', lngLat: [139.97815, 37.12787] },
+  { name: 'ロープウェイ山麓駅', lngLat: [139.97939, 37.12503] },
+  { name: 'ロープウェイ山頂駅', lngLat: [139.97085, 37.1239] },
+  { name: '峰の茶屋', lngLat: [139.9658, 37.13] },
+  { name: '茶臼岳', lngLat: [139.96313, 37.12484] },
+  { name: '朝日岳', lngLat: [139.9683, 37.1367] },
+  { name: '熊見曽根', lngLat: [139.96066, 37.13962] },
+  { name: '隠居倉', lngLat: [139.95666, 37.1377] },
+  { name: '三斗小屋温泉', lngLat: [139.94605, 37.13826] },
+  { name: '牛ヶ首', lngLat: [139.95977, 37.12284] },
+  { name: '日の出平', lngLat: [139.95362, 37.11774] },
+  { name: '南月山', lngLat: [139.95824, 37.1097] },
+];
+const nasuPoint = (name: string) => NASU_PLACES.find((p) => p.name === name)!;
+
+interface Preset {
+  file: string;
+  title: string;
+  desc: string;
+  reverse?: boolean;
+  /** 那須岳まわりの地点の名前（出発地・経由地…・目的地）。あれば GPX の端ではなくこの順に通るルートを作る */
+  places?: string[];
+}
+
+export const PRESETS: Preset[] = [
   {
     file: TESHIROSAWA_GPX,
     title: '女夫渕 → 手白澤温泉',
@@ -61,42 +87,107 @@ export const PRESETS = [
     desc: '帰り道。加仁湯・八丁の湯経由 約5km',
     reverse: true,
   },
+  {
+    file: 'routes/nasu-chausudake.gpx',
+    title: '峠の茶屋駐車場 → 茶臼岳',
+    desc: '那須岳。峰の茶屋経由 約2.7km',
+    places: ['峠の茶屋駐車場', '峰の茶屋', '茶臼岳'],
+  },
+  {
+    file: 'routes/nasu-asahidake.gpx',
+    title: '峠の茶屋駐車場 → 朝日岳',
+    desc: '那須岳。峰の茶屋経由 約2.8km',
+    places: ['峠の茶屋駐車場', '峰の茶屋', '朝日岳'],
+  },
+  {
+    file: 'routes/nasu-sandogoya.gpx',
+    title: '峠の茶屋駐車場 → 三斗小屋温泉',
+    desc: '那須岳。峰の茶屋経由 約4.3km',
+    places: ['峠の茶屋駐車場', '峰の茶屋', '三斗小屋温泉'],
+  },
+  {
+    file: 'routes/nasu-ropeway-chausudake.gpx',
+    title: 'ロープウェイ山頂駅 → 茶臼岳',
+    desc: '那須岳。山頂駅から山頂へ 約0.9km',
+    places: ['ロープウェイ山頂駅', '茶臼岳'],
+  },
 ];
+
+/** 地点を順に通るルートを道データから作る（作れなければ fallback の GPX を使う） */
+async function buildFromPlaces(places: { name?: string; lngLat: LngLat }[], fallback?: () => Promise<void>) {
+  setRoute(null);
+  const last = places.length - 1;
+  await rebuild(places.map((p, i) => makePoint(i === 0 ? 'start' : i === last ? 'dest' : 'via', p.lngLat, p.name)));
+  if (!state.route && fallback) await fallback();
+}
+
+async function fetchText(file: string) {
+  const res = await fetch(file);
+  if (!res.ok) throw new Error('ルートを読み込めませんでした');
+  return res.text();
+}
+
+async function loadPreset(p: Preset) {
+  // まずは道データからルート候補を作る（登山道優先・別ルートなどを比べられる）。
+  // 圏外などで作れなければ、保存してあるGPXのルートを使う（帰り道は逆向きにする）
+  let text: string | undefined;
+  const fallback = async () => {
+    await loadGpxText((text ??= await fetchText(p.file)));
+    if (p.reverse) reverseCurrentRoute();
+  };
+  // 地点の決まっているルートは、GPX を読まずに作る（GPX は作れなかったときだけ読む）
+  if (p.places) return buildFromPlaces(p.places.map(nasuPoint), fallback);
+  text = await fetchText(p.file);
+  const gpx = parseGpx(text);
+  const pts = gpx.lines.flatMap((l) => l.points);
+  const named = (i: number) => gpx.waypoints.find((w) => distance([w.lng, w.lat], [pts[i].lng, pts[i].lat]) < 100)?.name;
+  const ends = [0, pts.length - 1];
+  if (p.reverse) ends.reverse();
+  await buildFromPlaces(ends.map((i) => ({ lngLat: [pts[i].lng, pts[i].lat] as LngLat, name: named(i) })), fallback);
+}
+
+async function runRouteTask(task: () => Promise<void>) {
+  menu.close();
+  try {
+    setProgress('ルートを読み込み中…');
+    await task();
+    if (state.route) openSheet();
+  } catch (err) {
+    status(err instanceof Error ? err.message : String(err), true);
+  } finally {
+    setProgress('');
+  }
+}
+
 const presetWrap = $('preset-routes');
 for (const p of PRESETS) {
   const b = h('button', 'btn block');
   b.type = 'button';
   b.append(h('span', '', p.title), h('small', '', p.desc));
-  b.addEventListener('click', async () => {
-    menu.close();
-    try {
-      setProgress('ルートを読み込み中…');
-      const res = await fetch(p.file);
-      if (!res.ok) throw new Error('ルートを読み込めませんでした');
-      const text = await res.text();
-      // まずは道データからルート候補を作る（登山道優先・別ルートなどを比べられる）。
-      // 圏外などで作れなければ、保存してあるGPXのルートを使う（帰り道は逆向きにする）
-      const gpx = parseGpx(text);
-      const pts = gpx.lines.flatMap((l) => l.points);
-      const named = (i: number) => gpx.waypoints.find((w) => distance([w.lng, w.lat], [pts[i].lng, pts[i].lat]) < 100)?.name;
-      const ends = [0, pts.length - 1];
-      if (p.reverse) ends.reverse();
-      const [from, to] = ends.map((i) => ({ lngLat: [pts[i].lng, pts[i].lat] as LngLat, name: named(i) }));
-      setRoute(null);
-      await rebuild([makePoint('start', from.lngLat, from.name), makePoint('dest', to.lngLat, to.name)]);
-      if (!state.route) {
-        await loadGpxText(text);
-        if (p.reverse) reverseCurrentRoute();
-      }
-      openSheet();
-    } catch (err) {
-      status(err instanceof Error ? err.message : String(err), true);
-    } finally {
-      setProgress('');
-    }
-  });
+  b.addEventListener('click', () => void runRouteTask(() => loadPreset(p)));
   presetWrap.append(b);
 }
+
+// 那須岳まわり：出発地・経由地（2つまで）・目的地を選んでルートを作る
+const NONE = '';
+const placeSelects = (['nasu-from', 'nasu-via1', 'nasu-via2', 'nasu-to'] as const).map((id, i) => {
+  const sel = $<HTMLSelectElement>(id);
+  const optional = id.startsWith('nasu-via');
+  if (optional) sel.append(new Option('（なし）', NONE));
+  for (const p of NASU_PLACES) sel.append(new Option(p.name, p.name));
+  sel.value = ['峠の茶屋駐車場', '峰の茶屋', NONE, '茶臼岳'][i];
+  return sel;
+});
+$('nasu-build').addEventListener('click', () => {
+  // 続けて同じ地点を選んだときは1つにまとめる（長さ0の区間を作らない）
+  const names: string[] = [];
+  for (const { value } of placeSelects) if (value !== NONE && value !== names.at(-1)) names.push(value);
+  if (names.length < 2) {
+    status('出発地と目的地に違う地点を選んでください', true);
+    return;
+  }
+  void runRouteTask(() => buildFromPlaces(names.map(nasuPoint)));
+});
 
 $<HTMLInputElement>('gpx-file').addEventListener('change', async (e) => {
   const input = e.target as HTMLInputElement;
